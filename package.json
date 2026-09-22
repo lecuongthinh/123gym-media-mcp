@@ -1,0 +1,18 @@
+{
+  "name": "123gym-media-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for uploading AI generated media to LeadConnector",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.18.1",
+    "express": "^5.1.0",
+    "zod": "^3.25.0"
+  }
+}
