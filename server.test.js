@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { app, safeFileName, tools } from "./server.js";
+import { app, buildSocialPostBody, safeFileName, tools } from "./server.js";
 
 test("upload tool declares a valid ChatGPT file parameter", () => {
   const upload = tools.find((tool) => tool.name === "upload_leadconnector_media");
@@ -28,4 +28,24 @@ test("MCP tools/list exposes the file-aware upload schema", async (t) => {
   assert.equal(response.status, 200);
   assert.equal(payload.result.tools[0].name, "upload_leadconnector_media");
   assert.deepEqual(payload.result.tools[0]._meta["openai/fileParams"], ["file"]);
+  assert.equal(payload.result.tools.length, 10);
+  assert.ok(payload.result.tools.some((tool) => tool.name === "create_social_post"));
+  assert.ok(payload.result.tools.some((tool) => tool.name === "get_social_statistics"));
+});
+
+test("social posts default to a safe draft", () => {
+  assert.deepEqual(buildSocialPostBody({ summary: "Hello" }), {
+    summary: "Hello",
+    status: "draft",
+    type: "post"
+  });
+});
+
+test("scheduled posts require scheduleDate and accounts", () => {
+  assert.throws(() => buildSocialPostBody({ status: "scheduled", accountIds: ["a"] }), /scheduleDate/);
+  assert.throws(() => buildSocialPostBody({ status: "scheduled", scheduleDate: "2026-09-23T03:00:00Z" }), /accountIds/);
+});
+
+test("in-review posts require an approver", () => {
+  assert.throws(() => buildSocialPostBody({ status: "in_review", scheduleDate: "2026-09-23T03:00:00Z", accountIds: ["a"] }), /approver/);
 });

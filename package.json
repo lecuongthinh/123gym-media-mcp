@@ -1,7 +1,7 @@
 {
   "name": "123gym-media-mcp",
-  "version": "1.1.0",
-  "description": "MCP server for uploading ChatGPT and public media to LeadConnector",
+  "version": "2.0.0",
+  "description": "Social Media Agent MCP for LeadConnector and ChatGPT",
   "type": "module",
   "main": "server.js",
   "scripts": {
