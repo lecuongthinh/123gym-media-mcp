@@ -34,18 +34,22 @@ test("MCP tools/list exposes the file-aware upload schema", async (t) => {
 });
 
 test("social posts default to a safe draft", () => {
-  assert.deepEqual(buildSocialPostBody({ summary: "Hello" }), {
+  assert.deepEqual(buildSocialPostBody({ summary: "Hello", accountIds: ["a"], userId: "u" }), {
     summary: "Hello",
+    accountIds: ["a"],
+    userId: "u",
     status: "draft",
     type: "post"
   });
+  assert.throws(() => buildSocialPostBody({ summary: "Hello" }), /accountIds/);
+  assert.throws(() => buildSocialPostBody({ summary: "Hello", accountIds: ["a"] }), /userId/);
 });
 
 test("scheduled posts require scheduleDate and accounts", () => {
-  assert.throws(() => buildSocialPostBody({ status: "scheduled", accountIds: ["a"] }), /scheduleDate/);
+  assert.throws(() => buildSocialPostBody({ status: "scheduled", accountIds: ["a"], userId: "u" }), /scheduleDate/);
   assert.throws(() => buildSocialPostBody({ status: "scheduled", scheduleDate: "2026-09-23T03:00:00Z" }), /accountIds/);
 });
 
 test("in-review posts require an approver", () => {
-  assert.throws(() => buildSocialPostBody({ status: "in_review", scheduleDate: "2026-09-23T03:00:00Z", accountIds: ["a"] }), /approver/);
+  assert.throws(() => buildSocialPostBody({ status: "in_review", scheduleDate: "2026-09-23T03:00:00Z", accountIds: ["a"], userId: "u" }), /approver/);
 });

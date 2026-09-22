@@ -196,8 +196,11 @@ function buildSocialPostBody(args, { partial = false } = {}) {
   if (["scheduled", "in_review"].includes(status) && !body.scheduleDate) {
     throw new Error(`scheduleDate is required when status is ${status}.`);
   }
-  if (status && status !== "draft" && (!Array.isArray(body.accountIds) || body.accountIds.length === 0)) {
-    throw new Error("accountIds must be a non-empty array for non-draft posts.");
+  if (!partial && (!Array.isArray(body.accountIds) || body.accountIds.length === 0)) {
+    throw new Error("accountIds must be a non-empty array. Call list_social_accounts first.");
+  }
+  if (!partial && (typeof body.userId !== "string" || !body.userId.trim())) {
+    throw new Error("userId is required to create a Social Planner post.");
   }
   if (status === "in_review" && !body.postApprovalDetails?.approver) {
     throw new Error("postApprovalDetails.approver is required for in_review posts.");
@@ -279,7 +282,7 @@ const socialPostProperties = {
   applyWatermark: { type: "boolean" },
   tiktokPostDetails: { type: "object", additionalProperties: true },
   gmbPostDetails: { type: "object", additionalProperties: true },
-  userId: { type: "string" },
+  userId: { type: "string", description: "LeadConnector user ID creating the post." },
   linkedinPostDetails: { type: "object", additionalProperties: true },
   pinterestPostDetails: { type: "object", additionalProperties: true },
   facebookPostDetails: { type: "object", additionalProperties: true },
@@ -350,7 +353,7 @@ const tools = [
     name: "create_social_post",
     title: "Create social post",
     description: "Create a LeadConnector Social Planner post. Defaults to draft. Only use scheduled, in_review, or published when explicitly requested by the user.",
-    inputSchema: { type: "object", properties: socialPostProperties },
+    inputSchema: { type: "object", properties: socialPostProperties, required: ["accountIds", "userId"] },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     _meta: { "openai/toolInvocation/invoking": "Creating social post…", "openai/toolInvocation/invoked": "Social post created" }
   },
