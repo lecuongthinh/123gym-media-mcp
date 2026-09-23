@@ -1,51 +1,139 @@
 import express from "express";
+import { createHash, timingSafeEqual } from "node:crypto";
+import {
+  authorizeLegacyAdminContext,
+  createTenantServices,
+  LEGACY_123_GYM_LOCATION_ID
+} from "./src/tenant-services.js";
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 
 const PORT = process.env.PORT || 10000;
-const LC_PRIVATE_TOKEN = process.env.LC_PRIVATE_TOKEN;
 const LC_BASE_URL = "https://services.leadconnectorhq.com";
-const DEFAULT_LOCATION_ID = "pUePVc6UKEUecvZS6EYU";
+const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LOCATION_ID;
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-app.get("/", (req, res) => res.json({ status: "ok", service: "123 GYM Social Media Agent", version: "3.0.0", mcp: "/mcp" }));
-app.get("/health", (req, res) => res.json({ status: "healthy", version: "3.0.0", tokenConfigured: Boolean(LC_PRIVATE_TOKEN) }));
+const SERVICE_VERSION = "3.2.0";
+app.get("/", (req, res) => res.json({ status: "ok", service: "123 GYM Social Media Agent", version: SERVICE_VERSION, mcp: "/mcp" }));
+app.get("/health", (req, res) => {
+  const configured = Boolean(process.env.MCP_ADMIN_API_KEY);
+  res.status(configured ? 200 : 503).json({ status: configured ? "healthy" : "misconfigured", version: SERVICE_VERSION });
+});
 
-function checkToken() {
-  if (!LC_PRIVATE_TOKEN) throw new Error("LC_PRIVATE_TOKEN is not configured.");
+function constantTimeEqual(left, right) {
+  const a = Buffer.from(String(left || ""));
+  const b = Buffer.from(String(right || ""));
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+function adminKeyFromRequest(req) {
+  const authorization = req.get("authorization") || "";
+  const bearer = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
+  return bearer || req.get("x-api-key") || "";
+}
+
+function authenticateMcpRequest(req, res, next) {
+  const expected = process.env.MCP_ADMIN_API_KEY;
+  const id = req.body?.id ?? null;
+  if (!expected) return res.status(503).json({ jsonrpc: "2.0", id, error: { code: -32001, message: "MCP authentication is not configured." } });
+  if (!constantTimeEqual(adminKeyFromRequest(req), expected)) {
+    return res.status(401).json({ jsonrpc: "2.0", id, error: { code: -32002, message: "Unauthorized." } });
+  }
+  return next();
+}
+
+function tenantRegistry(env = process.env) {
+  const registry = {
+    [LEGACY_123_GYM_LOCATION_ID]: { name: "123 GYM", tokenEnv: "LC_PRIVATE_TOKEN" }
+  };
+  if (!env.LC_TENANTS_JSON) return registry;
+  let configured;
+  try { configured = JSON.parse(env.LC_TENANTS_JSON); } catch { throw new Error("LC_TENANTS_JSON is not valid JSON."); }
+  if (!configured || typeof configured !== "object" || Array.isArray(configured)) throw new Error("LC_TENANTS_JSON must be a tenant object.");
+  for (const [locationId, tenant] of Object.entries(configured)) {
+    if (!locationId || !tenant || typeof tenant !== "object" || typeof tenant.tokenEnv !== "string" || !/^[A-Z][A-Z0-9_]*$/.test(tenant.tokenEnv)) {
+      throw new Error("LC_TENANTS_JSON contains an invalid tenant definition.");
+    }
+    registry[locationId] = { name: String(tenant.name || locationId), tokenEnv: tenant.tokenEnv };
+  }
+  return registry;
+}
+
+function resolveTenant(requestedLocationId, env = process.env) {
+  const locationId = requestedLocationId || env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LOCATION_ID;
+  const tenant = tenantRegistry(env)[locationId];
+  if (!tenant) throw new Error("Unknown or unauthorized locationId.");
+  const token = env[tenant.tokenEnv];
+  if (!token) throw new Error(`LeadConnector credential is not configured for tenant ${tenant.name}.`);
+  return { locationId, name: tenant.name, tokenEnv: tenant.tokenEnv, token };
+}
+
+function tenantAccess(requestedLocationId, authorizedContext) {
+  if (!authorizedContext) return resolveTenant(requestedLocationId);
+  if (requestedLocationId && requestedLocationId !== authorizedContext.locationId) {
+    throw new Error("Cross-tenant location access blocked.");
+  }
+  return {
+    locationId: authorizedContext.locationId,
+    name: authorizedContext.tenantName,
+    token: authorizedContext.accessToken,
+    tenantId: authorizedContext.tenantId,
+    connectionId: authorizedContext.connectionId
+  };
 }
 
 async function parseResponse(response) {
   const text = await response.text();
   let data;
   try { data = JSON.parse(text); } catch { data = { raw: text }; }
-  if (!response.ok) throw new Error(`LeadConnector API failed (${response.status}): ${text}`);
+  if (!response.ok) {
+    const detail = Array.isArray(data?.message) ? data.message.join("; ") : (typeof data?.message === "string" ? data.message : data?.error);
+    throw new Error(`LeadConnector API failed (${response.status})${detail ? `: ${redactSecrets(detail).slice(0, 500)}` : ""}`);
+  }
   return data;
 }
 
-function lcHeaders() {
-  return { Authorization: `Bearer ${LC_PRIVATE_TOKEN}`, Version: "2021-07-28", Accept: "application/json" };
+function lcHeaders(token) {
+  return { Authorization: `Bearer ${token}`, Version: "2021-07-28", Accept: "application/json" };
 }
 
-function socialHeaders() {
-  return {
-    Authorization: `Bearer ${LC_PRIVATE_TOKEN}`,
-    Version: "v3",
-    Accept: "application/json",
-    "Content-Type": "application/json"
-  };
+function redactSecrets(value, env = process.env) {
+  let safe = String(value || "").replace(/Bearer\s+[^\s,;]+/gi, "Bearer [REDACTED]");
+  let registry;
+  try { registry = tenantRegistry(env); } catch { registry = {}; }
+  for (const tenant of Object.values(registry)) {
+    const token = env[tenant.tokenEnv];
+    if (token) safe = safe.split(token).join("[REDACTED]");
+  }
+  return safe;
 }
 
-async function socialRequest(path, { method = "GET", body } = {}) {
-  checkToken();
+function validateLocationBinding(path, locationId) {
+  const url = new URL(path, LC_BASE_URL);
+  const socialMatch = url.pathname.match(/^\/social-media-posting\/([^/]+)\//);
+  if (socialMatch && decodeURIComponent(socialMatch[1]) !== locationId) throw new Error("Cross-tenant LeadConnector request blocked.");
+  const queryLocation = url.searchParams.get("locationId") || url.searchParams.get("altId");
+  if (queryLocation && queryLocation !== locationId) throw new Error("Cross-tenant LeadConnector request blocked.");
+}
+
+async function tenantRequest(locationId, path, { method = "GET", body, headers = {}, version = "2021-07-28", authorizedContext } = {}) {
+  const tenant = tenantAccess(locationId, authorizedContext);
+  validateLocationBinding(path, tenant.locationId);
   const response = await fetch(`${LC_BASE_URL}${path}`, {
     method,
-    headers: socialHeaders(),
+    headers: { ...lcHeaders(tenant.token), Version: version, ...headers },
     ...(body === undefined ? {} : { body: JSON.stringify(body) })
   });
   return await parseResponse(response);
+}
+
+async function socialRequest(locationId, suffix, { method = "GET", body, authorizedContext } = {}) {
+  const tenant = tenantAccess(locationId, authorizedContext);
+  const path = `/social-media-posting/${encodeURIComponent(tenant.locationId)}${suffix}`;
+  return await tenantRequest(tenant.locationId, path, { method, body, headers: { "Content-Type": "application/json" }, version: "v3", authorizedContext });
 }
 
 function safeFileName(name, mimeType = "") {
@@ -77,9 +165,9 @@ async function downloadChatGPTFile(file) {
   return { bytes, mimeType, fileName: safeFileName(file.file_name, mimeType), fileId: file.file_id };
 }
 
-async function uploadMedia(args) {
-  checkToken();
-  const { file, fileUrl, fileName, parentId } = args;
+async function uploadMedia(args, authorizedContext) {
+  const { locationId = DEFAULT_LOCATION_ID, file, fileUrl, fileName, parentId } = args;
+  const tenant = tenantAccess(locationId, authorizedContext);
   if (!file && !fileUrl) throw new Error("Provide either file (from ChatGPT or Media Library) or fileUrl.");
   if (file && fileUrl) throw new Error("Provide only one source: file or fileUrl.");
 
@@ -103,17 +191,19 @@ async function uploadMedia(args) {
 
   const response = await fetch(`${LC_BASE_URL}/medias/upload-file`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${LC_PRIVATE_TOKEN}`, Version: "2021-07-28" },
+    headers: { Authorization: `Bearer ${tenant.token}`, Version: "2021-07-28" },
     body
   });
-  return { ...(await parseResponse(response)), source };
+  return { ...(await parseResponse(response)), source, locationId: tenant.locationId, tenant: tenant.name };
 }
 
-async function listMedia(args = {}) {
-  checkToken();
+async function listMedia(args = {}, authorizedContext) {
   const { locationId = DEFAULT_LOCATION_ID, search = "", mediaType = "all", limit = 50, offset = 0 } = args;
+  const tenant = tenantAccess(locationId, authorizedContext);
   const params = new URLSearchParams({ altId: locationId, altType: "location", sortBy: "createdAt", sortOrder: "desc", type: "file", limit: String(Math.min(Number(limit) || 50, 100)), offset: String(Number(offset) || 0) });
-  const data = await parseResponse(await fetch(`${LC_BASE_URL}/medias/files?${params}`, { method: "GET", headers: lcHeaders() }));
+  const path = `/medias/files?${params}`;
+  validateLocationBinding(path, tenant.locationId);
+  const data = await parseResponse(await fetch(`${LC_BASE_URL}${path}`, { method: "GET", headers: lcHeaders(tenant.token) }));
   let files = data.files || data.data?.files || [];
   if (search) {
     const terms = search.toLowerCase().split(/\s+/).filter(Boolean);
@@ -124,8 +214,9 @@ async function listMedia(args = {}) {
   return { count: files.length, files: files.map((file) => ({ id: file._id, name: file.name, contentType: file.contentType, url: file.url, width: file.width, height: file.height, size: file.size, createdAt: file.createdAt, thumbnailUrl: file.thumbnail?.url || null, previewUrl: file.preview?.url || null, category: file.category || null, subCategory: file.subCategory || null })) };
 }
 
-async function inspectMedia(args) {
-  const { url, thumbnailUrl, name = "media" } = args;
+async function inspectMedia(args, authorizedContext) {
+  const { locationId = DEFAULT_LOCATION_ID, url, thumbnailUrl, name = "media" } = args;
+  tenantAccess(locationId, authorizedContext);
   const mediaUrl = thumbnailUrl || url;
   if (!mediaUrl) throw new Error("url or thumbnailUrl is required.");
   const response = await fetch(mediaUrl);
@@ -141,11 +232,60 @@ async function inspectMedia(args) {
 // SOCIAL PLANNER
 // --------------------------------------------------
 
-async function listSocialAccounts({ locationId = DEFAULT_LOCATION_ID } = {}) {
-  return await socialRequest(`/social-media-posting/${encodeURIComponent(locationId)}/accounts`);
+async function listSocialAccounts({ locationId = DEFAULT_LOCATION_ID } = {}, authorizedContext) {
+  return await socialRequest(locationId, "/accounts", { authorizedContext });
 }
 
-async function listSocialPosts(args = {}) {
+const BLOCKED_ACCOUNT_PATTERN = /t[oô] hi[eệ]u|56\s*t[oô]\s*hi[eệ]u|tuy[eể]n\s*d[uụ]ng|balance\s*fit/i;
+const ALLOWED_SOCIAL_PLATFORMS = new Set(["facebook", "google"]);
+
+function accountList(data) {
+  return data?.results?.accounts || data?.accounts || [];
+}
+
+function isEligible123GymAccount(account) {
+  const identity = [account?.name, account?.meta?.storeCode, ...(account?.meta?.storefrontAddress?.addressLines || [])].filter(Boolean).join(" ");
+  return Boolean(account?.id && account.active !== false && !account.isExpired && !account.deleted && ALLOWED_SOCIAL_PLATFORMS.has(account.platform) && !BLOCKED_ACCOUNT_PATTERN.test(identity));
+}
+
+function isEligibleSocialAccount(account, locationId) {
+  const active = Boolean(account?.id && account.active !== false && !account.isExpired && !account.deleted);
+  return locationId === LEGACY_123_GYM_LOCATION_ID ? isEligible123GymAccount(account) : active;
+}
+
+async function resolveSocialAccounts(locationId, requestedIds = [], authorizedContext) {
+  const accountsData = await listSocialAccounts({ locationId }, authorizedContext);
+  const all = accountList(accountsData);
+  const eligible = all.filter((account) => isEligibleSocialAccount(account, locationId));
+  const requested = Array.isArray(requestedIds) ? requestedIds.filter(Boolean) : [];
+  if (!requested.length) return eligible;
+  const byId = new Map(all.map((account) => [account.id, account]));
+  const unknown = requested.filter((id) => !byId.has(id));
+  if (unknown.length) throw new Error(`Unknown Social Planner accountIds: ${unknown.join(", ")}`);
+  const blocked = requested.map((id) => byId.get(id)).filter((account) => !isEligibleSocialAccount(account, locationId));
+  if (blocked.length) throw new Error(`Inactive or tenant-blocked Social Planner accounts: ${blocked.map((account) => `${account.name} (${account.id})`).join(", ")}`);
+  return requested.map((id) => byId.get(id));
+}
+
+function postArray(data) {
+  return data?.results?.posts || data?.posts || [];
+}
+
+async function requestSocialPostList({ locationId, status, accountIds, skip, limit, fromDate, toDate, includeUsers, postType }, authorizedContext) {
+  const body = {
+    type: status,
+    accounts: accountIds.join(","),
+    skip: String(Math.max(0, Number(skip) || 0)),
+    limit: String(Math.min(Math.max(1, Number(limit) || 10), 100)),
+    includeUsers: String(Boolean(includeUsers))
+  };
+  if (fromDate) body.fromDate = fromDate;
+  if (toDate) body.toDate = toDate;
+  if (postType) body.postType = postType;
+  return await socialRequest(locationId, "/posts/list", { method: "POST", body, authorizedContext });
+}
+
+async function listSocialPosts(args = {}, authorizedContext) {
   const {
     locationId = DEFAULT_LOCATION_ID,
     status = "all",
@@ -157,22 +297,25 @@ async function listSocialPosts(args = {}) {
     includeUsers = true,
     postType
   } = args;
-  const body = {
-    type: status,
-    accounts: Array.isArray(accountIds) ? accountIds.join(",") : String(accountIds || ""),
-    skip: String(Math.max(0, Number(skip) || 0)),
-    limit: String(Math.min(Math.max(1, Number(limit) || 10), 100)),
-    includeUsers: String(Boolean(includeUsers))
-  };
-  if (fromDate) body.fromDate = fromDate;
-  if (toDate) body.toDate = toDate;
-  if (postType) body.postType = postType;
-  return await socialRequest(`/social-media-posting/${encodeURIComponent(locationId)}/posts/list`, { method: "POST", body });
+  const accounts = await resolveSocialAccounts(locationId, accountIds, authorizedContext);
+  if (!accounts.length) throw new Error("No eligible 123 GYM Facebook or Google accounts are connected.");
+  const data = await requestSocialPostList({ locationId, status, accountIds: accounts.map((account) => account.id), skip, limit, fromDate, toDate, includeUsers, postType }, authorizedContext);
+  return { ...data, resolvedAccounts: accounts.map(({ id, name, platform, type }) => ({ id, name, platform, type })) };
 }
 
-async function getSocialPost({ locationId = DEFAULT_LOCATION_ID, postId }) {
+async function getSocialPost({ locationId = DEFAULT_LOCATION_ID, postId, includeRelated = true }, authorizedContext) {
   if (!postId) throw new Error("postId is required.");
-  return await socialRequest(`/social-media-posting/${encodeURIComponent(locationId)}/posts/${encodeURIComponent(postId)}`);
+  if (!/^[a-f0-9]{24}$/i.test(postId)) throw new Error("postId must be the 24-character _id from list_social_posts; parentPostId UUID values are grouping keys and cannot be fetched by the Get Post endpoint.");
+  const data = await socialRequest(locationId, `/posts/${encodeURIComponent(postId)}`, { authorizedContext });
+  if (!includeRelated) return data;
+  const post = data?.results?.post;
+  if (!post) return data;
+  const center = new Date(post.scheduleDate || post.displayDate || post.createdAt);
+  const fromDate = new Date(center.getTime() - 36 * 60 * 60 * 1000).toISOString();
+  const toDate = new Date(center.getTime() + 36 * 60 * 60 * 1000).toISOString();
+  const listed = await requestSocialPostList({ locationId, status: "all", accountIds: post.accountIds || [], skip: 0, limit: 100, fromDate, toDate, includeUsers: true }, authorizedContext);
+  const related = postArray(listed).filter((item) => item._id === post._id || (post.parentPostId && item.parentPostId === post.parentPostId));
+  return { ...data, relation: { parentPostId: post.parentPostId || null, note: "parentPostId is an internal grouping UUID; platform children may only materialize during publishing and are not addressable through Get Post.", listedRecords: related } };
 }
 
 const SOCIAL_POST_FIELDS = [
@@ -209,35 +352,69 @@ function buildSocialPostBody(args, { partial = false } = {}) {
   return body;
 }
 
-async function createSocialPost(args = {}) {
-  const { locationId = DEFAULT_LOCATION_ID } = args;
-  const body = buildSocialPostBody(args);
-  return await socialRequest(`/social-media-posting/${encodeURIComponent(locationId)}/posts`, { method: "POST", body });
+async function createSocialPost(args = {}, authorizedContext) {
+  const { locationId = DEFAULT_LOCATION_ID, verify = true, splitByPlatform = true } = args;
+  const accounts = await resolveSocialAccounts(locationId, args.accountIds || [], authorizedContext);
+  const body = buildSocialPostBody({ ...args, accountIds: accounts.map((account) => account.id) });
+  const grouped = new Map();
+  for (const account of accounts) grouped.set(account.platform, [...(grouped.get(account.platform) || []), account]);
+  const groups = splitByPlatform ? [...grouped.values()] : [accounts];
+  const report = [];
+  for (const group of groups) {
+    const groupIds = group.map((account) => account.id);
+    const platform = group[0]?.platform || "mixed";
+    const fingerprint = createHash("sha256").update(JSON.stringify({ locationId, accountIds: [...groupIds].sort(), summary: body.summary || "", media: body.media || [], status: body.status, scheduleDate: body.scheduleDate || null, type: body.type })).digest("hex").slice(0, 20);
+    const target = new Date(body.scheduleDate || Date.now());
+    const fromDate = new Date(target.getTime() - 12 * 60 * 60 * 1000).toISOString();
+    const toDate = new Date(target.getTime() + 12 * 60 * 60 * 1000).toISOString();
+    const existingData = await requestSocialPostList({ locationId, status: body.status || "all", accountIds: groupIds, skip: 0, limit: 100, fromDate, toDate, includeUsers: true, postType: body.type }, authorizedContext);
+    const existing = postArray(existingData).find((post) => post.summary === (body.summary || "") && (!body.scheduleDate || post.scheduleDate === body.scheduleDate) && groupIds.every((id) => post.accountIds?.includes(id)) && JSON.stringify(post.media || []) === JSON.stringify(body.media || []));
+    if (existing) {
+      report.push({ action: "skipped_duplicate", fingerprint, platform, accountIds: groupIds, postId: existing._id, parentPostId: existing.parentPostId || null, status: existing.status, scheduleDate: existing.scheduleDate, media: existing.media || [], verified: true });
+      continue;
+    }
+    const createdData = await socialRequest(locationId, "/posts", { method: "POST", body: { ...body, accountIds: groupIds }, authorizedContext });
+    const created = createdData?.results?.post;
+    let matched = null;
+    if (verify) {
+      const verifiedData = await requestSocialPostList({ locationId, status: body.status || "all", accountIds: groupIds, skip: 0, limit: 100, fromDate, toDate, includeUsers: true, postType: body.type }, authorizedContext);
+      matched = postArray(verifiedData).find((post) => post._id === created?._id || (post.summary === body.summary && (!body.scheduleDate || post.scheduleDate === body.scheduleDate) && groupIds.every((id) => post.accountIds?.includes(id))));
+      if (!matched) throw new Error(`Post creation returned success but verification failed for ${platform} accounts (${groupIds.join(",")}).`);
+    }
+    report.push({ action: "created", fingerprint, platform, accountIds: groupIds, postId: created?._id || matched?._id, parentPostId: created?.parentPostId || matched?.parentPostId || null, status: matched?.status || created?.status, scheduleDate: matched?.scheduleDate || created?.scheduleDate, media: matched?.media || created?.media || [], verified: Boolean(matched) });
+  }
+  return { success: true, message: "Create request completed with duplicate protection and list verification.", results: report };
 }
 
-async function updateSocialPost(args = {}) {
-  const { locationId = DEFAULT_LOCATION_ID, postId } = args;
+async function updateSocialPost(args = {}, authorizedContext) {
+  const { locationId = DEFAULT_LOCATION_ID, postId, verify = true } = args;
   if (!postId) throw new Error("postId is required.");
+  if (!/^[a-f0-9]{24}$/i.test(postId)) throw new Error("postId must be the 24-character _id, not parentPostId.");
   const body = buildSocialPostBody(args, { partial: true });
   if (Object.keys(body).length === 0) throw new Error("At least one post field must be provided.");
-  return await socialRequest(`/social-media-posting/${encodeURIComponent(locationId)}/posts/${encodeURIComponent(postId)}`, { method: "PUT", body });
+  if (body.accountIds) await resolveSocialAccounts(locationId, body.accountIds, authorizedContext);
+  const updated = await socialRequest(locationId, `/posts/${encodeURIComponent(postId)}`, { method: "PUT", body, authorizedContext });
+  if (!verify) return updated;
+  const fetched = await getSocialPost({ locationId, postId, includeRelated: true }, authorizedContext);
+  return { ...updated, verification: fetched };
 }
 
-async function deleteSocialPost({ locationId = DEFAULT_LOCATION_ID, postId }) {
+async function deleteSocialPost({ locationId = DEFAULT_LOCATION_ID, postId }, authorizedContext) {
   if (!postId) throw new Error("postId is required.");
-  return await socialRequest(`/social-media-posting/${encodeURIComponent(locationId)}/posts/${encodeURIComponent(postId)}`, { method: "DELETE" });
+  return await socialRequest(locationId, `/posts/${encodeURIComponent(postId)}`, { method: "DELETE", authorizedContext });
 }
 
-async function getSocialStatistics(args = {}) {
+async function getSocialStatistics(args = {}, authorizedContext) {
   const { locationId = DEFAULT_LOCATION_ID, profileIds, platforms, currentRange, prevRange } = args;
   if (!Array.isArray(profileIds) || profileIds.length === 0) throw new Error("profileIds must be a non-empty array.");
   if (profileIds.length > 100) throw new Error("profileIds supports at most 100 accounts.");
-  const params = new URLSearchParams({ locationId });
   const body = { profileIds };
   if (platforms) body.platforms = platforms;
   if (currentRange) body.currentRange = currentRange;
   if (prevRange) body.prevRange = prevRange;
-  return await socialRequest(`/social-media-posting/statistics?${params}`, { method: "POST", body });
+  const tenant = tenantAccess(locationId, authorizedContext);
+  const path = `/social-media-posting/statistics?${new URLSearchParams({ locationId: tenant.locationId })}`;
+  return await tenantRequest(tenant.locationId, path, { method: "POST", body, headers: { "Content-Type": "application/json" }, version: "v3", authorizedContext });
 }
 
 const openAIFileSchema = {
@@ -264,7 +441,7 @@ const mediaItemSchema = {
 };
 
 const socialPostProperties = {
-  locationId: { type: "string", description: "LeadConnector location ID. Defaults to 123 GYM Central Office." },
+  locationId: { type: "string", description: "Allowlisted LeadConnector tenant location ID. Defaults to 123 GYM for backward compatibility." },
   accountIds: { type: "array", items: { type: "string" }, description: "Connected account IDs from list_social_accounts." },
   summary: { type: "string", description: "Post caption/content." },
   media: { type: "array", items: mediaItemSchema },
@@ -299,6 +476,7 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: {
+        locationId: socialPostProperties.locationId,
         file: openAIFileSchema,
         fileUrl: { type: "string", description: "Optional public HTTPS image/video URL. Use only when no ChatGPT file is available." },
         fileName: { type: "string", description: "Optional destination filename." },
@@ -310,14 +488,14 @@ const tools = [
   },
   {
     name: "search_leadconnector_media",
-    description: "Search and list media from the 123 GYM LeadConnector Media Library.",
+    description: "Search and list media from the selected allowlisted tenant's LeadConnector Media Library.",
     inputSchema: { type: "object", properties: { search: { type: "string" }, mediaType: { type: "string", enum: ["all", "image", "video"] }, limit: { type: "integer", minimum: 1, maximum: 100 }, offset: { type: "integer", minimum: 0 }, locationId: { type: "string" } } },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
   },
   {
     name: "inspect_media",
-    description: "Visually inspect an image from LeadConnector Media Library. For videos, pass thumbnailUrl.",
-    inputSchema: { type: "object", properties: { url: { type: "string" }, thumbnailUrl: { type: "string" }, name: { type: "string" } } },
+    description: "Visually inspect an image for an allowlisted tenant. For videos, pass thumbnailUrl.",
+    inputSchema: { type: "object", properties: { locationId: socialPostProperties.locationId, url: { type: "string" }, thumbnailUrl: { type: "string" }, name: { type: "string" } } },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true }
   },
   {
@@ -330,7 +508,7 @@ const tools = [
   {
     name: "list_social_posts",
     title: "List social posts",
-    description: "List drafts, scheduled, published, failed, review, or other Social Planner posts.",
+    description: "List Social Planner posts. If accountIds is omitted, automatically uses eligible 123 GYM/La Charme Facebook and Google accounts while excluding Tô Hiệu, recruitment and Balance Fit accounts.",
     inputSchema: { type: "object", properties: {
       locationId: socialPostProperties.locationId,
       status: { type: "string", enum: ["recent", "all", "scheduled", "draft", "failed", "in_review", "published", "in_progress", "pending", "deleted"] },
@@ -345,23 +523,23 @@ const tools = [
   {
     name: "get_social_post",
     title: "Get social post",
-    description: "Get one Social Planner post by ID.",
-    inputSchema: { type: "object", properties: { locationId: socialPostProperties.locationId, postId: { type: "string" } }, required: ["postId"] },
+    description: "Get one Social Planner post by its 24-character _id and optionally resolve related records sharing its parent grouping key.",
+    inputSchema: { type: "object", properties: { locationId: socialPostProperties.locationId, postId: { type: "string" }, includeRelated: { type: "boolean", description: "Also inspect list results for records sharing parentPostId. Defaults true." } }, required: ["postId"] },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
   },
   {
     name: "create_social_post",
     title: "Create social post",
-    description: "Create a LeadConnector Social Planner post. Defaults to draft. Only use scheduled, in_review, or published when explicitly requested by the user.",
-    inputSchema: { type: "object", properties: socialPostProperties, required: ["accountIds", "userId"] },
+    description: "Create a brand-safe LeadConnector Social Planner post. Defaults to draft, auto-selects eligible 123 GYM accounts when omitted, splits Facebook and Google, prevents exact retries, and verifies the result through list_social_posts.",
+    inputSchema: { type: "object", properties: { ...socialPostProperties, verify: { type: "boolean", description: "Verify creation through the list endpoint. Defaults true." }, splitByPlatform: { type: "boolean", description: "Split Facebook and Google into separate create requests. Defaults true." } }, required: ["userId"] },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     _meta: { "openai/toolInvocation/invoking": "Creating social post…", "openai/toolInvocation/invoked": "Social post created" }
   },
   {
     name: "update_social_post",
     title: "Update social post",
-    description: "Update an existing LeadConnector Social Planner post.",
-    inputSchema: { type: "object", properties: { postId: { type: "string" }, ...socialPostProperties }, required: ["postId"] },
+    description: "Update a Social Planner record by its 24-character _id and verify it by fetching the record and its parent grouping relationship.",
+    inputSchema: { type: "object", properties: { postId: { type: "string" }, ...socialPostProperties, verify: { type: "boolean", description: "Fetch and verify after update. Defaults true." } }, required: ["postId"] },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true }
   },
   {
@@ -385,26 +563,33 @@ const tools = [
   }
 ];
 
+app.use("/mcp", authenticateMcpRequest);
+
 app.post("/mcp", async (req, res) => {
   const request = req.body || {};
   const id = request.id ?? null;
   try {
-    if (request.method === "initialize") return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "123gym-social-media-agent", version: "3.0.0" } } });
+    if (request.method === "initialize") return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "123gym-social-media-agent", version: SERVICE_VERSION } } });
     if (request.method === "notifications/initialized") return res.status(202).end();
     if (request.method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools } });
     if (request.method === "tools/call") {
       const toolName = request.params?.name;
       const args = request.params?.arguments || {};
+      const authorizedContext = await authorizeLegacyAdminContext({
+        requestedLocationId: args.locationId,
+        defaultLocationId: DEFAULT_LOCATION_ID,
+        ...createTenantServices(process.env)
+      });
       if (toolName === "upload_leadconnector_media") {
-        const result = await uploadMedia(args);
+        const result = await uploadMedia(args, authorizedContext);
         return res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Uploaded to LeadConnector: ${result.url || result.fileId || "success"}` }], structuredContent: result } });
       }
       if (toolName === "search_leadconnector_media") {
-        const result = await listMedia(args);
+        const result = await listMedia(args, authorizedContext);
         return res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result } });
       }
       if (toolName === "inspect_media") {
-        const result = await inspectMedia(args);
+        const result = await inspectMedia(args, authorizedContext);
         return res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Media: ${result.name}\nSource: ${result.sourceUrl}` }, { type: "image", data: result.base64, mimeType: result.mimeType }] } });
       }
       const socialHandlers = {
@@ -417,7 +602,7 @@ app.post("/mcp", async (req, res) => {
         get_social_statistics: getSocialStatistics
       };
       if (socialHandlers[toolName]) {
-        const result = await socialHandlers[toolName](args);
+        const result = await socialHandlers[toolName](args, authorizedContext);
         return res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result } });
       }
       throw new Error(`Unknown tool: ${toolName}`);
@@ -429,6 +614,28 @@ app.post("/mcp", async (req, res) => {
 });
 
 const isMainModule = process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
-if (isMainModule) app.listen(PORT, "0.0.0.0", () => console.log(`123 GYM Social Media Agent v3 listening on port ${PORT}`));
+if (isMainModule) {
+  if (!process.env.MCP_ADMIN_API_KEY) {
+    console.error("MCP_ADMIN_API_KEY is required; refusing to start.");
+    process.exitCode = 1;
+  } else {
+    app.listen(PORT, "0.0.0.0", () => console.log(`123 GYM Social Media Agent v${SERVICE_VERSION} listening on port ${PORT}`));
+  }
+}
 
-export { app, buildSocialPostBody, downloadChatGPTFile, safeFileName, tools };
+export {
+  app,
+  authenticateMcpRequest,
+  buildSocialPostBody,
+  downloadChatGPTFile,
+  getSocialStatistics,
+  isEligible123GymAccount,
+  listMedia,
+  listSocialAccounts,
+  resolveTenant,
+  safeFileName,
+  tenantRegistry,
+  tools,
+  uploadMedia,
+  validateLocationBinding
+};
