@@ -70,6 +70,60 @@ function requestVerifier(req) {
   return req.app.locals.cachedAuth0Verifier;
 }
 
+const MCP_DIAGNOSTICS_ENABLED =
+  process.env.MCP_DIAGNOSTIC_LOG === "true" &&
+  process.env.MCP_RESOURCE_URL?.replace(/\/+$/, "") ===
+    "https://uplifting-social-ai-staging.onrender.com";
+
+function diagnosticValue(value) {
+  return typeof value === "string" || typeof value === "number" ? value : null;
+}
+
+function diagnosticError(error) {
+  // Only controlled messages appear in logs. Never log a raw library/SQL error.
+  if (error instanceof AuthenticationError) {
+    return { errorClass: "AuthenticationError", errorMessage: error.code };
+  }
+  if (error instanceof TenantAuthorizationError) {
+    return { errorClass: "TenantAuthorizationError", errorMessage: error.code };
+  }
+  const sqlState = typeof error?.code === "string" &&
+    /^[0-9A-Z]{5}$/.test(error.code) ? error.code : null;
+  return {
+    errorClass: sqlState ? "DatabaseError" : "Error",
+    errorMessage: sqlState ? `SQLSTATE ${sqlState}` : "Unexpected error"
+  };
+}
+
+function mcpDiagnostic(req, event, fields = {}) {
+  if (!MCP_DIAGNOSTICS_ENABLED) return;
+  console.info(JSON.stringify({
+    timestamp: new Date().toISOString(),
+    event,
+    httpMethod: req.method,
+    path: req.path,
+    rpcMethod: diagnosticValue(req.body?.method),
+    rpcId: diagnosticValue(req.body?.id),
+    protocolVersion: diagnosticValue(req.body?.params?.protocolVersion),
+    ...fields
+  }));
+}
+
+app.use("/mcp", (req, res, next) => {
+  if (!MCP_DIAGNOSTICS_ENABLED) return next();
+  req.mcpDiagnosticStage = "authentication";
+  mcpDiagnostic(req, "request_received");
+  res.on("finish", () => mcpDiagnostic(req, "response_finished", {
+    stage: req.mcpDiagnosticStage,
+    authentication: req.mcpAuthentication || "failure",
+    sub: req.mcpAuth0Sub || null,
+    tenantId: req.principal?.tenantId || null,
+    role: req.principal?.role || null,
+    httpStatus: res.statusCode
+  }));
+  next();
+});
+
 async function authenticateMcpRequest(req, res, next) {
   const id = req.body?.id ?? null;
   const configuration = authConfiguration(process.env);
@@ -77,21 +131,49 @@ async function authenticateMcpRequest(req, res, next) {
     const token = bearerToken(req);
     if (token && configuration.oauthReady) {
       const identity = await requestVerifier(req)(token);
+      req.mcpAuth0Sub = identity.subject;
+      req.mcpDiagnosticStage = "user_authorization";
+      mcpDiagnostic(req, "jwt_verified", { sub: identity.subject });
       const services = requestServices(req);
       req.tenantServices = services;
       req.principal = await authorizeUserPrincipal({ identity, repository: services.repository });
+      req.mcpAuthentication = "success";
+      req.mcpDiagnosticStage = "mcp_handler";
+      mcpDiagnostic(req, "user_authorized", {
+        authentication: "success",
+        sub: identity.subject,
+        tenantId: req.principal.tenantId,
+        role: req.principal.role
+      });
       return next();
     }
     const suppliedAdminKey = req.get("x-api-key") || "";
     if (configuration.legacyAdminReady && suppliedAdminKey && constantTimeEqual(suppliedAdminKey, process.env.MCP_ADMIN_API_KEY)) {
       req.tenantServices = requestServices(req);
       req.principal = Object.freeze({ authType: "legacy_admin", role: "uplifting_admin", scopes: new Set(["uplifting:admin"]) });
+      req.mcpAuthentication = "success";
+      req.mcpDiagnosticStage = "mcp_handler";
+      mcpDiagnostic(req, "legacy_admin_authorized", {
+        authentication: "success", role: "uplifting_admin"
+      });
       return next();
     }
+    mcpDiagnostic(req, "authentication_failed", {
+      stage: "authentication",
+      authentication: "failure",
+      errorClass: "AuthenticationError",
+      errorMessage: "OAuth authentication required"
+    });
     const challenge = configuration.oauthReady ? oauthChallenge(process.env, { error: "invalid_token", description: "OAuth login is required." }) : null;
     if (challenge) res.set("WWW-Authenticate", challenge);
     return res.status(401).json({ jsonrpc: "2.0", id, error: { code: -32002, message: "OAuth authentication required." } });
   } catch (error) {
+    mcpDiagnostic(req, "authentication_failed", {
+      stage: req.mcpDiagnosticStage || "authentication",
+      authentication: "failure",
+      sub: req.mcpAuth0Sub || null,
+      ...diagnosticError(error)
+    });
     const expected = error instanceof AuthenticationError || error instanceof TenantAuthorizationError;
     const status = error instanceof AuthenticationError ? error.status : (error instanceof TenantAuthorizationError ? 403 : 503);
     const message = expected ? error.message : "Authentication service unavailable.";
@@ -659,16 +741,21 @@ for (const tool of tools) {
 }
 
 async function requestTenantContext(req, requestedLocationId) {
+  req.mcpDiagnosticStage = "tenant_resolution";
   const services = req.tenantServices || requestServices(req);
   if (req.principal.authType === "legacy_admin") {
-    return authorizeLegacyAdminContext({ requestedLocationId, defaultLocationId: DEFAULT_LOCATION_ID, ...services });
+    const context = await authorizeLegacyAdminContext({ requestedLocationId, defaultLocationId: DEFAULT_LOCATION_ID, ...services });
+    mcpDiagnostic(req, "tenant_resolved", { tenantId: context.tenantId, role: req.principal.role });
+    return context;
   }
-  return authorizeTenantContext({
+  const context = await authorizeTenantContext({
     tenantId: req.principal.tenantId,
     requestedLocationId,
     actor: { type: "user", userId: req.principal.userId, role: req.principal.role },
     ...services
   });
+  mcpDiagnostic(req, "tenant_resolved", { tenantId: context.tenantId, role: req.principal.role });
+  return context;
 }
 
 async function auditTool(req, values) {
@@ -709,9 +796,18 @@ app.post("/mcp", async (req, res) => {
   const request = req.body || {};
   const id = request.id ?? null;
   try {
-    if (request.method === "initialize") return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "uplifting-social-ai", version: SERVICE_VERSION } } });
-    if (request.method === "notifications/initialized") return res.status(202).end();
-    if (request.method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools } });
+    if (request.method === "initialize") {
+      mcpDiagnostic(req, "initialize_handled");
+      return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "uplifting-social-ai", version: SERVICE_VERSION } } });
+    }
+    if (request.method === "notifications/initialized") {
+      mcpDiagnostic(req, "initialized_notification_handled");
+      return res.status(202).end();
+    }
+    if (request.method === "tools/list") {
+      mcpDiagnostic(req, "tools_list_handled", { toolCount: tools.length });
+      return res.json({ jsonrpc: "2.0", id, result: { tools } });
+    }
     if (request.method === "tools/call") {
       const toolName = request.params?.name;
       const args = request.params?.arguments || {};
@@ -753,6 +849,10 @@ app.post("/mcp", async (req, res) => {
     }
     return res.json({ jsonrpc: "2.0", id, error: { code: -32601, message: `Method not found: ${request.method}` } });
   } catch (error) {
+    mcpDiagnostic(req, "mcp_handler_failed", {
+      stage: req.mcpDiagnosticStage,
+      ...diagnosticError(error)
+    });
     await auditTool(req, { toolName: request.params?.name || null, action: "tool.call", result: "failure", metadata: { errorCode: error.code || "TOOL_ERROR" } }).catch(() => {});
     if (error instanceof AuthenticationError && error.code === "insufficient_scope") {
       const challenge = oauthChallenge(process.env, { error: "insufficient_scope", description: error.message, scope: toolOAuthScopes(request.params?.name).join(" ") });
