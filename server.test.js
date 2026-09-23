@@ -68,24 +68,24 @@ test("safeFileName strips paths and control characters", () => {
   assert.equal(safeFileName("../folder/my\nimage.png", "image/png"), "myimage.png");
 });
 
-test("MCP rejects requests when MCP_ADMIN_API_KEY is missing", async () => {
-  await withProcessEnv({ MCP_ADMIN_API_KEY: undefined }, () => withTestServer(async (baseUrl) => {
+test("MCP rejects requests when OAuth and legacy admin authentication are unavailable", async () => {
+  await withProcessEnv({ MCP_ADMIN_API_KEY: undefined, ENABLE_LEGACY_ADMIN_AUTH: undefined, AUTH0_ISSUER_BASE_URL: undefined, AUTH0_AUDIENCE: undefined, MCP_RESOURCE_URL: undefined }, () => withTestServer(async (baseUrl) => {
     const response = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: 101, method: "initialize" })
     });
     const payload = await response.json();
-    assert.equal(response.status, 503);
-    assert.equal(payload.error.message, "MCP authentication is not configured.");
+    assert.equal(response.status, 401);
+    assert.equal(payload.error.message, "OAuth authentication required.");
   }));
 });
 
 test("MCP rejects missing and incorrect admin keys before tool handling", async () => {
-  await withProcessEnv({ MCP_ADMIN_API_KEY: "correct-admin-secret" }, () => withTestServer(async (baseUrl) => {
+  await withProcessEnv({ MCP_ADMIN_API_KEY: "correct-admin-secret", ENABLE_LEGACY_ADMIN_AUTH: "true" }, () => withTestServer(async (baseUrl) => {
     for (const headers of [
       { "content-type": "application/json" },
-      { "content-type": "application/json", authorization: "Bearer wrong-admin-secret" }
+      { "content-type": "application/json", "x-api-key": "wrong-admin-secret" }
     ]) {
       const response = await fetch(`${baseUrl}/mcp`, {
         method: "POST",
@@ -94,37 +94,38 @@ test("MCP rejects missing and incorrect admin keys before tool handling", async 
       });
       const text = await response.text();
       assert.equal(response.status, 401);
-      assert.match(text, /Unauthorized/);
+      assert.match(text, /OAuth authentication required/);
       assert.doesNotMatch(text, /correct-admin-secret|wrong-admin-secret|tool-that-must-not-run/);
     }
   }));
 });
 
-test("MCP accepts the correct admin key via Bearer and x-api-key", async () => {
-  await withProcessEnv({ MCP_ADMIN_API_KEY: "correct-admin-secret" }, () => withTestServer(async (baseUrl) => {
-    for (const headers of [
-      { "content-type": "application/json", authorization: "Bearer correct-admin-secret" },
-      { "content-type": "application/json", "x-api-key": "correct-admin-secret" }
-    ]) {
-      const response = await fetch(`${baseUrl}/mcp`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({ jsonrpc: "2.0", id: 103, method: "initialize" })
-      });
-      const payload = await response.json();
-      assert.equal(response.status, 200);
-      assert.equal(payload.result.serverInfo.version, "3.2.0");
-    }
+test("legacy admin key is opt-in, x-api-key only, and not accepted as OAuth Bearer", async () => {
+  await withProcessEnv({ MCP_ADMIN_API_KEY: "correct-admin-secret", ENABLE_LEGACY_ADMIN_AUTH: "true" }, () => withTestServer(async (baseUrl) => {
+    const accepted = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": "correct-admin-secret" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 103, method: "initialize" })
+    });
+    assert.equal(accepted.status, 200);
+    assert.equal((await accepted.json()).result.serverInfo.version, "3.3.0");
+
+    const rejected = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer correct-admin-secret" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 104, method: "initialize" })
+    });
+    assert.equal(rejected.status, 401);
   }));
 });
 
 test("health response contains no authentication or tenant secrets", async () => {
-  await withProcessEnv({ MCP_ADMIN_API_KEY: "health-admin-secret", LC_TENANTS_JSON: TEST_REGISTRY, LC_PRIVATE_TOKEN: "health-tenant-secret" }, () => withTestServer(async (baseUrl) => {
+  await withProcessEnv({ MCP_ADMIN_API_KEY: "health-admin-secret", ENABLE_LEGACY_ADMIN_AUTH: "true", LC_TENANTS_JSON: TEST_REGISTRY, LC_PRIVATE_TOKEN: "health-tenant-secret" }, () => withTestServer(async (baseUrl) => {
     const response = await fetch(`${baseUrl}/health`);
     const text = await response.text();
     assert.equal(response.status, 200);
     assert.doesNotMatch(text, /health-admin-secret|health-tenant-secret|LC_TENANTS_JSON|LC_PRIVATE_TOKEN/);
-    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.2.0" });
+    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.3.0" });
   }));
 });
 
@@ -133,9 +134,9 @@ test("MCP tools/list exposes the file-aware upload schema", async (t) => {
   t.after(() => server.close());
   await new Promise((resolve) => server.once("listening", resolve));
   const { port } = server.address();
-  const response = await withProcessEnv({ MCP_ADMIN_API_KEY: "schema-test-admin-key" }, () => fetch(`http://127.0.0.1:${port}/mcp`, {
+  const response = await withProcessEnv({ MCP_ADMIN_API_KEY: "schema-test-admin-key", ENABLE_LEGACY_ADMIN_AUTH: "true" }, () => fetch(`http://127.0.0.1:${port}/mcp`, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: "Bearer schema-test-admin-key" },
+    headers: { "content-type": "application/json", "x-api-key": "schema-test-admin-key" },
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" })
   }));
   const payload = await response.json();
@@ -146,6 +147,7 @@ test("MCP tools/list exposes the file-aware upload schema", async (t) => {
   assert.equal(payload.result.tools.length, 10);
   assert.ok(payload.result.tools.some((tool) => tool.name === "create_social_post"));
   assert.ok(payload.result.tools.some((tool) => tool.name === "get_social_statistics"));
+  assert.deepEqual(payload.result.tools.find((tool) => tool.name === "list_social_accounts").securitySchemes, [{ type: "oauth2", scopes: ["uplifting:read"] }]);
   const create = payload.result.tools.find((tool) => tool.name === "create_social_post");
   assert.deepEqual(create.inputSchema.required, ["userId"]);
   assert.equal(create.inputSchema.properties.splitByPlatform.type, "boolean");

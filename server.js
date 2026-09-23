@@ -1,10 +1,23 @@
 import express from "express";
 import { createHash, timingSafeEqual } from "node:crypto";
 import {
+  authorizeUserPrincipal,
+  authorizeTenantContext,
   authorizeLegacyAdminContext,
   createTenantServices,
-  LEGACY_123_GYM_LOCATION_ID
+  LEGACY_123_GYM_LOCATION_ID,
+  TenantAuthorizationError
 } from "./src/tenant-services.js";
+import {
+  AuthenticationError,
+  authConfiguration,
+  bearerToken,
+  createAuth0Verifier,
+  oauthChallenge,
+  protectedResourceMetadata,
+  requireScopes
+} from "./src/auth.js";
+import { createHighLevelOnboarding } from "./src/highlevel-onboarding.js";
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -15,12 +28,25 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.2.0";
-app.get("/", (req, res) => res.json({ status: "ok", service: "123 GYM Social Media Agent", version: SERVICE_VERSION, mcp: "/mcp" }));
+const SERVICE_VERSION = "3.3.0";
+app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
-  const configured = Boolean(process.env.MCP_ADMIN_API_KEY);
+  const configuration = authConfiguration(process.env);
+  const configured = configuration.oauthReady || configuration.legacyAdminReady;
   res.status(configured ? 200 : 503).json({ status: configured ? "healthy" : "misconfigured", version: SERVICE_VERSION });
 });
+
+app.get(["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"], (req, res) => {
+  try { return res.json(protectedResourceMetadata(process.env)); }
+  catch { return res.status(503).json({ error: "oauth_not_configured" }); }
+});
+
+app.get("/docs", (req, res) => res.json({
+  service: "Uplifting Social AI",
+  authentication: "OAuth 2.1",
+  mcp: "/mcp",
+  version: SERVICE_VERSION
+}));
 
 function constantTimeEqual(left, right) {
   const a = Buffer.from(String(left || ""));
@@ -29,20 +55,50 @@ function constantTimeEqual(left, right) {
   return timingSafeEqual(a, b);
 }
 
-function adminKeyFromRequest(req) {
-  const authorization = req.get("authorization") || "";
-  const bearer = authorization.match(/^Bearer\s+(.+)$/i)?.[1];
-  return bearer || req.get("x-api-key") || "";
+function requestServices(req) {
+  if (req.app.locals.tenantServices) return req.app.locals.tenantServices;
+  if (process.env.DATABASE_URL) {
+    if (!req.app.locals.cachedTenantServices) req.app.locals.cachedTenantServices = createTenantServices(process.env);
+    return req.app.locals.cachedTenantServices;
+  }
+  return createTenantServices(process.env);
 }
 
-function authenticateMcpRequest(req, res, next) {
-  const expected = process.env.MCP_ADMIN_API_KEY;
+function requestVerifier(req) {
+  if (req.app.locals.auth0Verifier) return req.app.locals.auth0Verifier;
+  if (!req.app.locals.cachedAuth0Verifier) req.app.locals.cachedAuth0Verifier = createAuth0Verifier(process.env);
+  return req.app.locals.cachedAuth0Verifier;
+}
+
+async function authenticateMcpRequest(req, res, next) {
   const id = req.body?.id ?? null;
-  if (!expected) return res.status(503).json({ jsonrpc: "2.0", id, error: { code: -32001, message: "MCP authentication is not configured." } });
-  if (!constantTimeEqual(adminKeyFromRequest(req), expected)) {
-    return res.status(401).json({ jsonrpc: "2.0", id, error: { code: -32002, message: "Unauthorized." } });
+  const configuration = authConfiguration(process.env);
+  try {
+    const token = bearerToken(req);
+    if (token && configuration.oauthReady) {
+      const identity = await requestVerifier(req)(token);
+      const services = requestServices(req);
+      req.tenantServices = services;
+      req.principal = await authorizeUserPrincipal({ identity, repository: services.repository });
+      return next();
+    }
+    const suppliedAdminKey = req.get("x-api-key") || "";
+    if (configuration.legacyAdminReady && suppliedAdminKey && constantTimeEqual(suppliedAdminKey, process.env.MCP_ADMIN_API_KEY)) {
+      req.tenantServices = requestServices(req);
+      req.principal = Object.freeze({ authType: "legacy_admin", role: "uplifting_admin", scopes: new Set(["uplifting:admin"]) });
+      return next();
+    }
+    const challenge = configuration.oauthReady ? oauthChallenge(process.env, { error: "invalid_token", description: "OAuth login is required." }) : null;
+    if (challenge) res.set("WWW-Authenticate", challenge);
+    return res.status(401).json({ jsonrpc: "2.0", id, error: { code: -32002, message: "OAuth authentication required." } });
+  } catch (error) {
+    const expected = error instanceof AuthenticationError || error instanceof TenantAuthorizationError;
+    const status = error instanceof AuthenticationError ? error.status : (error instanceof TenantAuthorizationError ? 403 : 503);
+    const message = expected ? error.message : "Authentication service unavailable.";
+    const challenge = configuration.oauthReady ? oauthChallenge(process.env, { error: error.code || "invalid_token", description: message }) : null;
+    if (challenge) res.set("WWW-Authenticate", challenge);
+    return res.status(status).json({ jsonrpc: "2.0", id, error: { code: -32002, message } });
   }
-  return next();
 }
 
 function tenantRegistry(env = process.env) {
@@ -107,6 +163,12 @@ function redactSecrets(value, env = process.env) {
   for (const tenant of Object.values(registry)) {
     const token = env[tenant.tokenEnv];
     if (token) safe = safe.split(token).join("[REDACTED]");
+  }
+  for (const name of [
+    "MCP_ADMIN_API_KEY", "DATABASE_URL", "AUTH0_CLIENT_SECRET", "HIGHLEVEL_CLIENT_SECRET",
+    "TENANT_CREDENTIAL_ENCRYPTION_KEY", "LC_PRIVATE_TOKEN", "LC_PRIVATE_TOKEN_TESTING_AGENCY"
+  ]) {
+    if (env[name]) safe = safe.split(env[name]).join("[REDACTED]");
   }
   return safe;
 }
@@ -563,33 +625,114 @@ const tools = [
   }
 ];
 
+const READ_ONLY_TOOLS = new Set([
+  "search_leadconnector_media", "inspect_media", "list_social_accounts", "list_social_posts",
+  "get_social_post", "get_social_statistics"
+]);
+const DELETE_TOOLS = new Set(["delete_social_post"]);
+
+function toolOAuthScopes(toolName) {
+  return READ_ONLY_TOOLS.has(toolName) ? ["uplifting:read"] : ["uplifting:write"];
+}
+
+function authorizeTool(principal, toolName) {
+  requireScopes(principal, toolOAuthScopes(toolName));
+  if (principal.authType === "legacy_admin") return;
+  const role = principal.role;
+  if (READ_ONLY_TOOLS.has(toolName)) return;
+  if (DELETE_TOOLS.has(toolName) && !["tenant_owner", "tenant_admin", "uplifting_admin"].includes(role)) {
+    const error = new Error("Tenant administrator permission is required for this action.");
+    error.code = "TENANT_ROLE_FORBIDDEN";
+    throw error;
+  }
+  if (!["tenant_owner", "tenant_admin", "editor", "uplifting_admin"].includes(role)) {
+    const error = new Error("This membership role is read-only.");
+    error.code = "TENANT_ROLE_FORBIDDEN";
+    throw error;
+  }
+}
+
+for (const tool of tools) {
+  const securitySchemes = [{ type: "oauth2", scopes: toolOAuthScopes(tool.name) }];
+  tool.securitySchemes = securitySchemes;
+  tool._meta = { ...(tool._meta || {}), securitySchemes };
+}
+
+async function requestTenantContext(req, requestedLocationId) {
+  const services = req.tenantServices || requestServices(req);
+  if (req.principal.authType === "legacy_admin") {
+    return authorizeLegacyAdminContext({ requestedLocationId, defaultLocationId: DEFAULT_LOCATION_ID, ...services });
+  }
+  return authorizeTenantContext({
+    tenantId: req.principal.tenantId,
+    requestedLocationId,
+    actor: { type: "user", userId: req.principal.userId, role: req.principal.role },
+    ...services
+  });
+}
+
+async function auditTool(req, values) {
+  const repository = req.tenantServices?.repository;
+  if (!repository?.recordAuditEvent) return;
+  await repository.recordAuditEvent({
+    actorUserId: req.principal?.userId || null,
+    tenantId: req.principal?.tenantId || values.tenantId || null,
+    requestId: req.body?.id == null ? null : String(req.body.id),
+    ...values
+  });
+}
+
+app.post("/onboarding/highlevel/start", authenticateMcpRequest, async (req, res) => {
+  try {
+    if (req.principal.authType !== "oauth") return res.status(403).json({ error: "oauth_user_required" });
+    requireScopes(req.principal, ["uplifting:write"]);
+    const result = await createHighLevelOnboarding({ env: process.env, repository: req.tenantServices.repository }).start(req.principal);
+    return res.json(result);
+  } catch (error) {
+    return res.status(error.status || 400).json({ error: redactSecrets(error.message) });
+  }
+});
+
+app.get("/oauth/callback/highlevel", async (req, res) => {
+  const services = requestServices(req);
+  try {
+    const result = await createHighLevelOnboarding({ env: process.env, repository: services.repository }).callback(req.query);
+    return res.json(result);
+  } catch (error) {
+    return res.status(400).json({ error: redactSecrets(error.message) });
+  }
+});
+
 app.use("/mcp", authenticateMcpRequest);
 
 app.post("/mcp", async (req, res) => {
   const request = req.body || {};
   const id = request.id ?? null;
   try {
-    if (request.method === "initialize") return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "123gym-social-media-agent", version: SERVICE_VERSION } } });
+    if (request.method === "initialize") return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "uplifting-social-ai", version: SERVICE_VERSION } } });
     if (request.method === "notifications/initialized") return res.status(202).end();
     if (request.method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools } });
     if (request.method === "tools/call") {
       const toolName = request.params?.name;
       const args = request.params?.arguments || {};
-      const authorizedContext = await authorizeLegacyAdminContext({
-        requestedLocationId: args.locationId,
-        defaultLocationId: DEFAULT_LOCATION_ID,
-        ...createTenantServices(process.env)
-      });
+      const tool = tools.find((item) => item.name === toolName);
+      if (!tool) throw new Error(`Unknown tool: ${toolName}`);
+      authorizeTool(req.principal, toolName);
+      const authorizedContext = await requestTenantContext(req, args.locationId);
+      let result;
       if (toolName === "upload_leadconnector_media") {
-        const result = await uploadMedia(args, authorizedContext);
+        result = await uploadMedia(args, authorizedContext);
+        await auditTool(req, { tenantId: authorizedContext.tenantId, toolName, action: "tool.call", result: "success", metadata: { locationId: authorizedContext.locationId } });
         return res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Uploaded to LeadConnector: ${result.url || result.fileId || "success"}` }], structuredContent: result } });
       }
       if (toolName === "search_leadconnector_media") {
-        const result = await listMedia(args, authorizedContext);
+        result = await listMedia(args, authorizedContext);
+        await auditTool(req, { tenantId: authorizedContext.tenantId, toolName, action: "tool.call", result: "success", metadata: { locationId: authorizedContext.locationId } });
         return res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result } });
       }
       if (toolName === "inspect_media") {
-        const result = await inspectMedia(args, authorizedContext);
+        result = await inspectMedia(args, authorizedContext);
+        await auditTool(req, { tenantId: authorizedContext.tenantId, toolName, action: "tool.call", result: "success", metadata: { locationId: authorizedContext.locationId } });
         return res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Media: ${result.name}\nSource: ${result.sourceUrl}` }, { type: "image", data: result.base64, mimeType: result.mimeType }] } });
       }
       const socialHandlers = {
@@ -602,24 +745,31 @@ app.post("/mcp", async (req, res) => {
         get_social_statistics: getSocialStatistics
       };
       if (socialHandlers[toolName]) {
-        const result = await socialHandlers[toolName](args, authorizedContext);
+        result = await socialHandlers[toolName](args, authorizedContext);
+        await auditTool(req, { tenantId: authorizedContext.tenantId, toolName, action: "tool.call", result: "success", metadata: { locationId: authorizedContext.locationId } });
         return res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result } });
       }
       throw new Error(`Unknown tool: ${toolName}`);
     }
     return res.json({ jsonrpc: "2.0", id, error: { code: -32601, message: `Method not found: ${request.method}` } });
   } catch (error) {
-    return res.json({ jsonrpc: "2.0", id, error: { code: -32000, message: error.message } });
+    await auditTool(req, { toolName: request.params?.name || null, action: "tool.call", result: "failure", metadata: { errorCode: error.code || "TOOL_ERROR" } }).catch(() => {});
+    if (error instanceof AuthenticationError && error.code === "insufficient_scope") {
+      const challenge = oauthChallenge(process.env, { error: "insufficient_scope", description: error.message, scope: toolOAuthScopes(request.params?.name).join(" ") });
+      return res.json({ jsonrpc: "2.0", id, result: { isError: true, content: [{ type: "text", text: error.message }], _meta: { "mcp/www_authenticate": [challenge] } } });
+    }
+    return res.json({ jsonrpc: "2.0", id, error: { code: -32000, message: redactSecrets(error.message) } });
   }
 });
 
 const isMainModule = process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;
 if (isMainModule) {
-  if (!process.env.MCP_ADMIN_API_KEY) {
-    console.error("MCP_ADMIN_API_KEY is required; refusing to start.");
+  const configuration = authConfiguration(process.env);
+  if (!configuration.oauthReady && !configuration.legacyAdminReady) {
+    console.error("OAuth is not configured and legacy admin authentication is not explicitly enabled; refusing to start.");
     process.exitCode = 1;
   } else {
-    app.listen(PORT, "0.0.0.0", () => console.log(`123 GYM Social Media Agent v${SERVICE_VERSION} listening on port ${PORT}`));
+    app.listen(PORT, "0.0.0.0", () => console.log(`Uplifting Social AI v${SERVICE_VERSION} listening on port ${PORT}`));
   }
 }
 

@@ -1,13 +1,14 @@
 {
   "name": "123gym-media-mcp",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "description": "Social Media Agent MCP for LeadConnector and ChatGPT",
   "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "test": "node --test",
-    "migrate": "node scripts/migrate.js"
+    "migrate": "node scripts/migrate.js",
+    "check:config": "node scripts/check-config.js"
   },
   "engines": {
     "node": ">=20"
@@ -15,6 +16,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.18.1",
     "express": "^5.1.0",
+    "jose": "^6.2.12",
     "pg": "^8.16.3",
     "zod": "^3.25.0"
   }
