@@ -129,6 +129,46 @@ test("health response contains no authentication or tenant secrets", async () =>
   }));
 });
 
+test("tool schema debug endpoint is disabled by default", async () => {
+  await withProcessEnv({
+    MCP_DEBUG_TOOL_SCHEMA: undefined,
+    RENDER_SERVICE_ID: "srv-dapsmt5g1s2s73d9sp7g",
+    RENDER_EXTERNAL_HOSTNAME: "uplifting-social-ai-staging.onrender.com",
+    RENDER_GIT_BRANCH: "feature/oauth-multitenant-v1"
+  }, () => withTestServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/debug/tool-schema`);
+    assert.equal(response.status, 404);
+    assert.equal(await response.text(), "");
+  }));
+});
+
+test("tool schema debug endpoint returns absent required on staging", async () => {
+  await withProcessEnv({
+    MCP_DEBUG_TOOL_SCHEMA: "true",
+    RENDER_SERVICE_ID: "srv-dapsmt5g1s2s73d9sp7g",
+    RENDER_EXTERNAL_HOSTNAME: "uplifting-social-ai-staging.onrender.com",
+    RENDER_GIT_BRANCH: "feature/oauth-multitenant-v1"
+  }, () => withTestServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/debug/tool-schema`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { requiredPresent: false });
+    assert.equal(response.headers.get("cache-control"), "no-store");
+  }));
+});
+
+test("tool schema debug endpoint rejects a different service ID", async () => {
+  await withProcessEnv({
+    MCP_DEBUG_TOOL_SCHEMA: "true",
+    RENDER_SERVICE_ID: "srv-other-service",
+    RENDER_EXTERNAL_HOSTNAME: "uplifting-social-ai-staging.onrender.com",
+    RENDER_GIT_BRANCH: "feature/oauth-multitenant-v1"
+  }, () => withTestServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/debug/tool-schema`);
+    assert.equal(response.status, 404);
+    assert.equal(await response.text(), "");
+  }));
+});
+
 test("MCP tools/list exposes the file-aware upload schema", async (t) => {
   const server = app.listen(0, "127.0.0.1");
   t.after(() => server.close());

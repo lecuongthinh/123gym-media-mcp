@@ -790,6 +790,24 @@ app.get("/oauth/callback/highlevel", async (req, res) => {
   }
 });
 
+app.get("/debug/tool-schema", (req, res) => {
+  const enabled =
+    process.env.MCP_DEBUG_TOOL_SCHEMA === "true" &&
+    process.env.RENDER_SERVICE_ID === "srv-dapsmt5g1s2s73d9sp7g" &&
+    process.env.RENDER_EXTERNAL_HOSTNAME === "uplifting-social-ai-staging.onrender.com" &&
+    process.env.RENDER_GIT_BRANCH === "feature/oauth-multitenant-v1";
+
+  if (!enabled) return res.status(404).end();
+
+  const schema = tools.find((tool) => tool.name === "create_social_post")?.inputSchema;
+  if (!schema) return res.status(404).end();
+
+  res.set("Cache-Control", "no-store");
+  return res.json(Object.hasOwn(schema, "required")
+    ? { requiredPresent: true, required: schema.required }
+    : { requiredPresent: false });
+});
+
 app.use("/mcp", authenticateMcpRequest);
 
 app.post("/mcp", async (req, res) => {
