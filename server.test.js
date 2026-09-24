@@ -149,7 +149,7 @@ test("MCP tools/list exposes the file-aware upload schema", async (t) => {
   assert.ok(payload.result.tools.some((tool) => tool.name === "get_social_statistics"));
   assert.deepEqual(payload.result.tools.find((tool) => tool.name === "list_social_accounts").securitySchemes, [{ type: "oauth2", scopes: ["uplifting:read"] }]);
   const create = payload.result.tools.find((tool) => tool.name === "create_social_post");
-  assert.deepEqual(create.inputSchema.required, ["userId"]);
+  assert.equal(create.inputSchema.required?.includes("userId") ?? false, false);
   assert.equal(create.inputSchema.properties.splitByPlatform.type, "boolean");
 });
 
@@ -173,7 +173,16 @@ test("social posts default to a safe draft", () => {
     type: "post"
   });
   assert.throws(() => buildSocialPostBody({ summary: "Hello" }), /accountIds/);
-  assert.throws(() => buildSocialPostBody({ summary: "Hello", accountIds: ["a"] }), /userId/);
+  assert.deepEqual(buildSocialPostBody({ summary: "Hello", accountIds: ["a"], status: "draft" }), {
+    summary: "Hello",
+    accountIds: ["a"],
+    status: "draft",
+    type: "post"
+  });
+});
+
+test("non-draft social posts still require userId", () => {
+  assert.throws(() => buildSocialPostBody({ status: "published", accountIds: ["a"] }), /userId/);
 });
 
 test("scheduled posts require scheduleDate and accounts", () => {

@@ -486,7 +486,7 @@ function buildSocialPostBody(args, { partial = false } = {}) {
   if (!partial && (!Array.isArray(body.accountIds) || body.accountIds.length === 0)) {
     throw new Error("accountIds must be a non-empty array. Call list_social_accounts first.");
   }
-  if (!partial && (typeof body.userId !== "string" || !body.userId.trim())) {
+  if (!partial && status !== "draft" && (typeof body.userId !== "string" || !body.userId.trim())) {
     throw new Error("userId is required to create a Social Planner post.");
   }
   if (status === "in_review" && !body.postApprovalDetails?.approver) {
@@ -675,7 +675,7 @@ const tools = [
     name: "create_social_post",
     title: "Create social post",
     description: "Create a brand-safe LeadConnector Social Planner post. Defaults to draft, auto-selects eligible 123 GYM accounts when omitted, splits Facebook and Google, prevents exact retries, and verifies the result through list_social_posts.",
-    inputSchema: { type: "object", properties: { ...socialPostProperties, verify: { type: "boolean", description: "Verify creation through the list endpoint. Defaults true." }, splitByPlatform: { type: "boolean", description: "Split Facebook and Google into separate create requests. Defaults true." } }, required: ["userId"] },
+    inputSchema: { type: "object", properties: { ...socialPostProperties, verify: { type: "boolean", description: "Verify creation through the list endpoint. Defaults true." }, splitByPlatform: { type: "boolean", description: "Split Facebook and Google into separate create requests. Defaults true." } } },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     _meta: { "openai/toolInvocation/invoking": "Creating social post…", "openai/toolInvocation/invoked": "Social post created" }
   },
