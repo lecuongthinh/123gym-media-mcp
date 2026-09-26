@@ -58,6 +58,7 @@ async function withTestServer(fn) {
   try { return await fn(`http://127.0.0.1:${server.address().port}`); } finally {
     delete app.locals.auth0Verifier;
     delete app.locals.tenantServices;
+    delete app.locals.draftDiagnosticState;
     await new Promise((resolve) => server.close(resolve));
   }
 }
@@ -110,6 +111,51 @@ function draftTestServices(credentialLocationId = TEST_LOCATION) {
         return { accessToken: "testing-agency-access-token", locationId: credentialLocationId };
       }
     }
+  };
+}
+
+function configureDraftOAuth(state = { attempted: false }) {
+  app.locals.auth0Verifier = async () => ({
+    subject: "auth0|testing-user",
+    tenantIdClaim: TEST_TENANT_ID,
+    scopes: new Set(["uplifting:write"])
+  });
+  app.locals.tenantServices = draftTestServices();
+  app.locals.draftDiagnosticState = state;
+}
+
+function callMcp(baseUrl, method, params, id = 1) {
+  return fetch(`${baseUrl}/mcp`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: "Bearer signed-user-token" },
+    body: JSON.stringify({ jsonrpc: "2.0", id, method, ...(params ? { params } : {}) })
+  });
+}
+
+function callRestDiagnostic(baseUrl) {
+  return fetch(`${baseUrl}/debug/test-draft-without-userid`, {
+    method: "POST",
+    headers: { authorization: "Bearer signed-user-token" }
+  });
+}
+
+function mockDraftOutbound(realFetch, counter) {
+  return async (url, options) => {
+    if (!String(url).startsWith("https://services.leadconnectorhq.com/")) return realFetch(url, options);
+    counter.count += 1;
+    assert.equal(String(url), `https://services.leadconnectorhq.com/social-media-posting/${TEST_LOCATION}/posts`);
+    assert.equal(options.method, "POST");
+    const body = JSON.parse(options.body);
+    assert.deepEqual(body, {
+      accountIds: [TEST_ACCOUNT_ID],
+      summary: "[STAGING TEST] Kiểm tra tạo bài nháp không cần userId. Không xuất bản.",
+      status: "draft",
+      type: "post"
+    });
+    assert.equal(Object.hasOwn(body, "userId"), false);
+    assert.equal(Object.hasOwn(body, "scheduleDate"), false);
+    assert.equal(Object.hasOwn(body, "postApprovalDetails"), false);
+    return new Response(JSON.stringify({ _id: "mock-draft-id", status: "draft" }), { status: 201 });
   };
 }
 
@@ -226,6 +272,40 @@ test("tool schema debug endpoint rejects a different service ID", async () => {
   }));
 });
 
+test("debug draft MCP tool is absent when its flag is off", async () => {
+  await withProcessEnv(draftDebugEnv({ MCP_DEBUG_TEST_DRAFT_WITHOUT_USERID: undefined }), () => withTestServer(async (baseUrl) => {
+    configureDraftOAuth();
+    const response = await callMcp(baseUrl, "tools/list");
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(payload.result.tools.some((tool) => tool.name === "debug_test_draft_without_userid"), false);
+  }));
+});
+
+test("debug draft MCP tool is absent for a wrong Render identity", async () => {
+  await withProcessEnv(draftDebugEnv({ RENDER_SERVICE_ID: "srv-not-staging" }), () => withTestServer(async (baseUrl) => {
+    configureDraftOAuth();
+    const response = await callMcp(baseUrl, "tools/list");
+    const payload = await response.json();
+    assert.equal(payload.result.tools.some((tool) => tool.name === "debug_test_draft_without_userid"), false);
+  }));
+});
+
+test("debug draft MCP tool appears on staging with an empty closed schema", async () => {
+  await withProcessEnv(draftDebugEnv(), () => withTestServer(async (baseUrl) => {
+    configureDraftOAuth();
+    const response = await callMcp(baseUrl, "tools/list");
+    const payload = await response.json();
+    const matches = payload.result.tools.filter((tool) => tool.name === "debug_test_draft_without_userid");
+    assert.equal(matches.length, 1);
+    assert.deepEqual(matches[0].inputSchema, { type: "object", properties: {}, additionalProperties: false });
+    assert.deepEqual(matches[0].securitySchemes, [{ type: "oauth2", scopes: ["uplifting:write"] }]);
+    for (const forbidden of ["locationId", "accountIds", "userId", "status", "body", "scheduleDate", "postApprovalDetails"]) {
+      assert.equal(Object.hasOwn(matches[0].inputSchema.properties, forbidden), false);
+    }
+  }));
+});
+
 test("draft diagnostic endpoint is disabled by default", async () => {
   let outboundCreateCount = 0;
   const realFetch = globalThis.fetch;
@@ -271,7 +351,10 @@ test("draft diagnostic endpoint fails closed on credential location mismatch", a
       headers: { authorization: "Bearer signed-user-token" }
     });
     assert.equal(response.status, 412);
-    assert.deepEqual(await response.json(), { error: "testing_agency_credential_precondition_failed" });
+    assert.deepEqual(await response.json(), {
+      error: "testing_agency_credential_precondition_failed",
+      message: "Testing Agency credential precondition failed."
+    });
     assert.equal(outboundCreateCount, 0);
   })));
 });
@@ -309,6 +392,7 @@ test("draft diagnostic sends one fixed request and is one-shot per process", asy
       scopes: new Set(["uplifting:write"])
     });
     app.locals.tenantServices = draftTestServices();
+    app.locals.draftDiagnosticState = { attempted: false };
     const request = () => fetch(`${baseUrl}/debug/test-draft-without-userid`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer signed-user-token" },
@@ -328,8 +412,63 @@ test("draft diagnostic sends one fixed request and is one-shot per process", asy
 
     const second = await request();
     assert.equal(second.status, 409);
-    assert.deepEqual(await second.json(), { error: "draft_diagnostic_already_attempted" });
+    assert.deepEqual(await second.json(), {
+      error: "draft_diagnostic_already_attempted",
+      message: "Draft diagnostic has already been attempted."
+    });
     assert.equal(outboundCreateCount, 1);
+  })));
+});
+
+test("debug draft MCP tool sends one mocked POST and blocks its second invocation", async () => {
+  const counter = { count: 0 };
+  const realFetch = globalThis.fetch;
+  await withProcessEnv(draftDebugEnv(), () => withMockFetch(mockDraftOutbound(realFetch, counter), () => withTestServer(async (baseUrl) => {
+    configureDraftOAuth();
+    const first = await callMcp(baseUrl, "tools/call", { name: "debug_test_draft_without_userid", arguments: {} }, 201);
+    const firstPayload = await first.json();
+    assert.equal(firstPayload.result.structuredContent.highLevelHttpStatus, 201);
+    assert.equal(firstPayload.result.structuredContent.status, "draft");
+    assert.equal(counter.count, 1);
+
+    const second = await callMcp(baseUrl, "tools/call", { name: "debug_test_draft_without_userid", arguments: {} }, 202);
+    const secondPayload = await second.json();
+    assert.match(secondPayload.error.message, /already been attempted/);
+    assert.equal(counter.count, 1);
+  })));
+});
+
+test("REST then MCP share the same draft diagnostic latch", async () => {
+  const counter = { count: 0 };
+  const realFetch = globalThis.fetch;
+  await withProcessEnv(draftDebugEnv(), () => withMockFetch(mockDraftOutbound(realFetch, counter), () => withTestServer(async (baseUrl) => {
+    configureDraftOAuth();
+    const rest = await callRestDiagnostic(baseUrl);
+    assert.equal(rest.status, 200);
+    assert.equal(counter.count, 1);
+
+    const mcp = await callMcp(baseUrl, "tools/call", { name: "debug_test_draft_without_userid", arguments: {} }, 203);
+    assert.match((await mcp.json()).error.message, /already been attempted/);
+    assert.equal(counter.count, 1);
+  })));
+});
+
+test("MCP then REST share the same draft diagnostic latch", async () => {
+  const counter = { count: 0 };
+  const realFetch = globalThis.fetch;
+  await withProcessEnv(draftDebugEnv(), () => withMockFetch(mockDraftOutbound(realFetch, counter), () => withTestServer(async (baseUrl) => {
+    configureDraftOAuth();
+    const mcp = await callMcp(baseUrl, "tools/call", { name: "debug_test_draft_without_userid", arguments: {} }, 204);
+    assert.equal((await mcp.json()).result.structuredContent.highLevelHttpStatus, 201);
+    assert.equal(counter.count, 1);
+
+    const rest = await callRestDiagnostic(baseUrl);
+    assert.equal(rest.status, 409);
+    assert.deepEqual(await rest.json(), {
+      error: "draft_diagnostic_already_attempted",
+      message: "Draft diagnostic has already been attempted."
+    });
+    assert.equal(counter.count, 1);
   })));
 });
 
