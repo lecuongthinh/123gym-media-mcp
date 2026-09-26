@@ -29,6 +29,16 @@ const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
 const SERVICE_VERSION = "3.3.0";
+const TESTING_AGENCY_TENANT_ID = "00000000-0000-4000-8000-000000000124";
+const TEST_DRAFT_LOCATION_ID = "UwsfBVLmz7XSKJbhuOTS";
+const TEST_DRAFT_ACCOUNT_ID = "68c83389c2ef4245a387b54f_UwsfBVLmz7XSKJbhuOTS_112256467241215_page";
+const TEST_DRAFT_BODY = Object.freeze({
+  accountIds: Object.freeze([TEST_DRAFT_ACCOUNT_ID]),
+  summary: "[STAGING TEST] Kiểm tra tạo bài nháp không cần userId. Không xuất bản.",
+  status: "draft",
+  type: "post"
+});
+let draftDiagnosticAttempted = false;
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -124,19 +134,24 @@ app.use("/mcp", (req, res, next) => {
   next();
 });
 
+async function resolveOAuthPrincipal(req, token) {
+  const identity = await requestVerifier(req)(token);
+  const services = requestServices(req);
+  req.tenantServices = services;
+  req.principal = await authorizeUserPrincipal({ identity, repository: services.repository });
+  return identity;
+}
+
 async function authenticateMcpRequest(req, res, next) {
   const id = req.body?.id ?? null;
   const configuration = authConfiguration(process.env);
   try {
     const token = bearerToken(req);
     if (token && configuration.oauthReady) {
-      const identity = await requestVerifier(req)(token);
+      const identity = await resolveOAuthPrincipal(req, token);
       req.mcpAuth0Sub = identity.subject;
       req.mcpDiagnosticStage = "user_authorization";
       mcpDiagnostic(req, "jwt_verified", { sub: identity.subject });
-      const services = requestServices(req);
-      req.tenantServices = services;
-      req.principal = await authorizeUserPrincipal({ identity, repository: services.repository });
       req.mcpAuthentication = "success";
       req.mcpDiagnosticStage = "mcp_handler";
       mcpDiagnostic(req, "user_authorized", {
@@ -253,6 +268,24 @@ function redactSecrets(value, env = process.env) {
     if (env[name]) safe = safe.split(env[name]).join("[REDACTED]");
   }
   return safe;
+}
+
+function sanitizeDebugResponse(value, accessToken) {
+  if (Array.isArray(value)) return value.map((item) => sanitizeDebugResponse(item, accessToken));
+  if (value && typeof value === "object") {
+    const safe = {};
+    for (const [key, item] of Object.entries(value)) {
+      if (/authorization|cookie|token|secret|password|credential/i.test(key)) continue;
+      safe[key] = sanitizeDebugResponse(item, accessToken);
+    }
+    return safe;
+  }
+  if (typeof value === "string") {
+    let safe = redactSecrets(value);
+    if (accessToken) safe = safe.split(accessToken).join("[REDACTED]");
+    return safe;
+  }
+  return value;
 }
 
 function validateLocationBinding(path, locationId) {
@@ -806,6 +839,119 @@ app.get("/debug/tool-schema", (req, res) => {
   return res.json(Object.hasOwn(schema, "required")
     ? { requiredPresent: true, required: schema.required }
     : { requiredPresent: false });
+});
+
+function requireDraftDebugStaging(req, res, next) {
+  res.set("Cache-Control", "no-store");
+  const enabled =
+    process.env.MCP_DEBUG_TEST_DRAFT_WITHOUT_USERID === "true" &&
+    process.env.RENDER_SERVICE_ID === "srv-dapsmt5g1s2s73d9sp7g" &&
+    process.env.RENDER_EXTERNAL_HOSTNAME === "uplifting-social-ai-staging.onrender.com" &&
+    process.env.RENDER_GIT_BRANCH === "feature/oauth-multitenant-v1";
+  if (!enabled) return res.status(404).end();
+  return next();
+}
+
+async function authenticateDebugOAuthRequest(req, res, next) {
+  const configuration = authConfiguration(process.env);
+  try {
+    const token = bearerToken(req);
+    if (!configuration.oauthReady || !token) throw new AuthenticationError("OAuth authentication required.");
+    await resolveOAuthPrincipal(req, token);
+    return next();
+  } catch (error) {
+    const expected = error instanceof AuthenticationError || error instanceof TenantAuthorizationError;
+    const status = error instanceof AuthenticationError ? error.status : (error instanceof TenantAuthorizationError ? 403 : 503);
+    const message = expected ? error.message : "Authentication service unavailable.";
+    if (configuration.oauthReady) {
+      res.set("WWW-Authenticate", oauthChallenge(process.env, { error: error.code || "invalid_token", description: message }));
+    }
+    return res.status(status).json({ error: error.code || "authentication_failed", message });
+  }
+}
+
+app.post("/debug/test-draft-without-userid", requireDraftDebugStaging, authenticateDebugOAuthRequest, async (req, res) => {
+  let accessToken;
+  try {
+    if (req.principal?.authType !== "oauth" || req.principal?.tenantId !== TESTING_AGENCY_TENANT_ID) {
+      return res.status(403).json({ error: "testing_agency_oauth_required" });
+    }
+    authorizeTool(req.principal, "create_social_post");
+
+    const services = req.tenantServices || requestServices(req);
+    const connection = await services.repository.findActiveConnectionByTenantId(TESTING_AGENCY_TENANT_ID);
+    if (
+      !connection ||
+      connection.tenant_id !== TESTING_AGENCY_TENANT_ID ||
+      connection.location_id !== TEST_DRAFT_LOCATION_ID ||
+      connection.auth_type !== "private_integration_token" ||
+      connection.credential_type !== "private_integration_token" ||
+      connection.secret_backend !== "environment" ||
+      connection.secret_ref !== "env://LC_PRIVATE_TOKEN_TESTING_AGENCY"
+    ) {
+      return res.status(412).json({ error: "testing_agency_connection_precondition_failed" });
+    }
+
+    const credential = await services.credentialProvider.getAccess(connection);
+    if (
+      credential?.locationId !== TEST_DRAFT_LOCATION_ID ||
+      typeof credential?.accessToken !== "string" ||
+      credential.accessToken.length === 0
+    ) {
+      return res.status(412).json({ error: "testing_agency_credential_precondition_failed" });
+    }
+    accessToken = credential.accessToken;
+
+    const body = TEST_DRAFT_BODY;
+    if (
+      body.status !== "draft" ||
+      body.type !== "post" ||
+      body.accountIds.length !== 1 ||
+      body.accountIds[0] !== TEST_DRAFT_ACCOUNT_ID ||
+      Object.hasOwn(body, "userId") ||
+      Object.hasOwn(body, "scheduleDate") ||
+      Object.hasOwn(body, "postApprovalDetails")
+    ) {
+      return res.status(412).json({ error: "draft_body_precondition_failed" });
+    }
+
+    const path = `/social-media-posting/${encodeURIComponent(TEST_DRAFT_LOCATION_ID)}/posts`;
+    validateLocationBinding(path, TEST_DRAFT_LOCATION_ID);
+
+    if (draftDiagnosticAttempted) return res.status(409).json({ error: "draft_diagnostic_already_attempted" });
+    draftDiagnosticAttempted = true;
+
+    const highLevelResponse = await fetch(`${LC_BASE_URL}${path}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${credential.accessToken}`,
+        Version: "v3",
+        Accept: "application/json",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body)
+    });
+
+    const responseText = await highLevelResponse.text();
+    let responseBody;
+    try { responseBody = JSON.parse(responseText); } catch { responseBody = { raw: responseText }; }
+    const sanitizedResponse = sanitizeDebugResponse(responseBody, credential.accessToken);
+    const post = responseBody?.post || responseBody?.data || responseBody;
+    const postId = typeof (post?._id || post?.id) === "string" ? post._id || post.id : null;
+    const actualStatus = typeof post?.status === "string" ? post.status : null;
+
+    return res.status(highLevelResponse.ok ? 200 : 502).json({
+      highLevelHttpStatus: highLevelResponse.status,
+      response: sanitizedResponse,
+      ...(postId ? { postId } : {}),
+      ...(actualStatus ? { status: actualStatus } : {})
+    });
+  } catch (error) {
+    return res.status(502).json({
+      error: "draft_test_failed",
+      message: sanitizeDebugResponse(error?.message, accessToken)
+    });
+  }
 });
 
 app.use("/mcp", authenticateMcpRequest);

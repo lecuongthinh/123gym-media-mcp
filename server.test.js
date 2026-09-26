@@ -16,6 +16,8 @@ import {
 
 const GYM_LOCATION = "pUePVc6UKEUecvZS6EYU";
 const TEST_LOCATION = "UwsfBVLmz7XSKJbhuOTS";
+const TEST_TENANT_ID = "00000000-0000-4000-8000-000000000124";
+const TEST_ACCOUNT_ID = "68c83389c2ef4245a387b54f_UwsfBVLmz7XSKJbhuOTS_112256467241215_page";
 const TEST_REGISTRY = JSON.stringify({
   [GYM_LOCATION]: { name: "123 GYM", tokenEnv: "LC_PRIVATE_TOKEN" },
   [TEST_LOCATION]: { name: "Testing Agency", tokenEnv: "LC_PRIVATE_TOKEN_TESTING_AGENCY" }
@@ -53,7 +55,62 @@ async function withMockFetch(mock, fn) {
 async function withTestServer(fn) {
   const server = app.listen(0, "127.0.0.1");
   await new Promise((resolve) => server.once("listening", resolve));
-  try { return await fn(`http://127.0.0.1:${server.address().port}`); } finally { await new Promise((resolve) => server.close(resolve)); }
+  try { return await fn(`http://127.0.0.1:${server.address().port}`); } finally {
+    delete app.locals.auth0Verifier;
+    delete app.locals.tenantServices;
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+function draftDebugEnv(overrides = {}) {
+  return {
+    MCP_DEBUG_TEST_DRAFT_WITHOUT_USERID: "true",
+    RENDER_SERVICE_ID: "srv-dapsmt5g1s2s73d9sp7g",
+    RENDER_EXTERNAL_HOSTNAME: "uplifting-social-ai-staging.onrender.com",
+    RENDER_GIT_BRANCH: "feature/oauth-multitenant-v1",
+    AUTH0_ISSUER_BASE_URL: "https://uplifting-test.auth0.com/",
+    AUTH0_AUDIENCE: "https://uplifting-social-ai-staging.onrender.com",
+    MCP_RESOURCE_URL: "https://uplifting-social-ai-staging.onrender.com",
+    ...overrides
+  };
+}
+
+function draftTestServices(credentialLocationId = TEST_LOCATION) {
+  const connection = {
+    tenant_id: TEST_TENANT_ID,
+    tenant_name: "Testing Agency",
+    connection_id: "testing-agency-connection",
+    location_id: TEST_LOCATION,
+    auth_type: "private_integration_token",
+    credential_type: "private_integration_token",
+    secret_backend: "environment",
+    secret_ref: "env://LC_PRIVATE_TOKEN_TESTING_AGENCY"
+  };
+  return {
+    repository: {
+      async resolveUserAuthorization() {
+        return {
+          id: "testing-user",
+          auth_subject: "auth0|testing-user",
+          email: "tester@example.com",
+          membership_id: "testing-membership",
+          role: "tenant_admin",
+          tenant_id: TEST_TENANT_ID,
+          tenant_name: "Testing Agency"
+        };
+      },
+      async findActiveConnectionByTenantId(tenantId) {
+        assert.equal(tenantId, TEST_TENANT_ID);
+        return connection;
+      }
+    },
+    credentialProvider: {
+      async getAccess(receivedConnection) {
+        assert.equal(receivedConnection, connection);
+        return { accessToken: "testing-agency-access-token", locationId: credentialLocationId };
+      }
+    }
+  };
 }
 
 test("upload tool declares a valid ChatGPT file parameter", () => {
@@ -167,6 +224,113 @@ test("tool schema debug endpoint rejects a different service ID", async () => {
     assert.equal(response.status, 404);
     assert.equal(await response.text(), "");
   }));
+});
+
+test("draft diagnostic endpoint is disabled by default", async () => {
+  let outboundCreateCount = 0;
+  const realFetch = globalThis.fetch;
+  await withProcessEnv(draftDebugEnv({ MCP_DEBUG_TEST_DRAFT_WITHOUT_USERID: undefined }), () => withMockFetch(async (url, options) => {
+    if (String(url).startsWith("https://services.leadconnectorhq.com/")) outboundCreateCount += 1;
+    return realFetch(url, options);
+  }, () => withTestServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/debug/test-draft-without-userid`, { method: "POST" });
+    assert.equal(response.status, 404);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+    assert.equal(outboundCreateCount, 0);
+  })));
+});
+
+test("draft diagnostic endpoint fails closed on a wrong Render service", async () => {
+  let outboundCreateCount = 0;
+  const realFetch = globalThis.fetch;
+  await withProcessEnv(draftDebugEnv({ RENDER_SERVICE_ID: "srv-not-staging" }), () => withMockFetch(async (url, options) => {
+    if (String(url).startsWith("https://services.leadconnectorhq.com/")) outboundCreateCount += 1;
+    return realFetch(url, options);
+  }, () => withTestServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/debug/test-draft-without-userid`, { method: "POST" });
+    assert.equal(response.status, 404);
+    assert.equal(outboundCreateCount, 0);
+  })));
+});
+
+test("draft diagnostic endpoint fails closed on credential location mismatch", async () => {
+  let outboundCreateCount = 0;
+  const realFetch = globalThis.fetch;
+  await withProcessEnv(draftDebugEnv(), () => withMockFetch(async (url, options) => {
+    if (String(url).startsWith("https://services.leadconnectorhq.com/")) outboundCreateCount += 1;
+    return realFetch(url, options);
+  }, () => withTestServer(async (baseUrl) => {
+    app.locals.auth0Verifier = async () => ({
+      subject: "auth0|testing-user",
+      tenantIdClaim: TEST_TENANT_ID,
+      scopes: new Set(["uplifting:write"])
+    });
+    app.locals.tenantServices = draftTestServices("wrong-staging-location");
+    const response = await fetch(`${baseUrl}/debug/test-draft-without-userid`, {
+      method: "POST",
+      headers: { authorization: "Bearer signed-user-token" }
+    });
+    assert.equal(response.status, 412);
+    assert.deepEqual(await response.json(), { error: "testing_agency_credential_precondition_failed" });
+    assert.equal(outboundCreateCount, 0);
+  })));
+});
+
+test("draft diagnostic sends one fixed request and is one-shot per process", async () => {
+  let outboundCreateCount = 0;
+  const realFetch = globalThis.fetch;
+  await withProcessEnv(draftDebugEnv(), () => withMockFetch(async (url, options) => {
+    if (!String(url).startsWith("https://services.leadconnectorhq.com/")) return realFetch(url, options);
+    outboundCreateCount += 1;
+    assert.equal(String(url), `https://services.leadconnectorhq.com/social-media-posting/${TEST_LOCATION}/posts`);
+    assert.equal(options.method, "POST");
+    assert.equal(options.headers.Version, "v3");
+    assert.equal(options.headers.Authorization, "Bearer testing-agency-access-token");
+    const body = JSON.parse(options.body);
+    assert.deepEqual(body, {
+      accountIds: [TEST_ACCOUNT_ID],
+      summary: "[STAGING TEST] Kiểm tra tạo bài nháp không cần userId. Không xuất bản.",
+      status: "draft",
+      type: "post"
+    });
+    assert.equal(Object.hasOwn(body, "userId"), false);
+    assert.equal(Object.hasOwn(body, "scheduleDate"), false);
+    assert.equal(Object.hasOwn(body, "postApprovalDetails"), false);
+    return new Response(JSON.stringify({
+      _id: "staging-draft-id",
+      status: "draft",
+      access_token: "must-not-be-returned",
+      message: "testing-agency-access-token"
+    }), { status: 201 });
+  }, () => withTestServer(async (baseUrl) => {
+    app.locals.auth0Verifier = async () => ({
+      subject: "auth0|testing-user",
+      tenantIdClaim: TEST_TENANT_ID,
+      scopes: new Set(["uplifting:write"])
+    });
+    app.locals.tenantServices = draftTestServices();
+    const request = () => fetch(`${baseUrl}/debug/test-draft-without-userid`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer signed-user-token" },
+      body: JSON.stringify({ userId: "ignored", scheduleDate: "ignored", postApprovalDetails: { ignored: true } })
+    });
+
+    const first = await request();
+    assert.equal(first.status, 200);
+    assert.equal(first.headers.get("cache-control"), "no-store");
+    assert.deepEqual(await first.json(), {
+      highLevelHttpStatus: 201,
+      response: { _id: "staging-draft-id", status: "draft", message: "[REDACTED]" },
+      postId: "staging-draft-id",
+      status: "draft"
+    });
+    assert.equal(outboundCreateCount, 1);
+
+    const second = await request();
+    assert.equal(second.status, 409);
+    assert.deepEqual(await second.json(), { error: "draft_diagnostic_already_attempted" });
+    assert.equal(outboundCreateCount, 1);
+  })));
 });
 
 test("MCP tools/list exposes the file-aware upload schema", async (t) => {
