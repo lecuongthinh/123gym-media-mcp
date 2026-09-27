@@ -36,15 +36,23 @@ test("HighLevel onboarding state is single-use and tokens are persisted only as 
     }
   };
   const fetchImpl = async (url, options) => {
-    assert.equal(url, "https://services.leadconnectorhq.com/oauth/token");
-    assert.equal(options.body.get("client_secret"), configuration.HIGHLEVEL_CLIENT_SECRET);
-    return new Response(JSON.stringify({
-      access_token: "highlevel-access-token",
-      refresh_token: "highlevel-refresh-token",
-      locationId: LOCATION_ID,
-      expires_in: 86400,
-      scope: "socialplanner/post.readonly socialplanner/account.readonly"
-    }), { status: 200, headers: { "content-type": "application/json" } });
+    if (String(url) === "https://services.leadconnectorhq.com/oauth/token") {
+      assert.equal(options.body.get("client_secret"), configuration.HIGHLEVEL_CLIENT_SECRET);
+      return new Response(JSON.stringify({
+        access_token: "highlevel-access-token",
+        refresh_token: "highlevel-refresh-token",
+        locationId: LOCATION_ID,
+        expires_in: 86400,
+        scope: "socialplanner/post.readonly socialplanner/account.readonly"
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    const parsed = new URL(String(url));
+    assert.equal(parsed.pathname, "/users/");
+    assert.equal(parsed.searchParams.get("locationId"), LOCATION_ID);
+    assert.equal(options.headers.Authorization, "Bearer highlevel-access-token");
+    return new Response(JSON.stringify({ users: [
+      { id: "owner-user-id", firstName: "Owner", lastName: "User", roles: { role: "admin", type: "account" } }
+    ] }), { status: 200 });
   };
   const onboarding = createHighLevelOnboarding({ env: configuration, repository, fetchImpl });
   const principal = { tenantId: TENANT_ID, userId: USER_ID, role: "tenant_owner" };
@@ -54,13 +62,50 @@ test("HighLevel onboarding state is single-use and tokens are persisted only as 
   assert.notEqual(storedState.stateHash, state);
 
   const result = await onboarding.callback({ code: "one-time-code", state });
-  assert.deepEqual(result, { connected: true, locationId: LOCATION_ID });
+  assert.deepEqual(result, { connected: true, locationId: LOCATION_ID, defaultUserIdResolved: true });
   assert.equal(saved.tenantId, TENANT_ID);
   assert.equal(saved.locationId, LOCATION_ID);
+  assert.equal(saved.defaultUserId, "owner-user-id");
   assert.doesNotMatch(saved.encryptedPayload.toString("utf8"), /highlevel-access-token|highlevel-refresh-token/);
   const decrypted = decryptCredential(saved.encryptedPayload, configuration);
   assert.equal(decrypted.location_id, LOCATION_ID);
   assert.equal(decrypted.refresh_token, "highlevel-refresh-token");
+});
+
+test("HighLevel onboarding still connects when the Users API lacks scope, leaving default_user_id unset", async () => {
+  const configuration = env();
+  let storedState;
+  let saved;
+  const repository = {
+    async createOAuthState(value) { storedState = value; },
+    async consumeOAuthState(stateHash) {
+      assert.equal(stateHash, storedState.stateHash);
+      return { tenant_id: TENANT_ID, actor_user_id: USER_ID };
+    },
+    async saveHighLevelOAuthConnection(value) { saved = value; },
+    async recordAuditEvent(value) {
+      assert.equal(value.metadata.defaultUserIdResolved, false);
+    }
+  };
+  const fetchImpl = async (url) => {
+    if (String(url) === "https://services.leadconnectorhq.com/oauth/token") {
+      return new Response(JSON.stringify({
+        access_token: "highlevel-access-token",
+        refresh_token: "highlevel-refresh-token",
+        locationId: LOCATION_ID,
+        expires_in: 86400,
+        scope: "socialplanner/post.readonly"
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+    return new Response(JSON.stringify({ message: "The token is not authorized for this scope." }), { status: 401 });
+  };
+  const onboarding = createHighLevelOnboarding({ env: configuration, repository, fetchImpl });
+  const started = await onboarding.start({ tenantId: TENANT_ID, userId: USER_ID, role: "tenant_owner" });
+  const state = new URL(started.authorizationUrl).searchParams.get("state");
+
+  const result = await onboarding.callback({ code: "one-time-code", state });
+  assert.deepEqual(result, { connected: true, locationId: LOCATION_ID, defaultUserIdResolved: false });
+  assert.equal(saved.defaultUserId, null);
 });
 
 test("HighLevel onboarding rejects non-admin tenant roles before creating state", async () => {

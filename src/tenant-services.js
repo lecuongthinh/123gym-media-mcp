@@ -1,4 +1,5 @@
 import pg from "pg";
+import { randomBytes } from "node:crypto";
 import { CompositeCredentialProvider } from "./credential-provider.js";
 
 const { Pool } = pg;
@@ -12,6 +13,16 @@ export class TenantAuthorizationError extends Error {
     this.name = "TenantAuthorizationError";
     this.code = code;
   }
+}
+
+function slugify(value) {
+  const base = String(value || "")
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return base || "tenant";
 }
 
 export class PostgresConnectionRepository {
@@ -52,7 +63,7 @@ export class PostgresConnectionRepository {
     return rows[0] || null;
   }
 
-  async resolveUserAuthorization({ authSubject, tenantIdClaim, email, displayName }) {
+  async resolveUserAuthorization({ authSubject, tenantIdClaim, email, displayName, allowSelfServeProvisioning = false }) {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -65,7 +76,15 @@ export class PostgresConnectionRepository {
         [authSubject, email || null, displayName || null]
       );
       const user = userResult.rows[0];
-      if (!user) throw new TenantAuthorizationError("Authenticated user is not provisioned or is inactive.", "USER_NOT_PROVISIONED");
+      if (!user) {
+        const existing = await client.query(`SELECT 1 FROM users WHERE auth_subject = $1`, [authSubject]);
+        if (existing.rowCount > 0 || !allowSelfServeProvisioning) {
+          throw new TenantAuthorizationError("Authenticated user is not provisioned or is inactive.", "USER_NOT_PROVISIONED");
+        }
+        const provisioned = await this.#provisionSelfServeTenant(client, { authSubject, email, displayName });
+        await client.query("COMMIT");
+        return provisioned;
+      }
       const memberships = await client.query(
         `SELECT m.id AS membership_id, m.role, t.id AS tenant_id, t.display_name AS tenant_name
            FROM memberships m
@@ -87,6 +106,43 @@ export class PostgresConnectionRepository {
     } finally {
       client.release();
     }
+  }
+
+  async #provisionSelfServeTenant(client, { authSubject, email, displayName }) {
+    const baseSlug = slugify(displayName || email || authSubject);
+    let tenant;
+    let usedSlug;
+    for (let attempt = 0; attempt < 5 && !tenant; attempt += 1) {
+      usedSlug = attempt === 0 ? baseSlug : `${baseSlug}-${randomBytes(3).toString("hex")}`;
+      try {
+        const tenantResult = await client.query(
+          `INSERT INTO tenants (slug, display_name) VALUES ($1, $2) RETURNING id, display_name`,
+          [usedSlug, displayName || email || usedSlug]
+        );
+        tenant = tenantResult.rows[0];
+      } catch (error) {
+        if (error.code !== "23505") throw error;
+      }
+    }
+    if (!tenant) throw new Error("Unable to allocate a unique tenant slug for self-serve provisioning.");
+    const userResult = await client.query(
+      `INSERT INTO users (auth_subject, email, display_name, last_login_at)
+       VALUES ($1, $2, $3, now())
+       RETURNING id, auth_subject, email, display_name`,
+      [authSubject, email || null, displayName || null]
+    );
+    const user = userResult.rows[0];
+    const membershipResult = await client.query(
+      `INSERT INTO memberships (user_id, tenant_id, role) VALUES ($1, $2, 'tenant_owner') RETURNING id AS membership_id, role`,
+      [user.id, tenant.id]
+    );
+    const membership = membershipResult.rows[0];
+    await client.query(
+      `INSERT INTO audit_events (actor_user_id, tenant_id, action, result, metadata)
+       VALUES ($1, $2, 'tenant.self_serve_provisioned', 'success', $3::jsonb)`,
+      [user.id, tenant.id, JSON.stringify({ slug: usedSlug })]
+    );
+    return { ...user, ...membership, tenant_id: tenant.id, tenant_name: tenant.display_name };
   }
 
   async recordAuditEvent({ actorUserId = null, tenantId = null, toolName = null, action, result, requestId = null, metadata = {} }) {
@@ -125,7 +181,7 @@ export class PostgresConnectionRepository {
     return rows[0] || null;
   }
 
-  async saveHighLevelOAuthConnection({ tenantId, locationId, encryptedPayload, expiresAt, scopes }) {
+  async saveHighLevelOAuthConnection({ tenantId, locationId, encryptedPayload, expiresAt, scopes, defaultUserId = null }) {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -142,13 +198,15 @@ export class PostgresConnectionRepository {
         [`encrypted://highlevel/${tenantId}/${Date.now()}`, encryptedPayload, expiresAt]
       );
       await client.query(
-        `INSERT INTO connections (tenant_id, provider, external_location_id, auth_type, status, scopes, credential_id)
-         VALUES ($1, 'highlevel', $2, 'oauth2', 'active', $3, $4)
+        `INSERT INTO connections (tenant_id, provider, external_location_id, auth_type, status, scopes, credential_id, default_user_id)
+         VALUES ($1, 'highlevel', $2, 'oauth2', 'active', $3, $4, $5)
          ON CONFLICT (tenant_id, provider) DO UPDATE SET
            external_location_id = EXCLUDED.external_location_id,
            auth_type = 'oauth2', status = 'active', scopes = EXCLUDED.scopes,
-           credential_id = EXCLUDED.credential_id, updated_at = now()`,
-        [tenantId, locationId, scopes, credential.rows[0].id]
+           credential_id = EXCLUDED.credential_id,
+           default_user_id = COALESCE(EXCLUDED.default_user_id, connections.default_user_id),
+           updated_at = now()`,
+        [tenantId, locationId, scopes, credential.rows[0].id, defaultUserId]
       );
       const previousCredentialId = previous.rows[0]?.credential_id;
       if (previousCredentialId && previousCredentialId !== credential.rows[0].id) {
@@ -255,12 +313,13 @@ export function createTenantServices(env = process.env, overrides = {}) {
   return { repository, credentialProvider };
 }
 
-export async function authorizeUserPrincipal({ identity, repository }) {
+export async function authorizeUserPrincipal({ identity, repository, allowSelfServeProvisioning = false }) {
   const authorization = await repository.resolveUserAuthorization({
     authSubject: identity.subject,
     tenantIdClaim: identity.tenantIdClaim,
     email: identity.email,
-    displayName: identity.displayName
+    displayName: identity.displayName,
+    allowSelfServeProvisioning
   });
   return Object.freeze({
     authType: "oauth",

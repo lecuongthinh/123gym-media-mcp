@@ -8,6 +8,7 @@ import {
   EnvironmentCredentialProvider,
   InMemoryConnectionRepository,
   LEGACY_123_GYM_TENANT_ID,
+  PostgresConnectionRepository,
   TenantAuthorizationError
 } from "./src/tenant-services.js";
 
@@ -109,4 +110,129 @@ test("OAuth security migration is additive, enables RLS, and revokes Data API ro
   assert.match(migration, /FROM anon, authenticated/i);
   assert.match(migration, /encrypted_payload bytea/i);
   assert.doesNotMatch(migration, /Bearer\s+[A-Za-z0-9._-]{20,}|eyJ[A-Za-z0-9_-]+\./);
+});
+
+function createFakePool(seed = {}) {
+  const state = {
+    tenants: [...(seed.tenants || [])],
+    users: [...(seed.users || [])],
+    memberships: [...(seed.memberships || [])],
+    auditEvents: []
+  };
+  let nextId = 1;
+  const genId = () => `generated-${nextId++}`;
+  async function run(sql, params = []) {
+    const text = sql.replace(/\s+/g, " ").trim();
+    if (text === "BEGIN" || text === "COMMIT" || text.startsWith("ROLLBACK")) return { rows: [] };
+    if (text.startsWith("UPDATE users")) {
+      const [authSubject, email, displayName] = params;
+      const user = state.users.find((u) => u.auth_subject === authSubject && u.status === "active");
+      if (!user) return { rows: [], rowCount: 0 };
+      if (email) user.email = email;
+      if (displayName) user.display_name = displayName;
+      return { rows: [{ id: user.id, auth_subject: user.auth_subject, email: user.email, display_name: user.display_name }] };
+    }
+    if (text.startsWith("SELECT 1 FROM users WHERE auth_subject")) {
+      const [authSubject] = params;
+      const exists = state.users.some((u) => u.auth_subject === authSubject);
+      return { rows: exists ? [{}] : [], rowCount: exists ? 1 : 0 };
+    }
+    if (text.startsWith("SELECT m.id AS membership_id")) {
+      const [userId] = params;
+      const rows = state.memberships
+        .filter((m) => m.user_id === userId && m.status === "active")
+        .map((m) => {
+          const tenant = state.tenants.find((t) => t.id === m.tenant_id && t.status === "active");
+          return tenant ? { membership_id: m.id, role: m.role, tenant_id: tenant.id, tenant_name: tenant.display_name } : null;
+        })
+        .filter(Boolean);
+      return { rows, rowCount: rows.length };
+    }
+    if (text.startsWith("INSERT INTO tenants")) {
+      const [slug, displayName] = params;
+      if (state.tenants.some((t) => t.slug === slug)) {
+        const error = new Error("duplicate key value violates unique constraint");
+        error.code = "23505";
+        throw error;
+      }
+      const tenant = { id: genId(), slug, display_name: displayName, status: "active" };
+      state.tenants.push(tenant);
+      return { rows: [{ id: tenant.id, display_name: tenant.display_name }] };
+    }
+    if (text.startsWith("INSERT INTO users")) {
+      const [authSubject, email, displayName] = params;
+      const user = { id: genId(), auth_subject: authSubject, email, display_name: displayName, status: "active" };
+      state.users.push(user);
+      return { rows: [{ id: user.id, auth_subject: user.auth_subject, email: user.email, display_name: user.display_name }] };
+    }
+    if (text.startsWith("INSERT INTO memberships")) {
+      const [userId, tenantId] = params;
+      const membership = { id: genId(), user_id: userId, tenant_id: tenantId, role: "tenant_owner", status: "active" };
+      state.memberships.push(membership);
+      return { rows: [{ membership_id: membership.id, role: membership.role }] };
+    }
+    if (text.startsWith("INSERT INTO audit_events")) {
+      state.auditEvents.push({ actorUserId: params[0], tenantId: params[1], metadata: JSON.parse(params[2]) });
+      return { rows: [] };
+    }
+    throw new Error(`Unhandled fake SQL in test: ${text}`);
+  }
+  return {
+    state,
+    async connect() { return { query: run, release() {} }; },
+    async query(sql, params) { return run(sql, params); }
+  };
+}
+
+test("self-serve provisioning creates a new tenant, user and owner membership on first login", async () => {
+  const fakePool = createFakePool();
+  const repository = new PostgresConnectionRepository({ pool: fakePool });
+  const result = await repository.resolveUserAuthorization({
+    authSubject: "auth0|new-user",
+    email: "new@example.com",
+    displayName: "New Customer",
+    allowSelfServeProvisioning: true
+  });
+  assert.equal(result.auth_subject, "auth0|new-user");
+  assert.equal(result.role, "tenant_owner");
+  assert.ok(result.tenant_id);
+  assert.equal(fakePool.state.tenants.length, 1);
+  assert.equal(fakePool.state.tenants[0].slug, "new-customer");
+  assert.equal(fakePool.state.auditEvents.length, 1);
+  assert.equal(fakePool.state.auditEvents[0].tenantId, result.tenant_id);
+});
+
+test("self-serve provisioning is disabled unless explicitly allowed", async () => {
+  const fakePool = createFakePool();
+  const repository = new PostgresConnectionRepository({ pool: fakePool });
+  await assert.rejects(
+    () => repository.resolveUserAuthorization({ authSubject: "auth0|new-user", email: "new@example.com" }),
+    (error) => error instanceof TenantAuthorizationError && error.code === "USER_NOT_PROVISIONED"
+  );
+  assert.equal(fakePool.state.tenants.length, 0);
+});
+
+test("self-serve provisioning never runs for an existing user, even if suspended", async () => {
+  const fakePool = createFakePool({ users: [{ id: "existing-user", auth_subject: "auth0|suspended-user", status: "suspended" }] });
+  const repository = new PostgresConnectionRepository({ pool: fakePool });
+  await assert.rejects(
+    () => repository.resolveUserAuthorization({ authSubject: "auth0|suspended-user", allowSelfServeProvisioning: true }),
+    (error) => error instanceof TenantAuthorizationError && error.code === "USER_NOT_PROVISIONED"
+  );
+  assert.equal(fakePool.state.tenants.length, 0);
+  assert.equal(fakePool.state.users.length, 1);
+});
+
+test("self-serve provisioning retries slug allocation on a collision", async () => {
+  const fakePool = createFakePool({ tenants: [{ id: "existing-tenant", slug: "new-customer", display_name: "Existing", status: "active" }] });
+  const repository = new PostgresConnectionRepository({ pool: fakePool });
+  const result = await repository.resolveUserAuthorization({
+    authSubject: "auth0|new-user-2",
+    displayName: "New Customer",
+    allowSelfServeProvisioning: true
+  });
+  assert.ok(result.tenant_id);
+  assert.equal(fakePool.state.tenants.length, 2);
+  assert.notEqual(fakePool.state.tenants[1].slug, "new-customer");
+  assert.match(fakePool.state.tenants[1].slug, /^new-customer-[0-9a-f]{6}$/);
 });

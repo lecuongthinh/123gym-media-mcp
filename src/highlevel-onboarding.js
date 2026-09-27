@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { encryptCredential } from "./credential-provider.js";
+import { fetchHighLevelUsers, pickDefaultUserId } from "./highlevel-users.js";
 
 const HIGHLEVEL_TOKEN_URL = "https://services.leadconnectorhq.com/oauth/token";
 
@@ -60,21 +61,32 @@ export function createHighLevelOnboarding({ env = process.env, repository, fetch
       scope: body.scope || "",
       expires_at: expiresAt
     };
+    let defaultUserId = null;
+    try {
+      const users = await fetchHighLevelUsers({ accessToken: body.access_token, locationId: body.locationId, fetchImpl });
+      defaultUserId = pickDefaultUserId(users);
+    } catch {
+      // HighLevel's Users API needs its own scope; if the connected app/token
+      // does not have it, onboarding still succeeds and an admin can set
+      // connections.default_user_id manually afterwards.
+      defaultUserId = null;
+    }
     await repository.saveHighLevelOAuthConnection({
       tenantId: authorization.tenant_id,
       locationId: body.locationId,
       encryptedPayload: encryptCredential(secret, env),
       expiresAt,
-      scopes: String(body.scope || "").split(/\s+/).filter(Boolean)
+      scopes: String(body.scope || "").split(/\s+/).filter(Boolean),
+      defaultUserId
     });
     await repository.recordAuditEvent({
       actorUserId: authorization.actor_user_id,
       tenantId: authorization.tenant_id,
       action: "highlevel.oauth.connected",
       result: "success",
-      metadata: { locationId: body.locationId }
+      metadata: { locationId: body.locationId, defaultUserIdResolved: Boolean(defaultUserId) }
     });
-    return { connected: true, locationId: body.locationId };
+    return { connected: true, locationId: body.locationId, defaultUserIdResolved: Boolean(defaultUserId) };
   }
 
   return { start, callback };

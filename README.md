@@ -4,7 +4,9 @@ Multi-tenant MCP resource server for ChatGPT, LeadConnector Media and HighLevel 
 
 Version **3.3.0** added Auth0 OAuth, database-backed user/tenant authorization, encrypted HighLevel OAuth credentials, audit events and tenant-isolated tool execution. The legacy 123 GYM environment credential remains supported but is not used by customer OAuth requests unless the authenticated user has an active 123 GYM membership.
 
-Version **3.4.0** removed the temporary `debug_test_draft_without_userid` diagnostic: it was built to check whether HighLevel would accept a draft post without `userId`, and live testing against the real API confirmed it does not (HighLevel returns `422` for any status, including draft, when `userId` is missing). Instead, `connections.default_user_id` lets each tenant configure a HighLevel user id that `create_social_post` fills in automatically when the caller (ChatGPT/agent) omits `userId`, so the agent never needs to know a HighLevel-internal id. Run `migrations/004_default_user_id.sql` (or `npm run migrate`) and set `default_user_id` for each tenant that should get this behavior.
+Version **3.4.0** removed the temporary `debug_test_draft_without_userid` diagnostic: it was built to check whether HighLevel would accept a draft post without `userId`, and live testing against the real API confirmed it does not (HighLevel returns `422` for any status, including draft, when `userId` is missing). Instead, `connections.default_user_id` lets each tenant configure a HighLevel user id that `create_social_post` fills in automatically when the caller (ChatGPT/agent) omits `userId`, so the agent never needs to know a HighLevel-internal id. It also adds `list_location_users`, a read tool that returns a tenant's HighLevel staff so a `default_user_id` (or `postApprovalDetails.approver`) can be picked without leaving ChatGPT. Run `migrations/004_default_user_id.sql` (or `npm run migrate`) and set `default_user_id` for each tenant that should get this behavior.
+
+Version **3.5.0** adds opt-in self-serve onboarding so a new customer needs no manual SQL: with `ENABLE_SELF_SERVE_SIGNUP=true`, the first time a brand-new Auth0 subject authenticates it is automatically provisioned a new `tenants` row, a `users` row and a `tenant_owner` membership (an existing-but-suspended user is never re-provisioned — it still fails closed). The HighLevel Marketplace OAuth callback (`/oauth/callback/highlevel`) now also calls the new `list_location_users` logic itself right after connecting, and stores a `default_user_id` automatically (preferring a user whose role is admin/owner) when the connected token has permission to read Users; if it doesn't, the connection still succeeds and `default_user_id` stays unset until an admin sets it, exactly like before. **Self-serve provisioning trusts whatever already authenticated via Auth0** — it does not gate who may sign up. Keep Auth0's own connection restricted to invite-only or approved signups; `ENABLE_SELF_SERVE_SIGNUP` only removes the manual database step *after* Auth0 has already let someone in.
 
 ## Security model
 
@@ -76,6 +78,10 @@ Legacy admin access is optional and disabled by default:
 - `ENABLE_LEGACY_ADMIN_AUTH=false`
 - `MCP_ADMIN_API_KEY` may remain unset. If internal emergency access is required, set both the key and `ENABLE_LEGACY_ADMIN_AUTH=true`; only `X-API-Key` accepts it. Bearer tokens are reserved for OAuth.
 
+Self-serve signup is optional and disabled by default:
+
+- `ENABLE_SELF_SERVE_SIGNUP=false` — set to `true` only once Auth0's own connection restricts who can sign in (invite-only, approval required, or a closed allow-list). This flag controls what the app does *after* Auth0 authenticates someone, not who Auth0 lets authenticate.
+
 ## Auth0 configuration
 
 1. Create an Auth0 API whose Identifier exactly equals `AUTH0_AUDIENCE` / `MCP_RESOURCE_URL`.
@@ -98,14 +104,22 @@ Do not place roles or access decisions only in Auth0. The backend always checks 
 
 ## Provision a customer
 
-For the first staging pilot, provision the identity before the user connects ChatGPT:
+### Self-serve (ENABLE_SELF_SERVE_SIGNUP=true)
+
+1. Make sure Auth0's connection only lets in people you actually want as customers (invite-only or approval-required — this flag does not gate Auth0 itself).
+2. The customer adds the MCP staging URL in ChatGPT and logs in through Auth0 (signing up there too, if Auth0 allows it). On their very first successful login, the MCP auto-creates their `tenants` row, `users` row and a `tenant_owner` membership — no SQL needed.
+3. The customer (now `tenant_owner`) calls `POST /onboarding/highlevel/start`, opens the returned URL and completes HighLevel consent for their own sub-account.
+4. The callback tries to auto-resolve `connections.default_user_id` via HighLevel's Users API. If the connected app/token has that scope, it is set automatically; if not, `create_social_post` will require an explicit `userId` until an admin sets `default_user_id` manually (via SQL, or by asking the customer to run `list_location_users` and reporting back a HighLevel user id).
+5. Test `list_social_accounts` and a `create_social_post` draft to confirm both read and write reach HighLevel.
+
+### Fully manual (ENABLE_SELF_SERVE_SIGNUP unset or false)
 
 1. Create/invite the user in Auth0 and set `app_metadata.tenant_id` to the tenant UUID.
 2. In Supabase SQL Editor, insert the same Auth0 `sub` into `users` and create one active `memberships` row. Never insert a password or token.
 3. Add the tenant's HighLevel connection:
    - Pilot PIT: keep the token in Render and store only `env://VARIABLE_NAME` in `tenant_credentials.secret_ref`.
-   - Marketplace OAuth: the tenant owner calls `POST /onboarding/highlevel/start`, opens the returned URL and completes HighLevel consent. The callback validates a one-time state and stores encrypted tokens.
-4. Set `connections.default_user_id` for this tenant's connection row to a valid HighLevel user id from that sub-account (Settings → My Staff, or the HighLevel Users API). HighLevel's Social Planner rejects `create_social_post` for every status, including draft, when `userId` is absent — there is no "system" poster identity. Skipping this step means every `create_social_post` call fails with a 422 unless the caller supplies `userId` itself.
+   - Marketplace OAuth: the tenant owner calls `POST /onboarding/highlevel/start`, opens the returned URL and completes HighLevel consent. The callback validates a one-time state and stores encrypted tokens, and tries the same automatic `default_user_id` resolution described above.
+4. If `default_user_id` did not resolve automatically (PIT path always needs this step manually), set `connections.default_user_id` for this tenant's connection row to a valid HighLevel user id from that sub-account (Settings → My Staff, the HighLevel Users API, or this MCP's own `list_location_users` tool once the connection exists). HighLevel's Social Planner rejects `create_social_post` for every status, including draft, when `userId` is absent — there is no "system" poster identity. Skipping this step means every `create_social_post` call fails with a 422 unless the caller supplies `userId` itself.
 5. Add the MCP staging URL in ChatGPT, select OAuth, complete login and scan tools.
 6. Test `list_social_accounts` first, then a `create_social_post` draft, to confirm both read and write actually reach HighLevel. Use only the Testing Agency location during staging integration tests.
 
@@ -131,7 +145,7 @@ The backend connects directly through `DATABASE_URL`; it does not use the Supaba
 5. Provision one Testing Agency Auth0 user and membership.
 6. Run `npm test` and `npm run check:config`.
 7. Deploy only `feature/oauth-multitenant-v1` to the staging Render service.
-8. Confirm `/health` reports version `3.4.0` and does not expose configuration.
+8. Confirm `/health` reports version `3.5.0` and does not expose configuration.
 9. Complete ChatGPT OAuth and run read-only `list_social_accounts` for `UwsfBVLmz7XSKJbhuOTS`.
 10. Attempt the 123 GYM `locationId` with the Testing Agency user and confirm it is blocked before any HighLevel request.
 11. Inspect `audit_events` for success/failure records without secrets.

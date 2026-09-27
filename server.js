@@ -18,6 +18,7 @@ import {
   requireScopes
 } from "./src/auth.js";
 import { createHighLevelOnboarding } from "./src/highlevel-onboarding.js";
+import { fetchHighLevelUsers } from "./src/highlevel-users.js";
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -28,7 +29,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.4.0";
+const SERVICE_VERSION = "3.5.0";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -128,7 +129,11 @@ async function resolveOAuthPrincipal(req, token) {
   const identity = await requestVerifier(req)(token);
   const services = requestServices(req);
   req.tenantServices = services;
-  req.principal = await authorizeUserPrincipal({ identity, repository: services.repository });
+  req.principal = await authorizeUserPrincipal({
+    identity,
+    repository: services.repository,
+    allowSelfServeProvisioning: process.env.ENABLE_SELF_SERVE_SIGNUP === "true"
+  });
   return identity;
 }
 
@@ -399,22 +404,9 @@ async function inspectMedia(args, authorizedContext) {
 async function listLocationUsers(args = {}, authorizedContext) {
   const { locationId = DEFAULT_LOCATION_ID } = args;
   const tenant = tenantAccess(locationId, authorizedContext);
-  const params = new URLSearchParams({ locationId: tenant.locationId });
-  const path = `/users/?${params}`;
-  validateLocationBinding(path, tenant.locationId);
-  const data = await parseResponse(await fetch(`${LC_BASE_URL}${path}`, { method: "GET", headers: lcHeaders(tenant.token) }));
-  const users = data.users || data.data?.users || [];
-  return {
-    count: users.length,
-    users: users.map((user) => ({
-      id: user.id || user._id,
-      name: [user.firstName, user.lastName].filter(Boolean).join(" ") || user.name || null,
-      email: user.email || null,
-      role: user.roles?.role || user.role || null,
-      type: user.roles?.type || null,
-      isDefaultUserIdCandidate: /admin|owner/i.test(String(user.roles?.role || user.role || ""))
-    }))
-  };
+  validateLocationBinding(`/users/?locationId=${encodeURIComponent(tenant.locationId)}`, tenant.locationId);
+  const users = await fetchHighLevelUsers({ accessToken: tenant.token, locationId: tenant.locationId });
+  return { count: users.length, users };
 }
 
 // --------------------------------------------------
