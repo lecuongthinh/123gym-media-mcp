@@ -8,11 +8,13 @@ Version **3.4.0** removed the temporary `debug_test_draft_without_userid` diagno
 
 Version **3.5.0** adds opt-in self-serve onboarding so a new customer needs no manual SQL: with `ENABLE_SELF_SERVE_SIGNUP=true`, the first time a brand-new Auth0 subject authenticates it is automatically provisioned a new `tenants` row, a `users` row and a `tenant_owner` membership (an existing-but-suspended user is never re-provisioned — it still fails closed). The HighLevel Marketplace OAuth callback (`/oauth/callback/highlevel`) now also calls the new `list_location_users` logic itself right after connecting, and stores a `default_user_id` automatically (preferring a user whose role is admin/owner) when the connected token has permission to read Users; if it doesn't, the connection still succeeds and `default_user_id` stays unset until an admin sets it, exactly like before. **Self-serve provisioning trusts whatever already authenticated via Auth0** — it does not gate who may sign up. Keep Auth0's own connection restricted to invite-only or approved signups; `ENABLE_SELF_SERVE_SIGNUP` only removes the manual database step *after* Auth0 has already let someone in.
 
+Version **3.5.1** removed the OAuth-scope check (`uplifting:read`/`uplifting:write`) from tool authorization and from `/onboarding/highlevel/start`. Live testing surfaced an Auth0 platform limit: Auth0 will not add custom RBAC scopes to an access token issued to a **third-party** application (Dynamic Client Registration, `client_id` prefixed `tpc_`) unless the specific user was separately granted that permission in Auth0 — ChatGPT registers as exactly this kind of third-party client, so `api.accessToken.addScope(...)` in a Post Login Action is silently dropped for it (Auth0 logs this as a "Warning During Login": *"Attempting to add scopes (...) to an access token for a third-party application (...). These scopes were ignored."*). That made the scope check impossible to satisfy for self-serve users without also standing up an Auth0 Management API integration (an M2M app + a Role + a `post-user-registration` Action) just to grant permissions per new user. Authorization is now enforced entirely by the tenant `memberships.role` looked up from our own database (see the Roles table below), which every OAuth principal already goes through regardless of what scopes its access token carries.
+
 ## Security model
 
 There are two independent OAuth relationships:
 
-1. **ChatGPT → Uplifting MCP:** Auth0 Authorization Code + PKCE authenticates the human user. The MCP validates signature, issuer, audience, expiry and scopes. The Auth0 `sub` is resolved to `users` and an active `memberships` row. The selected tenant claim must match that membership.
+1. **ChatGPT → Uplifting MCP:** Auth0 Authorization Code + PKCE authenticates the human user. The MCP validates signature, issuer, audience and expiry. The Auth0 `sub` is resolved to `users` and an active `memberships` row. The selected tenant claim must match that membership. Tool-level authorization is enforced by that membership's `role`, not by OAuth scopes (see the 3.5.1 note above for why).
 2. **Uplifting MCP → HighLevel:** each tenant has its own `connections` row. Pilot PIT credentials remain in Render environment variables. Marketplace OAuth access and refresh tokens are AES-256-GCM encrypted before storage; the encryption key remains only in Render.
 
 `locationId` is never an authorization decision for OAuth users. It is accepted only as an optional consistency check after the tenant has been selected from the authenticated membership.
@@ -145,7 +147,7 @@ The backend connects directly through `DATABASE_URL`; it does not use the Supaba
 5. Provision one Testing Agency Auth0 user and membership.
 6. Run `npm test` and `npm run check:config`.
 7. Deploy only `feature/oauth-multitenant-v1` to the staging Render service.
-8. Confirm `/health` reports version `3.5.0` and does not expose configuration.
+8. Confirm `/health` reports version `3.5.1` and does not expose configuration.
 9. Complete ChatGPT OAuth and run read-only `list_social_accounts` for `UwsfBVLmz7XSKJbhuOTS`.
 10. Attempt the 123 GYM `locationId` with the Testing Agency user and confirm it is blocked before any HighLevel request.
 11. Inspect `audit_events` for success/failure records without secrets.

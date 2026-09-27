@@ -48,7 +48,7 @@ function oauthEnv() {
   };
 }
 
-function testServices() {
+function testServices(role = "tenant_admin") {
   const base = new InMemoryConnectionRepository([{
     tenant_id: TEST_TENANT_ID,
     tenant_name: "Testing Agency",
@@ -68,7 +68,7 @@ function testServices() {
       if (tenantIdClaim && tenantIdClaim !== TEST_TENANT_ID) throw new Error("User has no active membership for the requested tenant.");
       return {
         id: "user-124", auth_subject: authSubject, email: "tester@example.com",
-        membership_id: "membership-124", role: "tenant_admin",
+        membership_id: "membership-124", role,
         tenant_id: TEST_TENANT_ID, tenant_name: "Testing Agency"
       };
     },
@@ -157,6 +157,36 @@ test("OAuth user cannot switch locationId to 123 GYM", async () => {
   }));
 });
 
+test("viewer role is blocked from write tools by database role, even with a token that carries every scope", async () => {
+  await withProcessEnv(oauthEnv(), () => withServer(async (baseUrl) => {
+    app.locals.auth0Verifier = async () => ({
+      subject: "auth0|testing-user", tenantIdClaim: TEST_TENANT_ID,
+      scopes: new Set(["uplifting:read", "uplifting:write", "uplifting:admin"])
+    });
+    app.locals.tenantServices = testServices("viewer");
+    const response = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer signed-user-token" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "create_social_post", arguments: { locationId: TEST_LOCATION } } })
+    });
+    const payload = await response.json();
+    assert.match(payload.error.message, /read-only/);
+  }));
+});
+
+test("editor role can be blocked from delete tools while still allowed to create posts", async () => {
+  await withProcessEnv(oauthEnv(), () => withServer(async (baseUrl) => {
+    app.locals.auth0Verifier = async () => ({ subject: "auth0|testing-user", tenantIdClaim: TEST_TENANT_ID, scopes: new Set() });
+    app.locals.tenantServices = testServices("editor");
+    const response = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer signed-user-token" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "delete_social_post", arguments: { locationId: TEST_LOCATION, postId: "507f1f77bcf86cd799439011" } } })
+    });
+    const payload = await response.json();
+    assert.match(payload.error.message, /administrator permission is required/);
+  }));
+});
 
 test("unexpected authentication backend errors do not expose database secrets", async () => {
   await withProcessEnv({ ...oauthEnv(), DATABASE_URL: "postgresql://user:super-secret-password@db.example/postgres" }, () => withServer(async (baseUrl) => {
