@@ -6,6 +6,7 @@ import {
   createSocialPost,
   getSocialStatistics,
   isEligible123GymAccount,
+  listLocationUsers,
   listMedia,
   listSocialAccounts,
   resolveTenant,
@@ -191,7 +192,7 @@ test("MCP tools/list exposes the file-aware upload schema", async (t) => {
   assert.equal(payload.result.tools[0].name, "upload_leadconnector_media");
   assert.deepEqual(payload.result.tools[0]._meta["openai/fileParams"], ["file"]);
   assert.equal(payload.result.tools[0].inputSchema.properties.locationId.type, "string");
-  assert.equal(payload.result.tools.length, 10);
+  assert.equal(payload.result.tools.length, 11);
   assert.ok(payload.result.tools.some((tool) => tool.name === "create_social_post"));
   assert.ok(payload.result.tools.some((tool) => tool.name === "get_social_statistics"));
   assert.deepEqual(payload.result.tools.find((tool) => tool.name === "list_social_accounts").securitySchemes, [{ type: "oauth2", scopes: ["uplifting:read"] }]);
@@ -288,6 +289,26 @@ test("media listing binds altId and Authorization to the same tenant", async () 
     }, async () => {
       const result = await listMedia({ locationId: TEST_LOCATION });
       assert.equal(result.count, 0);
+    });
+  });
+});
+
+test("list_location_users binds locationId and token to the selected tenant, and flags admin/owner candidates", async () => {
+  await withProcessEnv(tenantEnv(), async () => {
+    await withMockFetch(async (url, options) => {
+      const parsed = new URL(url);
+      assert.equal(parsed.pathname, "/users/");
+      assert.equal(parsed.searchParams.get("locationId"), TEST_LOCATION);
+      assert.equal(options.headers.Authorization, "Bearer testing-secret-token");
+      return new Response(JSON.stringify({ users: [
+        { id: "user-1", firstName: "An", lastName: "Nguyen", email: "an@example.com", roles: { role: "admin", type: "account" } },
+        { id: "user-2", firstName: "Binh", lastName: "Tran", email: "binh@example.com", roles: { role: "user", type: "account" } }
+      ] }), { status: 200 });
+    }, async () => {
+      const result = await listLocationUsers({ locationId: TEST_LOCATION });
+      assert.equal(result.count, 2);
+      assert.deepEqual(result.users[0], { id: "user-1", name: "An Nguyen", email: "an@example.com", role: "admin", type: "account", isDefaultUserIdCandidate: true });
+      assert.equal(result.users[1].isDefaultUserIdCandidate, false);
     });
   });
 });

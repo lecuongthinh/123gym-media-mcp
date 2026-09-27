@@ -396,6 +396,27 @@ async function inspectMedia(args, authorizedContext) {
   return { name, mimeType: contentType.split(";")[0], base64: buffer.toString("base64"), sourceUrl: mediaUrl };
 }
 
+async function listLocationUsers(args = {}, authorizedContext) {
+  const { locationId = DEFAULT_LOCATION_ID } = args;
+  const tenant = tenantAccess(locationId, authorizedContext);
+  const params = new URLSearchParams({ locationId: tenant.locationId });
+  const path = `/users/?${params}`;
+  validateLocationBinding(path, tenant.locationId);
+  const data = await parseResponse(await fetch(`${LC_BASE_URL}${path}`, { method: "GET", headers: lcHeaders(tenant.token) }));
+  const users = data.users || data.data?.users || [];
+  return {
+    count: users.length,
+    users: users.map((user) => ({
+      id: user.id || user._id,
+      name: [user.firstName, user.lastName].filter(Boolean).join(" ") || user.name || null,
+      email: user.email || null,
+      role: user.roles?.role || user.role || null,
+      type: user.roles?.type || null,
+      isDefaultUserIdCandidate: /admin|owner/i.test(String(user.roles?.role || user.role || ""))
+    }))
+  };
+}
+
 // --------------------------------------------------
 // SOCIAL PLANNER
 // --------------------------------------------------
@@ -669,6 +690,13 @@ const tools = [
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true }
   },
   {
+    name: "list_location_users",
+    title: "List HighLevel users for this location",
+    description: "List staff/users of the allowlisted tenant's HighLevel sub-account. Use to find a userId for create_social_post (userId is required by HighLevel for every post status) or for postApprovalDetails.approver.",
+    inputSchema: { type: "object", properties: { locationId: socialPostProperties.locationId } },
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
+  },
+  {
     name: "list_social_accounts",
     title: "List connected social accounts",
     description: "List social accounts and groups connected to LeadConnector Social Planner. Use before creating or filtering posts.",
@@ -734,7 +762,7 @@ const tools = [
 ];
 
 const READ_ONLY_TOOLS = new Set([
-  "search_leadconnector_media", "inspect_media", "list_social_accounts", "list_social_posts",
+  "search_leadconnector_media", "inspect_media", "list_location_users", "list_social_accounts", "list_social_posts",
   "get_social_post", "get_social_statistics"
 ]);
 const DELETE_TOOLS = new Set(["delete_social_post"]);
@@ -876,6 +904,7 @@ app.post("/mcp", async (req, res) => {
         return res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Media: ${result.name}\nSource: ${result.sourceUrl}` }, { type: "image", data: result.base64, mimeType: result.mimeType }] } });
       }
       const socialHandlers = {
+        list_location_users: listLocationUsers,
         list_social_accounts: listSocialAccounts,
         list_social_posts: listSocialPosts,
         get_social_post: getSocialPost,
@@ -925,6 +954,7 @@ export {
   downloadChatGPTFile,
   getSocialStatistics,
   isEligible123GymAccount,
+  listLocationUsers,
   listMedia,
   listSocialAccounts,
   resolveTenant,
