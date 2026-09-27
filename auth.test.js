@@ -72,7 +72,8 @@ function testServices(role = "tenant_admin") {
         tenant_id: TEST_TENANT_ID, tenant_name: "Testing Agency"
       };
     },
-    async recordAuditEvent() {}
+    async recordAuditEvent() {},
+    async createOAuthState() {}
   };
   return {
     repository,
@@ -185,6 +186,45 @@ test("editor role can be blocked from delete tools while still allowed to create
     });
     const payload = await response.json();
     assert.match(payload.error.message, /administrator permission is required/);
+  }));
+});
+
+test("connect_highlevel starts onboarding without requiring an existing HighLevel connection", async () => {
+  await withProcessEnv({
+    ...oauthEnv(),
+    HIGHLEVEL_INSTALL_URL: "https://marketplace.gohighlevel.com/oauth/chooselocation?client_id=test-client",
+    HIGHLEVEL_REDIRECT_URI: "https://staging.example.com/oauth/callback/highlevel"
+  }, () => withServer(async (baseUrl) => {
+    app.locals.auth0Verifier = async () => ({ subject: "auth0|testing-user", tenantIdClaim: TEST_TENANT_ID, scopes: new Set() });
+    const services = testServices("tenant_owner");
+    services.repository.findActiveConnectionByTenantId = () => { throw new Error("must not be called for connect_highlevel"); };
+    app.locals.tenantServices = services;
+    const response = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer signed-user-token" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "connect_highlevel", arguments: {} } })
+    });
+    const payload = await response.json();
+    assert.equal(response.status, 200);
+    assert.ok(payload.result.structuredContent.authorizationUrl.startsWith("https://marketplace.gohighlevel.com/"));
+  }));
+});
+
+test("connect_highlevel rejects a non-owner tenant role", async () => {
+  await withProcessEnv({
+    ...oauthEnv(),
+    HIGHLEVEL_INSTALL_URL: "https://marketplace.gohighlevel.com/oauth/chooselocation?client_id=test-client",
+    HIGHLEVEL_REDIRECT_URI: "https://staging.example.com/oauth/callback/highlevel"
+  }, () => withServer(async (baseUrl) => {
+    app.locals.auth0Verifier = async () => ({ subject: "auth0|testing-user", tenantIdClaim: TEST_TENANT_ID, scopes: new Set() });
+    app.locals.tenantServices = testServices("editor");
+    const response = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer signed-user-token" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "connect_highlevel", arguments: {} } })
+    });
+    const payload = await response.json();
+    assert.match(payload.error.message, /owner or administrator/);
   }));
 });
 

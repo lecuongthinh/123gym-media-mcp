@@ -29,7 +29,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.5.1";
+const SERVICE_VERSION = "3.5.2";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -682,6 +682,13 @@ const tools = [
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true }
   },
   {
+    name: "connect_highlevel",
+    title: "Connect a HighLevel sub-account",
+    description: "Start HighLevel Marketplace OAuth for the caller's own tenant. Returns a URL for the user to open in a browser and approve; the callback stores the connection automatically. Only tenant_owner/tenant_admin/uplifting_admin may call this. Use this first for a brand-new tenant that has no HighLevel connection yet -- every other tool needs one.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true }
+  },
+  {
     name: "list_location_users",
     title: "List HighLevel users for this location",
     description: "List staff/users of the allowlisted tenant's HighLevel sub-account. Use to find a userId for create_social_post (userId is required by HighLevel for every post status) or for postApprovalDetails.approver.",
@@ -876,6 +883,19 @@ app.post("/mcp", async (req, res) => {
       const tool = tools.find((item) => item.name === toolName);
       if (!tool) throw new Error(`Unknown tool: ${toolName}`);
       authorizeTool(req.principal, toolName);
+      if (toolName === "connect_highlevel") {
+        if (req.principal.authType !== "oauth") throw new Error("connect_highlevel requires an OAuth user.");
+        const onboardingResult = await createHighLevelOnboarding({ env: process.env, repository: req.tenantServices.repository }).start(req.principal);
+        await auditTool(req, { tenantId: req.principal.tenantId, toolName, action: "tool.call", result: "success", metadata: {} });
+        return res.json({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            content: [{ type: "text", text: `Mở link này để kết nối HighLevel: ${onboardingResult.authorizationUrl}` }],
+            structuredContent: onboardingResult
+          }
+        });
+      }
       const authorizedContext = await requestTenantContext(req, args.locationId);
       let result;
       if (toolName === "upload_leadconnector_media") {

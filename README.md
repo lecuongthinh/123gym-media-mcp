@@ -10,6 +10,8 @@ Version **3.5.0** adds opt-in self-serve onboarding so a new customer needs no m
 
 Version **3.5.1** removed the OAuth-scope check (`uplifting:read`/`uplifting:write`) from tool authorization and from `/onboarding/highlevel/start`. Live testing surfaced an Auth0 platform limit: Auth0 will not add custom RBAC scopes to an access token issued to a **third-party** application (Dynamic Client Registration, `client_id` prefixed `tpc_`) unless the specific user was separately granted that permission in Auth0 — ChatGPT registers as exactly this kind of third-party client, so `api.accessToken.addScope(...)` in a Post Login Action is silently dropped for it (Auth0 logs this as a "Warning During Login": *"Attempting to add scopes (...) to an access token for a third-party application (...). These scopes were ignored."*). That made the scope check impossible to satisfy for self-serve users without also standing up an Auth0 Management API integration (an M2M app + a Role + a `post-user-registration` Action) just to grant permissions per new user. Authorization is now enforced entirely by the tenant `memberships.role` looked up from our own database (see the Roles table below), which every OAuth principal already goes through regardless of what scopes its access token carries.
 
+Version **3.5.2** adds `connect_highlevel`, an MCP tool wrapping `/onboarding/highlevel/start` so ChatGPT can start HighLevel Marketplace OAuth for the caller's own tenant from inside the chat — a self-serve `tenant_owner` no longer needs a separate REST call outside ChatGPT to connect their sub-account. It runs before the generic tenant/connection lookup that every other tool goes through (that lookup would otherwise fail for a brand-new tenant with no connection yet, which is exactly the case this tool exists for), and still enforces the same owner/admin-only role check as the REST endpoint.
+
 ## Security model
 
 There are two independent OAuth relationships:
@@ -110,7 +112,7 @@ Do not place roles or access decisions only in Auth0. The backend always checks 
 
 1. Make sure Auth0's connection only lets in people you actually want as customers (invite-only or approval-required — this flag does not gate Auth0 itself).
 2. The customer adds the MCP staging URL in ChatGPT and logs in through Auth0 (signing up there too, if Auth0 allows it). On their very first successful login, the MCP auto-creates their `tenants` row, `users` row and a `tenant_owner` membership — no SQL needed.
-3. The customer (now `tenant_owner`) calls `POST /onboarding/highlevel/start`, opens the returned URL and completes HighLevel consent for their own sub-account.
+3. The customer (now `tenant_owner`) asks the agent to call the `connect_highlevel` tool from inside ChatGPT, opens the returned URL and completes HighLevel consent for their own sub-account. (Equivalent to calling `POST /onboarding/highlevel/start` directly, for anything other than ChatGPT.)
 4. The callback tries to auto-resolve `connections.default_user_id` via HighLevel's Users API. If the connected app/token has that scope, it is set automatically; if not, `create_social_post` will require an explicit `userId` until an admin sets `default_user_id` manually (via SQL, or by asking the customer to run `list_location_users` and reporting back a HighLevel user id).
 5. Test `list_social_accounts` and a `create_social_post` draft to confirm both read and write reach HighLevel.
 
@@ -147,7 +149,7 @@ The backend connects directly through `DATABASE_URL`; it does not use the Supaba
 5. Provision one Testing Agency Auth0 user and membership.
 6. Run `npm test` and `npm run check:config`.
 7. Deploy only `feature/oauth-multitenant-v1` to the staging Render service.
-8. Confirm `/health` reports version `3.5.1` and does not expose configuration.
+8. Confirm `/health` reports version `3.5.2` and does not expose configuration.
 9. Complete ChatGPT OAuth and run read-only `list_social_accounts` for `UwsfBVLmz7XSKJbhuOTS`.
 10. Attempt the 123 GYM `locationId` with the Testing Agency user and confirm it is blocked before any HighLevel request.
 11. Inspect `audit_events` for success/failure records without secrets.
