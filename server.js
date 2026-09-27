@@ -764,7 +764,6 @@ function toolOAuthScopes(toolName) {
 }
 
 function authorizeTool(principal, toolName) {
-  requireScopes(principal, toolOAuthScopes(toolName));
   if (principal.authType === "legacy_admin") return;
   const role = principal.role;
   if (READ_ONLY_TOOLS.has(toolName)) return;
@@ -818,7 +817,6 @@ async function auditTool(req, values) {
 app.post("/onboarding/highlevel/start", authenticateMcpRequest, async (req, res) => {
   try {
     if (req.principal.authType !== "oauth") return res.status(403).json({ error: "oauth_user_required" });
-    requireScopes(req.principal, ["uplifting:write"]);
     const result = await createHighLevelOnboarding({ env: process.env, repository: req.tenantServices.repository }).start(req.principal);
     return res.json(result);
   } catch (error) {
