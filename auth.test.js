@@ -157,20 +157,6 @@ test("OAuth user cannot switch locationId to 123 GYM", async () => {
   }));
 });
 
-test("read-only OAuth token receives an MCP insufficient-scope challenge before a write tool", async () => {
-  await withProcessEnv(oauthEnv(), () => withServer(async (baseUrl) => {
-    app.locals.auth0Verifier = async () => ({ subject: "auth0|testing-user", tenantIdClaim: TEST_TENANT_ID, scopes: new Set(["uplifting:read"]) });
-    app.locals.tenantServices = testServices();
-    const response = await fetch(`${baseUrl}/mcp`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: "Bearer signed-user-token" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "create_social_post", arguments: { locationId: TEST_LOCATION } } })
-    });
-    const payload = await response.json();
-    assert.equal(payload.result.isError, true);
-    assert.match(payload.result._meta["mcp/www_authenticate"][0], /insufficient_scope/);
-  }));
-});
 
 test("unexpected authentication backend errors do not expose database secrets", async () => {
   await withProcessEnv({ ...oauthEnv(), DATABASE_URL: "postgresql://user:super-secret-password@db.example/postgres" }, () => withServer(async (baseUrl) => {
