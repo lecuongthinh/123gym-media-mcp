@@ -15,7 +15,7 @@ const GYM_LOCATION = "pUePVc6UKEUecvZS6EYU";
 const TEST_LOCATION = "UwsfBVLmz7XSKJbhuOTS";
 const TEST_TENANT_ID = "00000000-0000-4000-8000-000000000124";
 
-function connection(tenantId, tenantName, locationId, envName) {
+function connection(tenantId, tenantName, locationId, envName, defaultUserId = null) {
   return {
     tenant_id: tenantId,
     tenant_name: tenantName,
@@ -26,7 +26,8 @@ function connection(tenantId, tenantName, locationId, envName) {
     secret_backend: "environment",
     secret_ref: `env://${envName}`,
     credential_type: "private_integration_token",
-    scopes: ["social:read", "media:read"]
+    scopes: ["social:read", "media:read"],
+    default_user_id: defaultUserId
   };
 }
 
@@ -34,7 +35,7 @@ function pilotServices(env = {}) {
   return {
     repository: new InMemoryConnectionRepository([
       connection(LEGACY_123_GYM_TENANT_ID, "123 GYM", GYM_LOCATION, "LC_PRIVATE_TOKEN"),
-      connection(TEST_TENANT_ID, "Testing Agency", TEST_LOCATION, "LC_PRIVATE_TOKEN_TESTING_AGENCY")
+      connection(TEST_TENANT_ID, "Testing Agency", TEST_LOCATION, "LC_PRIVATE_TOKEN_TESTING_AGENCY", "tenant-default-user-id")
     ]),
     credentialProvider: new EnvironmentCredentialProvider({
       LC_PRIVATE_TOKEN: "gym-routing-token",
@@ -56,6 +57,12 @@ test("authorized tenant context routes Testing Agency to its own credential", as
   assert.equal(context.locationId, TEST_LOCATION);
   assert.equal(context.accessToken, "testing-routing-token");
   assert.equal(context.tenantName, "Testing Agency");
+  assert.equal(context.defaultUserId, "tenant-default-user-id");
+});
+
+test("authorized tenant context reports no default_user_id when the tenant has not configured one", async () => {
+  const context = await authorizeTenantContext({ tenantId: LEGACY_123_GYM_TENANT_ID, requestedLocationId: GYM_LOCATION, ...pilotServices() });
+  assert.equal(context.defaultUserId, null);
 });
 
 test("authorized tenant cannot switch locationId to another tenant", async () => {

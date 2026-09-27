@@ -28,17 +28,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.3.0";
-const TESTING_AGENCY_TENANT_ID = "00000000-0000-4000-8000-000000000124";
-const TEST_DRAFT_LOCATION_ID = "UwsfBVLmz7XSKJbhuOTS";
-const TEST_DRAFT_ACCOUNT_ID = "68c83389c2ef4245a387b54f_UwsfBVLmz7XSKJbhuOTS_112256467241215_page";
-const TEST_DRAFT_BODY = Object.freeze({
-  accountIds: Object.freeze([TEST_DRAFT_ACCOUNT_ID]),
-  summary: "[STAGING TEST] Kiểm tra tạo bài nháp không cần userId. Không xuất bản.",
-  status: "draft",
-  type: "post"
-});
-const draftDiagnosticState = { attempted: false };
+const SERVICE_VERSION = "3.4.0";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -234,7 +224,8 @@ function tenantAccess(requestedLocationId, authorizedContext) {
     name: authorizedContext.tenantName,
     token: authorizedContext.accessToken,
     tenantId: authorizedContext.tenantId,
-    connectionId: authorizedContext.connectionId
+    connectionId: authorizedContext.connectionId,
+    defaultUserId: authorizedContext.defaultUserId || null
   };
 }
 
@@ -519,8 +510,8 @@ function buildSocialPostBody(args, { partial = false } = {}) {
   if (!partial && (!Array.isArray(body.accountIds) || body.accountIds.length === 0)) {
     throw new Error("accountIds must be a non-empty array. Call list_social_accounts first.");
   }
-  if (!partial && status !== "draft" && (typeof body.userId !== "string" || !body.userId.trim())) {
-    throw new Error("userId is required to create a Social Planner post.");
+  if (!partial && (typeof body.userId !== "string" || !body.userId.trim())) {
+    throw new Error("userId is required to create a Social Planner post (HighLevel rejects drafts without it too). Pass userId explicitly or configure a tenant default_user_id.");
   }
   if (status === "in_review" && !body.postApprovalDetails?.approver) {
     throw new Error("postApprovalDetails.approver is required for in_review posts.");
@@ -531,8 +522,10 @@ function buildSocialPostBody(args, { partial = false } = {}) {
 
 async function createSocialPost(args = {}, authorizedContext) {
   const { locationId = DEFAULT_LOCATION_ID, verify = true, splitByPlatform = true } = args;
+  const tenant = tenantAccess(locationId, authorizedContext);
   const accounts = await resolveSocialAccounts(locationId, args.accountIds || [], authorizedContext);
-  const body = buildSocialPostBody({ ...args, accountIds: accounts.map((account) => account.id) });
+  const userId = args.userId ?? tenant.defaultUserId ?? undefined;
+  const body = buildSocialPostBody({ ...args, userId, accountIds: accounts.map((account) => account.id) });
   const grouped = new Map();
   for (const account of accounts) grouped.set(account.platform, [...(grouped.get(account.platform) || []), account]);
   const groups = splitByPlatform ? [...grouped.values()] : [accounts];
@@ -740,25 +733,6 @@ const tools = [
   }
 ];
 
-const DEBUG_DRAFT_WITHOUT_USERID_TOOL = {
-  name: "debug_test_draft_without_userid",
-  title: "Run one-shot staging draft diagnostic",
-  description: "Run the temporary one-shot Testing Agency diagnostic that creates one fixed draft without userId. No caller-controlled inputs are accepted.",
-  inputSchema: { type: "object", properties: {}, additionalProperties: false },
-  annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true }
-};
-
-function isDraftDiagnosticEnabled(env = process.env) {
-  return env.MCP_DEBUG_TEST_DRAFT_WITHOUT_USERID === "true" &&
-    env.RENDER_SERVICE_ID === "srv-dapsmt5g1s2s73d9sp7g" &&
-    env.RENDER_EXTERNAL_HOSTNAME === "uplifting-social-ai-staging.onrender.com" &&
-    env.RENDER_GIT_BRANCH === "feature/oauth-multitenant-v1";
-}
-
-function availableTools(env = process.env) {
-  return isDraftDiagnosticEnabled(env) ? [...tools, DEBUG_DRAFT_WITHOUT_USERID_TOOL] : tools;
-}
-
 const READ_ONLY_TOOLS = new Set([
   "search_leadconnector_media", "inspect_media", "list_social_accounts", "list_social_posts",
   "get_social_post", "get_social_statistics"
@@ -786,7 +760,7 @@ function authorizeTool(principal, toolName) {
   }
 }
 
-for (const tool of [...tools, DEBUG_DRAFT_WITHOUT_USERID_TOOL]) {
+for (const tool of tools) {
   const securitySchemes = [{ type: "oauth2", scopes: toolOAuthScopes(tool.name) }];
   tool.securitySchemes = securitySchemes;
   tool._meta = { ...(tool._meta || {}), securitySchemes };
@@ -860,136 +834,6 @@ app.get("/debug/tool-schema", (req, res) => {
     : { requiredPresent: false });
 });
 
-function requireDraftDebugStaging(req, res, next) {
-  res.set("Cache-Control", "no-store");
-  if (!isDraftDiagnosticEnabled()) return res.status(404).end();
-  return next();
-}
-
-async function authenticateDebugOAuthRequest(req, res, next) {
-  const configuration = authConfiguration(process.env);
-  try {
-    const token = bearerToken(req);
-    if (!configuration.oauthReady || !token) throw new AuthenticationError("OAuth authentication required.");
-    await resolveOAuthPrincipal(req, token);
-    return next();
-  } catch (error) {
-    const expected = error instanceof AuthenticationError || error instanceof TenantAuthorizationError;
-    const status = error instanceof AuthenticationError ? error.status : (error instanceof TenantAuthorizationError ? 403 : 503);
-    const message = expected ? error.message : "Authentication service unavailable.";
-    if (configuration.oauthReady) {
-      res.set("WWW-Authenticate", oauthChallenge(process.env, { error: error.code || "invalid_token", description: message }));
-    }
-    return res.status(status).json({ error: error.code || "authentication_failed", message });
-  }
-}
-
-class DraftDiagnosticError extends Error {
-  constructor(message, status, code) {
-    super(message);
-    this.name = "DraftDiagnosticError";
-    this.status = status;
-    this.code = code;
-  }
-}
-
-async function executeDraftWithoutUserIdDiagnostic({ principal, tenantServices, state = draftDiagnosticState }) {
-  let accessToken;
-  try {
-    if (principal?.authType !== "oauth" || principal?.tenantId !== TESTING_AGENCY_TENANT_ID) {
-      throw new DraftDiagnosticError("Testing Agency OAuth principal is required.", 403, "testing_agency_oauth_required");
-    }
-    authorizeTool(principal, "create_social_post");
-
-    const connection = await tenantServices.repository.findActiveConnectionByTenantId(TESTING_AGENCY_TENANT_ID);
-    if (
-      !connection ||
-      connection.tenant_id !== TESTING_AGENCY_TENANT_ID ||
-      connection.location_id !== TEST_DRAFT_LOCATION_ID ||
-      connection.auth_type !== "private_integration_token" ||
-      connection.credential_type !== "private_integration_token" ||
-      connection.secret_backend !== "environment" ||
-      connection.secret_ref !== "env://LC_PRIVATE_TOKEN_TESTING_AGENCY"
-    ) {
-      throw new DraftDiagnosticError("Testing Agency connection precondition failed.", 412, "testing_agency_connection_precondition_failed");
-    }
-
-    const credential = await tenantServices.credentialProvider.getAccess(connection);
-    if (
-      credential?.locationId !== TEST_DRAFT_LOCATION_ID ||
-      typeof credential?.accessToken !== "string" ||
-      credential.accessToken.length === 0
-    ) {
-      throw new DraftDiagnosticError("Testing Agency credential precondition failed.", 412, "testing_agency_credential_precondition_failed");
-    }
-    accessToken = credential.accessToken;
-
-    const body = TEST_DRAFT_BODY;
-    if (
-      body.status !== "draft" ||
-      body.type !== "post" ||
-      body.accountIds.length !== 1 ||
-      body.accountIds[0] !== TEST_DRAFT_ACCOUNT_ID ||
-      Object.hasOwn(body, "userId") ||
-      Object.hasOwn(body, "scheduleDate") ||
-      Object.hasOwn(body, "postApprovalDetails")
-    ) {
-      throw new DraftDiagnosticError("Draft body precondition failed.", 412, "draft_body_precondition_failed");
-    }
-
-    const path = `/social-media-posting/${encodeURIComponent(TEST_DRAFT_LOCATION_ID)}/posts`;
-    validateLocationBinding(path, TEST_DRAFT_LOCATION_ID);
-
-    if (state.attempted) throw new DraftDiagnosticError("Draft diagnostic has already been attempted.", 409, "draft_diagnostic_already_attempted");
-    state.attempted = true;
-
-    const highLevelResponse = await fetch(`${LC_BASE_URL}${path}`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${credential.accessToken}`,
-        Version: "v3",
-        Accept: "application/json",
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(body)
-    });
-
-    const responseText = await highLevelResponse.text();
-    let responseBody;
-    try { responseBody = JSON.parse(responseText); } catch { responseBody = { raw: responseText }; }
-    const sanitizedResponse = sanitizeDebugResponse(responseBody, credential.accessToken);
-    const post = responseBody?.post || responseBody?.data || responseBody;
-    const postId = typeof (post?._id || post?.id) === "string" ? post._id || post.id : null;
-    const actualStatus = typeof post?.status === "string" ? post.status : null;
-
-    return {
-      endpointStatus: highLevelResponse.ok ? 200 : 502,
-      payload: {
-        highLevelHttpStatus: highLevelResponse.status,
-        response: sanitizedResponse,
-        ...(postId ? { postId } : {}),
-        ...(actualStatus ? { status: actualStatus } : {})
-      }
-    };
-  } catch (error) {
-    if (error instanceof DraftDiagnosticError) throw error;
-    throw new DraftDiagnosticError(sanitizeDebugResponse(error?.message, accessToken), 502, "draft_test_failed");
-  }
-}
-
-app.post("/debug/test-draft-without-userid", requireDraftDebugStaging, authenticateDebugOAuthRequest, async (req, res) => {
-  try {
-    const result = await executeDraftWithoutUserIdDiagnostic({
-      principal: req.principal,
-      tenantServices: req.tenantServices,
-      state: req.app.locals.draftDiagnosticState || draftDiagnosticState
-    });
-    return res.status(result.endpointStatus).json(result.payload);
-  } catch (error) {
-    return res.status(error.status || 502).json({ error: error.code || "draft_test_failed", message: error.message });
-  }
-});
-
 app.use("/mcp", authenticateMcpRequest);
 
 app.post("/mcp", async (req, res) => {
@@ -1005,34 +849,15 @@ app.post("/mcp", async (req, res) => {
       return res.status(202).end();
     }
     if (request.method === "tools/list") {
-      const listedTools = availableTools();
-      mcpDiagnostic(req, "tools_list_handled", { toolCount: listedTools.length });
-      return res.json({ jsonrpc: "2.0", id, result: { tools: listedTools } });
+      mcpDiagnostic(req, "tools_list_handled", { toolCount: tools.length });
+      return res.json({ jsonrpc: "2.0", id, result: { tools } });
     }
     if (request.method === "tools/call") {
       const toolName = request.params?.name;
       const args = request.params?.arguments || {};
-      const tool = availableTools().find((item) => item.name === toolName);
+      const tool = tools.find((item) => item.name === toolName);
       if (!tool) throw new Error(`Unknown tool: ${toolName}`);
       authorizeTool(req.principal, toolName);
-      if (toolName === "debug_test_draft_without_userid") {
-        if (!args || typeof args !== "object" || Array.isArray(args) || Object.keys(args).length !== 0) {
-          throw new Error("debug_test_draft_without_userid does not accept arguments.");
-        }
-        const diagnostic = await executeDraftWithoutUserIdDiagnostic({
-          principal: req.principal,
-          tenantServices: req.tenantServices,
-          state: req.app.locals.draftDiagnosticState || draftDiagnosticState
-        });
-        return res.json({
-          jsonrpc: "2.0",
-          id,
-          result: {
-            content: [{ type: "text", text: JSON.stringify(diagnostic.payload) }],
-            structuredContent: diagnostic.payload
-          }
-        });
-      }
       const authorizedContext = await requestTenantContext(req, args.locationId);
       let result;
       if (toolName === "upload_leadconnector_media") {
@@ -1096,6 +921,7 @@ export {
   app,
   authenticateMcpRequest,
   buildSocialPostBody,
+  createSocialPost,
   downloadChatGPTFile,
   getSocialStatistics,
   isEligible123GymAccount,

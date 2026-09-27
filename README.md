@@ -2,7 +2,9 @@
 
 Multi-tenant MCP resource server for ChatGPT, LeadConnector Media and HighLevel Social Planner.
 
-Version **3.3.0** adds Auth0 OAuth, database-backed user/tenant authorization, encrypted HighLevel OAuth credentials, audit events and tenant-isolated tool execution. The legacy 123 GYM environment credential remains supported but is not used by customer OAuth requests unless the authenticated user has an active 123 GYM membership.
+Version **3.3.0** added Auth0 OAuth, database-backed user/tenant authorization, encrypted HighLevel OAuth credentials, audit events and tenant-isolated tool execution. The legacy 123 GYM environment credential remains supported but is not used by customer OAuth requests unless the authenticated user has an active 123 GYM membership.
+
+Version **3.4.0** removed the temporary `debug_test_draft_without_userid` diagnostic: it was built to check whether HighLevel would accept a draft post without `userId`, and live testing against the real API confirmed it does not (HighLevel returns `422` for any status, including draft, when `userId` is missing). Instead, `connections.default_user_id` lets each tenant configure a HighLevel user id that `create_social_post` fills in automatically when the caller (ChatGPT/agent) omits `userId`, so the agent never needs to know a HighLevel-internal id. Run `migrations/004_default_user_id.sql` (or `npm run migrate`) and set `default_user_id` for each tenant that should get this behavior.
 
 ## Security model
 
@@ -103,8 +105,9 @@ For the first staging pilot, provision the identity before the user connects Cha
 3. Add the tenant's HighLevel connection:
    - Pilot PIT: keep the token in Render and store only `env://VARIABLE_NAME` in `tenant_credentials.secret_ref`.
    - Marketplace OAuth: the tenant owner calls `POST /onboarding/highlevel/start`, opens the returned URL and completes HighLevel consent. The callback validates a one-time state and stores encrypted tokens.
-4. Add the MCP staging URL in ChatGPT, select OAuth, complete login and scan tools.
-5. Test `list_social_accounts` first. Use only the Testing Agency location during staging integration tests.
+4. Set `connections.default_user_id` for this tenant's connection row to a valid HighLevel user id from that sub-account (Settings → My Staff, or the HighLevel Users API). HighLevel's Social Planner rejects `create_social_post` for every status, including draft, when `userId` is absent — there is no "system" poster identity. Skipping this step means every `create_social_post` call fails with a 422 unless the caller supplies `userId` itself.
+5. Add the MCP staging URL in ChatGPT, select OAuth, complete login and scan tools.
+6. Test `list_social_accounts` first, then a `create_social_post` draft, to confirm both read and write actually reach HighLevel. Use only the Testing Agency location during staging integration tests.
 
 If a user has memberships in more than one tenant, the Auth0 access token must contain the tenant claim. If the claim is absent, the request fails closed as ambiguous.
 
@@ -128,7 +131,7 @@ The backend connects directly through `DATABASE_URL`; it does not use the Supaba
 5. Provision one Testing Agency Auth0 user and membership.
 6. Run `npm test` and `npm run check:config`.
 7. Deploy only `feature/oauth-multitenant-v1` to the staging Render service.
-8. Confirm `/health` reports version `3.3.0` and does not expose configuration.
+8. Confirm `/health` reports version `3.4.0` and does not expose configuration.
 9. Complete ChatGPT OAuth and run read-only `list_social_accounts` for `UwsfBVLmz7XSKJbhuOTS`.
 10. Attempt the 123 GYM `locationId` with the Testing Agency user and confirm it is blocked before any HighLevel request.
 11. Inspect `audit_events` for success/failure records without secrets.

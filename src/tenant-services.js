@@ -24,7 +24,7 @@ export class PostgresConnectionRepository {
     const { rows } = await this.pool.query(
       `SELECT t.id AS tenant_id, t.display_name AS tenant_name, t.status AS tenant_status,
               c.id AS connection_id, c.external_location_id AS location_id, c.status AS connection_status,
-              c.auth_type, c.scopes, tc.id AS credential_id, tc.secret_backend, tc.secret_ref,
+              c.auth_type, c.scopes, c.default_user_id, tc.id AS credential_id, tc.secret_backend, tc.secret_ref,
               tc.credential_type, tc.expires_at, tc.encrypted_payload
          FROM tenants t
          JOIN connections c ON c.tenant_id = t.id AND c.provider = 'highlevel'
@@ -40,7 +40,7 @@ export class PostgresConnectionRepository {
     const { rows } = await this.pool.query(
       `SELECT t.id AS tenant_id, t.display_name AS tenant_name, t.status AS tenant_status,
               c.id AS connection_id, c.external_location_id AS location_id, c.status AS connection_status,
-              c.auth_type, c.scopes, tc.id AS credential_id, tc.secret_backend, tc.secret_ref,
+              c.auth_type, c.scopes, c.default_user_id, tc.id AS credential_id, tc.secret_backend, tc.secret_ref,
               tc.credential_type, tc.expires_at, tc.encrypted_payload
          FROM tenants t
          JOIN connections c ON c.tenant_id = t.id AND c.provider = 'highlevel'
@@ -218,7 +218,8 @@ export function legacyConnectionsFromEnv(env = process.env) {
     credential_type: "private_integration_token",
     tenant_status: "active",
     connection_status: "active",
-    scopes: []
+    scopes: [],
+    default_user_id: env.LC_DEFAULT_USER_ID || null
   }];
   if (env.LC_TENANTS_JSON) {
     let configured;
@@ -236,7 +237,8 @@ export function legacyConnectionsFromEnv(env = process.env) {
         credential_type: "private_integration_token",
         tenant_status: "active",
         connection_status: "active",
-        scopes: []
+        scopes: [],
+        default_user_id: tenant.defaultUserId || null
       };
       if (existing) Object.assign(existing, item);
       else definitions.push(item);
@@ -289,6 +291,7 @@ export async function authorizeTenantContext({ tenantId, requestedLocationId, re
     locationId: connection.location_id,
     accessToken: credential.accessToken,
     scopes: credential.scopes,
+    defaultUserId: connection.default_user_id || null,
     actor
   });
 }

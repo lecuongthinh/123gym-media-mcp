@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   app,
   buildSocialPostBody,
+  createSocialPost,
   getSocialStatistics,
   isEligible123GymAccount,
   listMedia,
@@ -58,105 +59,8 @@ async function withTestServer(fn) {
   try { return await fn(`http://127.0.0.1:${server.address().port}`); } finally {
     delete app.locals.auth0Verifier;
     delete app.locals.tenantServices;
-    delete app.locals.draftDiagnosticState;
     await new Promise((resolve) => server.close(resolve));
   }
-}
-
-function draftDebugEnv(overrides = {}) {
-  return {
-    MCP_DEBUG_TEST_DRAFT_WITHOUT_USERID: "true",
-    RENDER_SERVICE_ID: "srv-dapsmt5g1s2s73d9sp7g",
-    RENDER_EXTERNAL_HOSTNAME: "uplifting-social-ai-staging.onrender.com",
-    RENDER_GIT_BRANCH: "feature/oauth-multitenant-v1",
-    AUTH0_ISSUER_BASE_URL: "https://uplifting-test.auth0.com/",
-    AUTH0_AUDIENCE: "https://uplifting-social-ai-staging.onrender.com",
-    MCP_RESOURCE_URL: "https://uplifting-social-ai-staging.onrender.com",
-    ...overrides
-  };
-}
-
-function draftTestServices(credentialLocationId = TEST_LOCATION) {
-  const connection = {
-    tenant_id: TEST_TENANT_ID,
-    tenant_name: "Testing Agency",
-    connection_id: "testing-agency-connection",
-    location_id: TEST_LOCATION,
-    auth_type: "private_integration_token",
-    credential_type: "private_integration_token",
-    secret_backend: "environment",
-    secret_ref: "env://LC_PRIVATE_TOKEN_TESTING_AGENCY"
-  };
-  return {
-    repository: {
-      async resolveUserAuthorization() {
-        return {
-          id: "testing-user",
-          auth_subject: "auth0|testing-user",
-          email: "tester@example.com",
-          membership_id: "testing-membership",
-          role: "tenant_admin",
-          tenant_id: TEST_TENANT_ID,
-          tenant_name: "Testing Agency"
-        };
-      },
-      async findActiveConnectionByTenantId(tenantId) {
-        assert.equal(tenantId, TEST_TENANT_ID);
-        return connection;
-      }
-    },
-    credentialProvider: {
-      async getAccess(receivedConnection) {
-        assert.equal(receivedConnection, connection);
-        return { accessToken: "testing-agency-access-token", locationId: credentialLocationId };
-      }
-    }
-  };
-}
-
-function configureDraftOAuth(state = { attempted: false }) {
-  app.locals.auth0Verifier = async () => ({
-    subject: "auth0|testing-user",
-    tenantIdClaim: TEST_TENANT_ID,
-    scopes: new Set(["uplifting:write"])
-  });
-  app.locals.tenantServices = draftTestServices();
-  app.locals.draftDiagnosticState = state;
-}
-
-function callMcp(baseUrl, method, params, id = 1) {
-  return fetch(`${baseUrl}/mcp`, {
-    method: "POST",
-    headers: { "content-type": "application/json", authorization: "Bearer signed-user-token" },
-    body: JSON.stringify({ jsonrpc: "2.0", id, method, ...(params ? { params } : {}) })
-  });
-}
-
-function callRestDiagnostic(baseUrl) {
-  return fetch(`${baseUrl}/debug/test-draft-without-userid`, {
-    method: "POST",
-    headers: { authorization: "Bearer signed-user-token" }
-  });
-}
-
-function mockDraftOutbound(realFetch, counter) {
-  return async (url, options) => {
-    if (!String(url).startsWith("https://services.leadconnectorhq.com/")) return realFetch(url, options);
-    counter.count += 1;
-    assert.equal(String(url), `https://services.leadconnectorhq.com/social-media-posting/${TEST_LOCATION}/posts`);
-    assert.equal(options.method, "POST");
-    const body = JSON.parse(options.body);
-    assert.deepEqual(body, {
-      accountIds: [TEST_ACCOUNT_ID],
-      summary: "[STAGING TEST] Kiểm tra tạo bài nháp không cần userId. Không xuất bản.",
-      status: "draft",
-      type: "post"
-    });
-    assert.equal(Object.hasOwn(body, "userId"), false);
-    assert.equal(Object.hasOwn(body, "scheduleDate"), false);
-    assert.equal(Object.hasOwn(body, "postApprovalDetails"), false);
-    return new Response(JSON.stringify({ _id: "mock-draft-id", status: "draft" }), { status: 201 });
-  };
 }
 
 test("upload tool declares a valid ChatGPT file parameter", () => {
@@ -211,7 +115,7 @@ test("legacy admin key is opt-in, x-api-key only, and not accepted as OAuth Bear
       body: JSON.stringify({ jsonrpc: "2.0", id: 103, method: "initialize" })
     });
     assert.equal(accepted.status, 200);
-    assert.equal((await accepted.json()).result.serverInfo.version, "3.3.0");
+    assert.equal((await accepted.json()).result.serverInfo.version, "3.4.0");
 
     const rejected = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -228,7 +132,7 @@ test("health response contains no authentication or tenant secrets", async () =>
     const text = await response.text();
     assert.equal(response.status, 200);
     assert.doesNotMatch(text, /health-admin-secret|health-tenant-secret|LC_TENANTS_JSON|LC_PRIVATE_TOKEN/);
-    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.3.0" });
+    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.4.0" });
   }));
 });
 
@@ -270,206 +174,6 @@ test("tool schema debug endpoint rejects a different service ID", async () => {
     assert.equal(response.status, 404);
     assert.equal(await response.text(), "");
   }));
-});
-
-test("debug draft MCP tool is absent when its flag is off", async () => {
-  await withProcessEnv(draftDebugEnv({ MCP_DEBUG_TEST_DRAFT_WITHOUT_USERID: undefined }), () => withTestServer(async (baseUrl) => {
-    configureDraftOAuth();
-    const response = await callMcp(baseUrl, "tools/list");
-    const payload = await response.json();
-    assert.equal(response.status, 200);
-    assert.equal(payload.result.tools.some((tool) => tool.name === "debug_test_draft_without_userid"), false);
-  }));
-});
-
-test("debug draft MCP tool is absent for a wrong Render identity", async () => {
-  await withProcessEnv(draftDebugEnv({ RENDER_SERVICE_ID: "srv-not-staging" }), () => withTestServer(async (baseUrl) => {
-    configureDraftOAuth();
-    const response = await callMcp(baseUrl, "tools/list");
-    const payload = await response.json();
-    assert.equal(payload.result.tools.some((tool) => tool.name === "debug_test_draft_without_userid"), false);
-  }));
-});
-
-test("debug draft MCP tool appears on staging with an empty closed schema", async () => {
-  await withProcessEnv(draftDebugEnv(), () => withTestServer(async (baseUrl) => {
-    configureDraftOAuth();
-    const response = await callMcp(baseUrl, "tools/list");
-    const payload = await response.json();
-    const matches = payload.result.tools.filter((tool) => tool.name === "debug_test_draft_without_userid");
-    assert.equal(matches.length, 1);
-    assert.deepEqual(matches[0].inputSchema, { type: "object", properties: {}, additionalProperties: false });
-    assert.deepEqual(matches[0].securitySchemes, [{ type: "oauth2", scopes: ["uplifting:write"] }]);
-    for (const forbidden of ["locationId", "accountIds", "userId", "status", "body", "scheduleDate", "postApprovalDetails"]) {
-      assert.equal(Object.hasOwn(matches[0].inputSchema.properties, forbidden), false);
-    }
-  }));
-});
-
-test("draft diagnostic endpoint is disabled by default", async () => {
-  let outboundCreateCount = 0;
-  const realFetch = globalThis.fetch;
-  await withProcessEnv(draftDebugEnv({ MCP_DEBUG_TEST_DRAFT_WITHOUT_USERID: undefined }), () => withMockFetch(async (url, options) => {
-    if (String(url).startsWith("https://services.leadconnectorhq.com/")) outboundCreateCount += 1;
-    return realFetch(url, options);
-  }, () => withTestServer(async (baseUrl) => {
-    const response = await fetch(`${baseUrl}/debug/test-draft-without-userid`, { method: "POST" });
-    assert.equal(response.status, 404);
-    assert.equal(response.headers.get("cache-control"), "no-store");
-    assert.equal(outboundCreateCount, 0);
-  })));
-});
-
-test("draft diagnostic endpoint fails closed on a wrong Render service", async () => {
-  let outboundCreateCount = 0;
-  const realFetch = globalThis.fetch;
-  await withProcessEnv(draftDebugEnv({ RENDER_SERVICE_ID: "srv-not-staging" }), () => withMockFetch(async (url, options) => {
-    if (String(url).startsWith("https://services.leadconnectorhq.com/")) outboundCreateCount += 1;
-    return realFetch(url, options);
-  }, () => withTestServer(async (baseUrl) => {
-    const response = await fetch(`${baseUrl}/debug/test-draft-without-userid`, { method: "POST" });
-    assert.equal(response.status, 404);
-    assert.equal(outboundCreateCount, 0);
-  })));
-});
-
-test("draft diagnostic endpoint fails closed on credential location mismatch", async () => {
-  let outboundCreateCount = 0;
-  const realFetch = globalThis.fetch;
-  await withProcessEnv(draftDebugEnv(), () => withMockFetch(async (url, options) => {
-    if (String(url).startsWith("https://services.leadconnectorhq.com/")) outboundCreateCount += 1;
-    return realFetch(url, options);
-  }, () => withTestServer(async (baseUrl) => {
-    app.locals.auth0Verifier = async () => ({
-      subject: "auth0|testing-user",
-      tenantIdClaim: TEST_TENANT_ID,
-      scopes: new Set(["uplifting:write"])
-    });
-    app.locals.tenantServices = draftTestServices("wrong-staging-location");
-    const response = await fetch(`${baseUrl}/debug/test-draft-without-userid`, {
-      method: "POST",
-      headers: { authorization: "Bearer signed-user-token" }
-    });
-    assert.equal(response.status, 412);
-    assert.deepEqual(await response.json(), {
-      error: "testing_agency_credential_precondition_failed",
-      message: "Testing Agency credential precondition failed."
-    });
-    assert.equal(outboundCreateCount, 0);
-  })));
-});
-
-test("draft diagnostic sends one fixed request and is one-shot per process", async () => {
-  let outboundCreateCount = 0;
-  const realFetch = globalThis.fetch;
-  await withProcessEnv(draftDebugEnv(), () => withMockFetch(async (url, options) => {
-    if (!String(url).startsWith("https://services.leadconnectorhq.com/")) return realFetch(url, options);
-    outboundCreateCount += 1;
-    assert.equal(String(url), `https://services.leadconnectorhq.com/social-media-posting/${TEST_LOCATION}/posts`);
-    assert.equal(options.method, "POST");
-    assert.equal(options.headers.Version, "v3");
-    assert.equal(options.headers.Authorization, "Bearer testing-agency-access-token");
-    const body = JSON.parse(options.body);
-    assert.deepEqual(body, {
-      accountIds: [TEST_ACCOUNT_ID],
-      summary: "[STAGING TEST] Kiểm tra tạo bài nháp không cần userId. Không xuất bản.",
-      status: "draft",
-      type: "post"
-    });
-    assert.equal(Object.hasOwn(body, "userId"), false);
-    assert.equal(Object.hasOwn(body, "scheduleDate"), false);
-    assert.equal(Object.hasOwn(body, "postApprovalDetails"), false);
-    return new Response(JSON.stringify({
-      _id: "staging-draft-id",
-      status: "draft",
-      access_token: "must-not-be-returned",
-      message: "testing-agency-access-token"
-    }), { status: 201 });
-  }, () => withTestServer(async (baseUrl) => {
-    app.locals.auth0Verifier = async () => ({
-      subject: "auth0|testing-user",
-      tenantIdClaim: TEST_TENANT_ID,
-      scopes: new Set(["uplifting:write"])
-    });
-    app.locals.tenantServices = draftTestServices();
-    app.locals.draftDiagnosticState = { attempted: false };
-    const request = () => fetch(`${baseUrl}/debug/test-draft-without-userid`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: "Bearer signed-user-token" },
-      body: JSON.stringify({ userId: "ignored", scheduleDate: "ignored", postApprovalDetails: { ignored: true } })
-    });
-
-    const first = await request();
-    assert.equal(first.status, 200);
-    assert.equal(first.headers.get("cache-control"), "no-store");
-    assert.deepEqual(await first.json(), {
-      highLevelHttpStatus: 201,
-      response: { _id: "staging-draft-id", status: "draft", message: "[REDACTED]" },
-      postId: "staging-draft-id",
-      status: "draft"
-    });
-    assert.equal(outboundCreateCount, 1);
-
-    const second = await request();
-    assert.equal(second.status, 409);
-    assert.deepEqual(await second.json(), {
-      error: "draft_diagnostic_already_attempted",
-      message: "Draft diagnostic has already been attempted."
-    });
-    assert.equal(outboundCreateCount, 1);
-  })));
-});
-
-test("debug draft MCP tool sends one mocked POST and blocks its second invocation", async () => {
-  const counter = { count: 0 };
-  const realFetch = globalThis.fetch;
-  await withProcessEnv(draftDebugEnv(), () => withMockFetch(mockDraftOutbound(realFetch, counter), () => withTestServer(async (baseUrl) => {
-    configureDraftOAuth();
-    const first = await callMcp(baseUrl, "tools/call", { name: "debug_test_draft_without_userid", arguments: {} }, 201);
-    const firstPayload = await first.json();
-    assert.equal(firstPayload.result.structuredContent.highLevelHttpStatus, 201);
-    assert.equal(firstPayload.result.structuredContent.status, "draft");
-    assert.equal(counter.count, 1);
-
-    const second = await callMcp(baseUrl, "tools/call", { name: "debug_test_draft_without_userid", arguments: {} }, 202);
-    const secondPayload = await second.json();
-    assert.match(secondPayload.error.message, /already been attempted/);
-    assert.equal(counter.count, 1);
-  })));
-});
-
-test("REST then MCP share the same draft diagnostic latch", async () => {
-  const counter = { count: 0 };
-  const realFetch = globalThis.fetch;
-  await withProcessEnv(draftDebugEnv(), () => withMockFetch(mockDraftOutbound(realFetch, counter), () => withTestServer(async (baseUrl) => {
-    configureDraftOAuth();
-    const rest = await callRestDiagnostic(baseUrl);
-    assert.equal(rest.status, 200);
-    assert.equal(counter.count, 1);
-
-    const mcp = await callMcp(baseUrl, "tools/call", { name: "debug_test_draft_without_userid", arguments: {} }, 203);
-    assert.match((await mcp.json()).error.message, /already been attempted/);
-    assert.equal(counter.count, 1);
-  })));
-});
-
-test("MCP then REST share the same draft diagnostic latch", async () => {
-  const counter = { count: 0 };
-  const realFetch = globalThis.fetch;
-  await withProcessEnv(draftDebugEnv(), () => withMockFetch(mockDraftOutbound(realFetch, counter), () => withTestServer(async (baseUrl) => {
-    configureDraftOAuth();
-    const mcp = await callMcp(baseUrl, "tools/call", { name: "debug_test_draft_without_userid", arguments: {} }, 204);
-    assert.equal((await mcp.json()).result.structuredContent.highLevelHttpStatus, 201);
-    assert.equal(counter.count, 1);
-
-    const rest = await callRestDiagnostic(baseUrl);
-    assert.equal(rest.status, 409);
-    assert.deepEqual(await rest.json(), {
-      error: "draft_diagnostic_already_attempted",
-      message: "Draft diagnostic has already been attempted."
-    });
-    assert.equal(counter.count, 1);
-  })));
 });
 
 test("MCP tools/list exposes the file-aware upload schema", async (t) => {
@@ -516,15 +220,10 @@ test("social posts default to a safe draft", () => {
     type: "post"
   });
   assert.throws(() => buildSocialPostBody({ summary: "Hello" }), /accountIds/);
-  assert.deepEqual(buildSocialPostBody({ summary: "Hello", accountIds: ["a"], status: "draft" }), {
-    summary: "Hello",
-    accountIds: ["a"],
-    status: "draft",
-    type: "post"
-  });
 });
 
-test("non-draft social posts still require userId", () => {
+test("drafts require userId too, because HighLevel rejects userId-less posts regardless of status", () => {
+  assert.throws(() => buildSocialPostBody({ summary: "Hello", accountIds: ["a"], status: "draft" }), /userId/);
   assert.throws(() => buildSocialPostBody({ status: "published", accountIds: ["a"] }), /userId/);
 });
 
@@ -602,6 +301,68 @@ test("social account discovery uses the token matching the URL location", async 
     }, async () => {
       await listSocialAccounts({ locationId: TEST_LOCATION });
     });
+  });
+});
+
+test("createSocialPost auto-fills userId from the tenant's default_user_id when the caller omits it", async () => {
+  const authorizedContext = {
+    locationId: TEST_LOCATION,
+    tenantName: "Testing Agency",
+    accessToken: "testing-secret-token",
+    tenantId: TEST_TENANT_ID,
+    connectionId: "testing-agency-connection",
+    defaultUserId: "tenant-default-user-id"
+  };
+  let postsListCalls = 0;
+  await withMockFetch(async (url, options) => {
+    const parsed = new URL(String(url));
+    if (parsed.pathname === `/social-media-posting/${TEST_LOCATION}/accounts`) {
+      return new Response(JSON.stringify({ success: true, results: { accounts: [
+        { id: TEST_ACCOUNT_ID, platform: "facebook", active: true, isExpired: false, deleted: false }
+      ] } }), { status: 200 });
+    }
+    if (parsed.pathname === `/social-media-posting/${TEST_LOCATION}/posts/list`) {
+      postsListCalls += 1;
+      if (postsListCalls === 1) return new Response(JSON.stringify({ success: true, results: { posts: [] } }), { status: 200 });
+      return new Response(JSON.stringify({ success: true, results: { posts: [
+        { _id: "new-post-id", summary: "Hello auto-userid", accountIds: [TEST_ACCOUNT_ID], status: "draft" }
+      ] } }), { status: 200 });
+    }
+    if (parsed.pathname === `/social-media-posting/${TEST_LOCATION}/posts`) {
+      const body = JSON.parse(options.body);
+      assert.equal(body.userId, "tenant-default-user-id");
+      return new Response(JSON.stringify({ success: true, results: { post: { _id: "new-post-id", status: "draft" } } }), { status: 200 });
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  }, async () => {
+    const result = await createSocialPost({ locationId: TEST_LOCATION, summary: "Hello auto-userid" }, authorizedContext);
+    assert.equal(result.results[0].action, "created");
+    assert.equal(result.results[0].verified, true);
+  });
+});
+
+test("createSocialPost still requires userId when the tenant has no default configured", async () => {
+  const authorizedContext = {
+    locationId: TEST_LOCATION,
+    tenantName: "Testing Agency",
+    accessToken: "testing-secret-token",
+    tenantId: TEST_TENANT_ID,
+    connectionId: "testing-agency-connection",
+    defaultUserId: null
+  };
+  await withMockFetch(async (url) => {
+    const parsed = new URL(String(url));
+    if (parsed.pathname === `/social-media-posting/${TEST_LOCATION}/accounts`) {
+      return new Response(JSON.stringify({ success: true, results: { accounts: [
+        { id: TEST_ACCOUNT_ID, platform: "facebook", active: true, isExpired: false, deleted: false }
+      ] } }), { status: 200 });
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  }, async () => {
+    await assert.rejects(
+      () => createSocialPost({ locationId: TEST_LOCATION, summary: "Hello" }, authorizedContext),
+      /userId is required/
+    );
   });
 });
 
