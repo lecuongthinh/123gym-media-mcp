@@ -29,7 +29,7 @@ class LoginError extends Error {}
 // sub-account users; the Marketplace "Install link" does not carry `state`
 // or the redirect for them and drops them into the normal dashboard.
 export function highLevelAuthorizeUrl(env, state) {
-  const url = new URL("https://marketplace.gohighlevel.com/oauth/chooselocation");
+  const url = new URL(env.HIGHLEVEL_AUTHORIZE_URL || "https://marketplace.gohighlevel.com/oauth/chooselocation");
   url.searchParams.set("response_type", "code");
   url.searchParams.set("redirect_uri", env.HIGHLEVEL_REDIRECT_URI);
   url.searchParams.set("client_id", env.HIGHLEVEL_CLIENT_ID);

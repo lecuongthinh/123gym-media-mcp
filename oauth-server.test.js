@@ -400,5 +400,8 @@ test("the HighLevel consent URL is the standard OAuth URL, taking version_id fro
   assert.equal(url.searchParams.get("version_id"), "def456");
   assert.equal(url.searchParams.get("state"), "s1");
   assert.equal(url.searchParams.get("scope").split(" ").length, 20);
+  const whiteLabel = new URL(highLevelAuthorizeUrl(env({ HIGHLEVEL_AUTHORIZE_URL: "https://app.uplifting.vn/oauth/chooselocation" }), "s"));
+  assert.equal(whiteLabel.origin + whiteLabel.pathname, "https://app.uplifting.vn/oauth/chooselocation");
+  assert.equal(whiteLabel.searchParams.get("client_id"), "test-client");
   assert.equal(new URL(highLevelAuthorizeUrl(env({ HIGHLEVEL_OAUTH_SCOPES: "medias.readonly" }), "s")).searchParams.get("scope"), "medias.readonly");
 });
