@@ -23,6 +23,13 @@ export function createHighLevelOnboarding({ env = process.env, repository, fetch
   async function start(principal, { locationId } = {}) {
     requireOwner(principal);
     if (!env.HIGHLEVEL_INSTALL_URL || !callbackUrl) throw new Error("HighLevel OAuth onboarding is not configured.");
+    // A tenant created from an invite that names a sub-account may connect
+    // only that one; otherwise the caller must say which one.
+    const invitedLocationId = await repository.findInvitedLocationId?.(principal.tenantId);
+    if (invitedLocationId && locationId && locationId !== invitedLocationId) {
+      throw new Error("This account is assigned to a different HighLevel sub-account than the one requested.");
+    }
+    locationId = locationId || invitedLocationId;
     if (!locationId) throw new Error("connect_highlevel requires locationId: the HighLevel sub-account to connect.");
     const state = randomBytes(32).toString("base64url");
     await repository.createOAuthState({

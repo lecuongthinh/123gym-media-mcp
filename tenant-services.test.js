@@ -117,6 +117,7 @@ function createFakePool(seed = {}) {
     tenants: [...(seed.tenants || [])],
     users: [...(seed.users || [])],
     memberships: [...(seed.memberships || [])],
+    invites: (seed.invites || []).map((invite) => ({ status: "pending", tenant_display_name: null, ...invite })),
     auditEvents: []
   };
   let nextId = 1;
@@ -147,6 +148,18 @@ function createFakePool(seed = {}) {
         })
         .filter(Boolean);
       return { rows, rowCount: rows.length };
+    }
+    if (text.startsWith("UPDATE customer_invites SET status = 'accepted'")) {
+      const [email] = params;
+      const invite = state.invites.find((i) => i.email.toLowerCase() === String(email).toLowerCase() && i.status === "pending");
+      if (!invite) return { rows: [] };
+      invite.status = "accepted";
+      return { rows: [{ id: invite.id, tenant_display_name: invite.tenant_display_name }] };
+    }
+    if (text.startsWith("UPDATE customer_invites SET accepted_tenant_id")) {
+      const [inviteId, tenantId] = params;
+      state.invites.find((i) => i.id === inviteId).accepted_tenant_id = tenantId;
+      return { rows: [] };
     }
     if (text.startsWith("INSERT INTO tenants")) {
       const [slug, displayName] = params;
@@ -184,8 +197,10 @@ function createFakePool(seed = {}) {
   };
 }
 
-test("self-serve provisioning creates a new tenant, user and owner membership on first login", async () => {
-  const fakePool = createFakePool();
+const NEW_INVITE = { id: "invite-1", email: "new@example.com" };
+
+test("self-serve provisioning creates a new tenant, user and owner membership for an invited email", async () => {
+  const fakePool = createFakePool({ invites: [{ ...NEW_INVITE, tenant_display_name: "New Customer Co" }] });
   const repository = new PostgresConnectionRepository({ pool: fakePool });
   const result = await repository.resolveUserAuthorization({
     authSubject: "auth0|new-user",
@@ -197,13 +212,16 @@ test("self-serve provisioning creates a new tenant, user and owner membership on
   assert.equal(result.role, "tenant_owner");
   assert.ok(result.tenant_id);
   assert.equal(fakePool.state.tenants.length, 1);
-  assert.equal(fakePool.state.tenants[0].slug, "new-customer");
+  assert.equal(fakePool.state.tenants[0].slug, "new-customer-co");
+  assert.equal(fakePool.state.tenants[0].display_name, "New Customer Co");
+  assert.equal(fakePool.state.invites[0].status, "accepted");
+  assert.equal(fakePool.state.invites[0].accepted_tenant_id, result.tenant_id);
   assert.equal(fakePool.state.auditEvents.length, 1);
   assert.equal(fakePool.state.auditEvents[0].tenantId, result.tenant_id);
 });
 
 test("self-serve provisioning is disabled unless explicitly allowed", async () => {
-  const fakePool = createFakePool();
+  const fakePool = createFakePool({ invites: [NEW_INVITE] });
   const repository = new PostgresConnectionRepository({ pool: fakePool });
   await assert.rejects(
     () => repository.resolveUserAuthorization({ authSubject: "auth0|new-user", email: "new@example.com" }),
@@ -213,7 +231,7 @@ test("self-serve provisioning is disabled unless explicitly allowed", async () =
 });
 
 test("self-serve provisioning never runs for an existing user, even if suspended", async () => {
-  const fakePool = createFakePool({ users: [{ id: "existing-user", auth_subject: "auth0|suspended-user", status: "suspended" }] });
+  const fakePool = createFakePool({ invites: [NEW_INVITE], users: [{ id: "existing-user", auth_subject: "auth0|suspended-user", status: "suspended" }] });
   const repository = new PostgresConnectionRepository({ pool: fakePool });
   await assert.rejects(
     () => repository.resolveUserAuthorization({ authSubject: "auth0|suspended-user", allowSelfServeProvisioning: true }),
@@ -224,10 +242,14 @@ test("self-serve provisioning never runs for an existing user, even if suspended
 });
 
 test("self-serve provisioning retries slug allocation on a collision", async () => {
-  const fakePool = createFakePool({ tenants: [{ id: "existing-tenant", slug: "new-customer", display_name: "Existing", status: "active" }] });
+  const fakePool = createFakePool({
+    invites: [{ id: "invite-2", email: "second@example.com" }],
+    tenants: [{ id: "existing-tenant", slug: "new-customer", display_name: "Existing", status: "active" }]
+  });
   const repository = new PostgresConnectionRepository({ pool: fakePool });
   const result = await repository.resolveUserAuthorization({
     authSubject: "auth0|new-user-2",
+    email: "second@example.com",
     displayName: "New Customer",
     allowSelfServeProvisioning: true
   });
@@ -235,4 +257,44 @@ test("self-serve provisioning retries slug allocation on a collision", async () 
   assert.equal(fakePool.state.tenants.length, 2);
   assert.notEqual(fakePool.state.tenants[1].slug, "new-customer");
   assert.match(fakePool.state.tenants[1].slug, /^new-customer-[0-9a-f]{6}$/);
+});
+
+test("self-serve provisioning refuses an email that has no invitation", async () => {
+  const fakePool = createFakePool({ invites: [NEW_INVITE] });
+  const repository = new PostgresConnectionRepository({ pool: fakePool });
+  await assert.rejects(
+    () => repository.resolveUserAuthorization({ authSubject: "auth0|stranger", email: "stranger@example.com", allowSelfServeProvisioning: true }),
+    (error) => error instanceof TenantAuthorizationError && error.code === "NOT_INVITED"
+  );
+  assert.equal(fakePool.state.tenants.length, 0);
+  assert.equal(fakePool.state.invites[0].status, "pending");
+});
+
+test("self-serve provisioning matches the invited email case-insensitively", async () => {
+  const fakePool = createFakePool({ invites: [NEW_INVITE] });
+  const repository = new PostgresConnectionRepository({ pool: fakePool });
+  const result = await repository.resolveUserAuthorization({ authSubject: "auth0|new-user", email: "NEW@Example.com", allowSelfServeProvisioning: true });
+  assert.equal(result.role, "tenant_owner");
+});
+
+test("self-serve provisioning refuses an email Auth0 marks unverified, leaving the invite pending", async () => {
+  const fakePool = createFakePool({ invites: [NEW_INVITE] });
+  const repository = new PostgresConnectionRepository({ pool: fakePool });
+  await assert.rejects(
+    () => repository.resolveUserAuthorization({ authSubject: "auth0|new-user", email: "new@example.com", emailVerified: false, allowSelfServeProvisioning: true }),
+    (error) => error instanceof TenantAuthorizationError && error.code === "EMAIL_NOT_VERIFIED"
+  );
+  assert.equal(fakePool.state.invites[0].status, "pending");
+  assert.equal(fakePool.state.tenants.length, 0);
+});
+
+test("an invitation can only be used once", async () => {
+  const fakePool = createFakePool({ invites: [NEW_INVITE] });
+  const repository = new PostgresConnectionRepository({ pool: fakePool });
+  await repository.resolveUserAuthorization({ authSubject: "auth0|first", email: "new@example.com", allowSelfServeProvisioning: true });
+  await assert.rejects(
+    () => repository.resolveUserAuthorization({ authSubject: "auth0|second", email: "new@example.com", allowSelfServeProvisioning: true }),
+    (error) => error instanceof TenantAuthorizationError && error.code === "NOT_INVITED"
+  );
+  assert.equal(fakePool.state.tenants.length, 1);
 });

@@ -47,6 +47,7 @@ export function createAuth0Verifier(env = process.env, overrides = {}) {
       return Object.freeze({
         subject: payload.sub,
         email: typeof payload.email === "string" ? payload.email : null,
+        emailVerified: typeof payload.email_verified === "boolean" ? payload.email_verified : undefined,
         displayName: typeof payload.name === "string" ? payload.name : null,
         tenantIdClaim: payload[env.AUTH0_TENANT_CLAIM || "https://uplifting.vn/tenant_id"] || null,
         scopes: tokenScopes(payload),

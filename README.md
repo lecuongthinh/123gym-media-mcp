@@ -18,6 +18,8 @@ Version **3.5.6** rewrote every tool's `locationId` description ("Defaults to 12
 
 Version **3.5.7** fixes the real cause of `Cross-tenant location access blocked` for any OAuth tenant other than 123 GYM when a tool is called without `locationId` (confirmed live with an empty `{}` call): the tool handlers each declare `locationId = DEFAULT_LOCATION_ID` (123 GYM) as their own parameter default, so an omitted `locationId` silently became 123 GYM and then failed the tenant check against the caller's real location. The `/mcp` `tools/call` dispatch now overwrites `args.locationId` with the authorized tenant's own location right after `requestTenantContext` (which has already rejected any caller-supplied `locationId` that isn't theirs), so the handlers' 123 GYM default is unreachable for OAuth callers. This is the original "stop silently defaulting to the production location" concern, finally closed for the OAuth path.
 
+Version **3.6.0** replaces the email allowlist hard-coded in the Auth0 "Gate signup by allowlist" Action with an invitation table. With `ENABLE_SELF_SERVE_SIGNUP=true`, only an email that has a `pending` row in `customer_invites` (migration `006_customer_invites.sql`) can create a tenant; the first login with that email consumes the row, names the tenant from `tenant_display_name`, and links `accepted_tenant_id`. Matching is case-insensitive, an email Auth0 explicitly marks unverified (`email_verified: false`) is refused, and a consumed invite cannot be reused. If the invite row has `default_location_id`, `connect_highlevel` needs no `locationId` argument and that tenant may connect only that sub-account. **Inviting a customer is now one row in the Supabase Table Editor** (`email`, optionally `tenant_display_name` and `default_location_id`) -- no Auth0 edit or redeploy. The Auth0 Action can be removed once this is verified; if you keep it, both gates apply. Keep Auth0 database sign-ups disabled: an admin-created Auth0 user whose email is not marked verified in Auth0 will be refused here.
+
 ## Security model
 
 There are two independent OAuth relationships:
@@ -116,7 +118,7 @@ Do not place roles or access decisions only in Auth0. The backend always checks 
 
 ### Self-serve (ENABLE_SELF_SERVE_SIGNUP=true)
 
-1. Make sure Auth0's connection only lets in people you actually want as customers (invite-only or approval-required — this flag does not gate Auth0 itself).
+1. Invite the customer: insert a row into `customer_invites` (Supabase Table Editor) with their `email`, and optionally `tenant_display_name` and the HighLevel `default_location_id`. Keep Auth0 database sign-ups disabled.
 2. The customer adds the MCP staging URL in ChatGPT and logs in through Auth0 (signing up there too, if Auth0 allows it). On their very first successful login, the MCP auto-creates their `tenants` row, `users` row and a `tenant_owner` membership — no SQL needed.
 3. The customer (now `tenant_owner`) asks the agent to call the `connect_highlevel` tool from inside ChatGPT with the `locationId` of the specific HighLevel sub-account to connect, opens the returned URL and completes HighLevel consent. (Equivalent to calling `POST /onboarding/highlevel/start` with `{ "locationId": "..." }` directly, for anything other than ChatGPT.) `locationId` is required — see the 3.5.5 note above for why the OAuth response alone cannot be trusted to name it.
 4. The callback tries to auto-resolve `connections.default_user_id` via HighLevel's Users API. If the connected app/token has that scope, it is set automatically; if not, `create_social_post` will require an explicit `userId` until an admin sets `default_user_id` manually (via SQL, or by asking the customer to run `list_location_users` and reporting back a HighLevel user id).
@@ -155,7 +157,7 @@ The backend connects directly through `DATABASE_URL`; it does not use the Supaba
 5. Provision one Testing Agency Auth0 user and membership.
 6. Run `npm test` and `npm run check:config`.
 7. Deploy only `feature/oauth-multitenant-v1` to the staging Render service.
-8. Confirm `/health` reports version `3.5.7` and does not expose configuration.
+8. Confirm `/health` reports version `3.6.0` and does not expose configuration.
 9. Complete ChatGPT OAuth and run read-only `list_social_accounts` for `UwsfBVLmz7XSKJbhuOTS`.
 10. Attempt the 123 GYM `locationId` with the Testing Agency user and confirm it is blocked before any HighLevel request.
 11. Inspect `audit_events` for success/failure records without secrets.

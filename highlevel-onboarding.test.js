@@ -202,3 +202,30 @@ test("HighLevel onboarding rejects non-admin tenant roles before creating state"
   );
   assert.equal(called, false);
 });
+
+test("HighLevel onboarding uses the sub-account assigned by the invitation when none is passed", async () => {
+  let storedState;
+  const onboarding = createHighLevelOnboarding({
+    env: env(),
+    repository: {
+      async findInvitedLocationId(tenantId) { assert.equal(tenantId, TENANT_ID); return LOCATION_ID; },
+      async createOAuthState(value) { storedState = value; }
+    }
+  });
+  await onboarding.start({ tenantId: TENANT_ID, userId: USER_ID, role: "tenant_owner" });
+  assert.equal(storedState.intendedLocationId, LOCATION_ID);
+});
+
+test("HighLevel onboarding refuses a different sub-account than the invitation assigned", async () => {
+  const onboarding = createHighLevelOnboarding({
+    env: env(),
+    repository: {
+      async findInvitedLocationId() { return LOCATION_ID; },
+      async createOAuthState() { throw new Error("must not be called"); }
+    }
+  });
+  await assert.rejects(
+    () => onboarding.start({ tenantId: TENANT_ID, userId: USER_ID, role: "tenant_owner" }, { locationId: "some-other-location" }),
+    /assigned to a different HighLevel sub-account/
+  );
+});

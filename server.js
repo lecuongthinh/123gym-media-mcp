@@ -29,7 +29,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.5.7";
+const SERVICE_VERSION = "3.6.0";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -684,8 +684,8 @@ const tools = [
   {
     name: "connect_highlevel",
     title: "Connect a HighLevel sub-account",
-    description: "Start HighLevel Marketplace OAuth for the caller's own tenant, for one specific HighLevel sub-account (locationId). Returns a URL for the user to open in a browser and approve; the callback stores the connection automatically. Only tenant_owner/tenant_admin/uplifting_admin may call this. Use this first for a brand-new tenant that has no HighLevel connection yet -- every other tool needs one. locationId is required: ask the user for the HighLevel sub-account ID they want to connect if they have not already given it.",
-    inputSchema: { type: "object", properties: { locationId: { type: "string", description: "The HighLevel sub-account (location) ID to connect." } }, required: ["locationId"], additionalProperties: false },
+    description: "Start HighLevel Marketplace OAuth for the caller's own tenant, for one specific HighLevel sub-account (locationId). Returns a URL for the user to open in a browser and approve; the callback stores the connection automatically. Only tenant_owner/tenant_admin/uplifting_admin may call this. Use this first for a brand-new tenant that has no HighLevel connection yet -- every other tool needs one. If the call fails saying locationId is required, ask the user for the HighLevel sub-account ID to connect.",
+    inputSchema: { type: "object", properties: { locationId: { type: "string", description: "The HighLevel sub-account (location) ID to connect. Optional when Uplifting already assigned one to this account; required otherwise." } }, additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true }
   },
   {

@@ -63,7 +63,7 @@ export class PostgresConnectionRepository {
     return rows[0] || null;
   }
 
-  async resolveUserAuthorization({ authSubject, tenantIdClaim, email, displayName, allowSelfServeProvisioning = false }) {
+  async resolveUserAuthorization({ authSubject, tenantIdClaim, email, displayName, emailVerified, allowSelfServeProvisioning = false }) {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
@@ -81,7 +81,7 @@ export class PostgresConnectionRepository {
         if (existing.rowCount > 0 || !allowSelfServeProvisioning) {
           throw new TenantAuthorizationError("Authenticated user is not provisioned or is inactive.", "USER_NOT_PROVISIONED");
         }
-        const provisioned = await this.#provisionSelfServeTenant(client, { authSubject, email, displayName });
+        const provisioned = await this.#provisionSelfServeTenant(client, { authSubject, email, displayName, emailVerified });
         await client.query("COMMIT");
         return provisioned;
       }
@@ -108,8 +108,28 @@ export class PostgresConnectionRepository {
     }
   }
 
-  async #provisionSelfServeTenant(client, { authSubject, email, displayName }) {
-    const baseSlug = slugify(displayName || email || authSubject);
+  async #provisionSelfServeTenant(client, { authSubject, email, displayName, emailVerified }) {
+    // Only an invited email may create a tenant. Consuming the invite happens
+    // inside the caller's transaction, so any later failure rolls it back.
+    if (emailVerified === false) {
+      throw new TenantAuthorizationError("Email address is not verified.", "EMAIL_NOT_VERIFIED");
+    }
+    if (!email) {
+      throw new TenantAuthorizationError("The access token carries no email, so no invitation can be matched.", "NOT_INVITED");
+    }
+    const inviteResult = await client.query(
+      `UPDATE customer_invites
+          SET status = 'accepted', accepted_at = now()
+        WHERE lower(email) = lower($1) AND status = 'pending'
+      RETURNING id, tenant_display_name`,
+      [email]
+    );
+    const invite = inviteResult.rows[0];
+    if (!invite) {
+      throw new TenantAuthorizationError("This account has not been invited. Ask Uplifting to invite your email first.", "NOT_INVITED");
+    }
+    const tenantName = invite.tenant_display_name || displayName || email;
+    const baseSlug = slugify(tenantName);
     let tenant;
     let usedSlug;
     for (let attempt = 0; attempt < 5 && !tenant; attempt += 1) {
@@ -117,7 +137,7 @@ export class PostgresConnectionRepository {
       try {
         const tenantResult = await client.query(
           `INSERT INTO tenants (slug, display_name) VALUES ($1, $2) RETURNING id, display_name`,
-          [usedSlug, displayName || email || usedSlug]
+          [usedSlug, tenantName]
         );
         tenant = tenantResult.rows[0];
       } catch (error) {
@@ -137,12 +157,21 @@ export class PostgresConnectionRepository {
       [user.id, tenant.id]
     );
     const membership = membershipResult.rows[0];
+    await client.query(`UPDATE customer_invites SET accepted_tenant_id = $2 WHERE id = $1`, [invite.id, tenant.id]);
     await client.query(
       `INSERT INTO audit_events (actor_user_id, tenant_id, action, result, metadata)
        VALUES ($1, $2, 'tenant.self_serve_provisioned', 'success', $3::jsonb)`,
-      [user.id, tenant.id, JSON.stringify({ slug: usedSlug })]
+      [user.id, tenant.id, JSON.stringify({ slug: usedSlug, inviteId: invite.id })]
     );
     return { ...user, ...membership, tenant_id: tenant.id, tenant_name: tenant.display_name };
+  }
+
+  async findInvitedLocationId(tenantId) {
+    const { rows } = await this.pool.query(
+      `SELECT default_location_id FROM customer_invites WHERE accepted_tenant_id = $1 LIMIT 1`,
+      [tenantId]
+    );
+    return rows[0]?.default_location_id || null;
   }
 
   async recordAuditEvent({ actorUserId = null, tenantId = null, toolName = null, action, result, requestId = null, metadata = {} }) {
@@ -319,6 +348,7 @@ export async function authorizeUserPrincipal({ identity, repository, allowSelfSe
     tenantIdClaim: identity.tenantIdClaim,
     email: identity.email,
     displayName: identity.displayName,
+    emailVerified: identity.emailVerified,
     allowSelfServeProvisioning
   });
   return Object.freeze({
