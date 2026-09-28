@@ -25,6 +25,10 @@ const DEFAULT_HIGHLEVEL_SCOPES = [
 
 class LoginError extends Error {}
 
+function oauthLog(event, fields = {}) {
+  console.info(JSON.stringify({ timestamp: new Date().toISOString(), event, ...fields }));
+}
+
 // The standard OAuth consent URL works for any HighLevel user, including
 // sub-account users; the Marketplace "Install link" does not carry `state`
 // or the redirect for them and drops them into the normal dashboard.
@@ -96,6 +100,7 @@ function pkceMatches(verifier, challenge) {
 }
 
 function tokenError(res, status, error, description) {
+  oauthLog("oauth_token", { result: "error", error, status });
   return res.status(status).json({ error, error_description: description });
 }
 
@@ -187,6 +192,7 @@ export async function completeHighLevelLogin({ query, repository, env = process.
       tenantId: provisioned.tenantId,
       expiresAt: new Date(Date.now() + CODE_TTL_MS)
     });
+    oauthLog("oauth_login", { result: "code_issued", created: provisioned.created, role: provisioned.role });
     return { redirectUrl: redirectWith(request.redirect_uri, { code, state: request.client_state }) };
   } catch (error) {
     const expected = error instanceof LoginError || error instanceof TenantAuthorizationError;
@@ -233,6 +239,7 @@ export function createOAuthRouter({ env = process.env, getRepository } = {}) {
       return tokenError(res, 503, "temporarily_unavailable", "Registration is unavailable.");
     }
     registrations.push(Date.now());
+    oauthLog("oauth_register", { redirectHosts: redirectUris.map((uri) => new URL(uri).host) });
     return res.status(201).json({
       client_id: clientId,
       client_id_issued_at: Math.floor(Date.now() / 1000),
@@ -251,6 +258,7 @@ export function createOAuthRouter({ env = process.env, getRepository } = {}) {
     const client = typeof q.client_id === "string" ? await repository.findOAuthClient(q.client_id).catch(() => null) : null;
     // Until the client and redirect_uri are proven valid, never redirect.
     if (!client || typeof q.redirect_uri !== "string" || !client.redirect_uris.includes(q.redirect_uri)) {
+      oauthLog("oauth_authorize_rejected", { reason: "unknown_client_or_redirect" });
       return res.status(400).type("text/plain").send("Invalid client_id or redirect_uri.");
     }
     const fail = (error, description) => res.redirect(302, redirectWith(q.redirect_uri, { error, error_description: description, state: typeof q.state === "string" ? q.state : undefined }));
@@ -272,6 +280,7 @@ export function createOAuthRouter({ env = process.env, getRepository } = {}) {
       resource: typeof q.resource === "string" ? q.resource : null,
       expiresAt: new Date(Date.now() + LOGIN_TTL_MS)
     });
+    oauthLog("oauth_authorize", { redirectHost: new URL(q.redirect_uri).host, hasResource: typeof q.resource === "string" });
     return res.redirect(302, highLevelAuthorizeUrl(env, highLevelState));
   });
 
@@ -301,6 +310,7 @@ export function createOAuthRouter({ env = process.env, getRepository } = {}) {
         return tokenError(res, 400, "unsupported_grant_type", "Supported grant types: authorization_code, refresh_token.");
       }
       const tokens = await issueTokens(repository, owner);
+      oauthLog("oauth_token", { grant: params.grant_type, result: "issued" });
       repository.deleteExpiredOAuthArtifacts?.().catch(() => {});
       return res.json(tokens);
     } catch {

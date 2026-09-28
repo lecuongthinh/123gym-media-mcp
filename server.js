@@ -114,6 +114,18 @@ function mcpDiagnostic(req, event, fields = {}) {
 }
 
 app.use("/mcp", (req, res, next) => {
+  res.on("finish", () => console.info(JSON.stringify({
+    timestamp: new Date().toISOString(),
+    event: "mcp_request",
+    httpMethod: req.method,
+    rpcMethod: typeof req.body?.method === "string" ? req.body.method : null,
+    bearer: Boolean(bearerToken(req)),
+    httpStatus: res.statusCode
+  })));
+  next();
+});
+
+app.use("/mcp", (req, res, next) => {
   if (!MCP_DIAGNOSTICS_ENABLED) return next();
   req.mcpDiagnosticStage = "authentication";
   mcpDiagnostic(req, "request_received");
