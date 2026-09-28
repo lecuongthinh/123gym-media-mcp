@@ -52,7 +52,11 @@ export function createHighLevelOnboarding({ env = process.env, repository, fetch
     });
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(`HighLevel OAuth token exchange failed (${response.status}).`);
-    if (!body.access_token || !body.refresh_token || !body.locationId) throw new Error("HighLevel OAuth response is incomplete.");
+    if (!body.access_token || !body.refresh_token || !body.locationId) {
+      // Key names only -- never log token values or other field contents.
+      console.error("[highlevel-onboarding] Incomplete OAuth token response. Keys present:", Object.keys(body));
+      throw new Error("HighLevel OAuth response is incomplete.");
+    }
     const expiresAt = new Date(Date.now() + Number(body.expires_in || 86400) * 1000).toISOString();
     const secret = {
       access_token: body.access_token,
