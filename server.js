@@ -29,7 +29,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.5.5";
+const SERVICE_VERSION = "3.5.6";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -624,7 +624,7 @@ const mediaItemSchema = {
 };
 
 const socialPostProperties = {
-  locationId: { type: "string", description: "Allowlisted LeadConnector tenant location ID. Defaults to 123 GYM for backward compatibility." },
+  locationId: { type: "string", description: "Optional. Leave this out in almost every call -- the server already knows which tenant/location you are authorized for and uses it automatically. Only pass this if the user explicitly names a different HighLevel location ID than the one you are currently connected to; passing your own tenant's location ID, or guessing one, will be rejected as cross-tenant access." },
   accountIds: { type: "array", items: { type: "string" }, description: "Connected account IDs from list_social_accounts." },
   summary: { type: "string", description: "Post caption/content." },
   media: { type: "array", items: mediaItemSchema },
@@ -672,7 +672,7 @@ const tools = [
   {
     name: "search_leadconnector_media",
     description: "Search and list media from the selected allowlisted tenant's LeadConnector Media Library.",
-    inputSchema: { type: "object", properties: { search: { type: "string" }, mediaType: { type: "string", enum: ["all", "image", "video"] }, limit: { type: "integer", minimum: 1, maximum: 100 }, offset: { type: "integer", minimum: 0 }, locationId: { type: "string" } } },
+    inputSchema: { type: "object", properties: { search: { type: "string" }, mediaType: { type: "string", enum: ["all", "image", "video"] }, limit: { type: "integer", minimum: 1, maximum: 100 }, offset: { type: "integer", minimum: 0 }, locationId: socialPostProperties.locationId } },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
   },
   {
