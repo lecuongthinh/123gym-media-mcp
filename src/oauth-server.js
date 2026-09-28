@@ -14,7 +14,31 @@ const ACCESS_PREFIX = "uat_";
 const DEFAULT_REDIRECT_HOSTS = ["chatgpt.com", "chat.openai.com", "platform.openai.com"];
 const PKCE_VALUE = /^[A-Za-z0-9\-._~]{43,128}$/;
 
+// Every scope selected on the Marketplace app; HighLevel rejects a scope the app does not have.
+const DEFAULT_HIGHLEVEL_SCOPES = [
+  "medias.readonly", "medias.write", "users.readonly",
+  ...["oauth.readonly", "oauth.write", "post.readonly", "post.write", "account.readonly", "account.write",
+    "csv.readonly", "csv.write", "category.readonly", "category.write", "tag.readonly", "tag.write",
+    "statistics.readonly", "comments.readonly", "comments.write", "watermarks.readonly", "watermarks.write"]
+    .map((name) => `socialplanner/${name}`)
+];
+
 class LoginError extends Error {}
+
+// The standard OAuth consent URL works for any HighLevel user, including
+// sub-account users; the Marketplace "Install link" does not carry `state`
+// or the redirect for them and drops them into the normal dashboard.
+export function highLevelAuthorizeUrl(env, state) {
+  const url = new URL("https://marketplace.gohighlevel.com/oauth/chooselocation");
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("redirect_uri", env.HIGHLEVEL_REDIRECT_URI);
+  url.searchParams.set("client_id", env.HIGHLEVEL_CLIENT_ID);
+  url.searchParams.set("scope", env.HIGHLEVEL_OAUTH_SCOPES || DEFAULT_HIGHLEVEL_SCOPES.join(" "));
+  const versionId = env.HIGHLEVEL_VERSION_ID || /\/versions\/([A-Za-z0-9]+)/.exec(env.HIGHLEVEL_INSTALL_URL || "")?.[1];
+  if (versionId) url.searchParams.set("version_id", versionId);
+  url.searchParams.set("state", state);
+  return url.toString();
+}
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -248,9 +272,7 @@ export function createOAuthRouter({ env = process.env, getRepository } = {}) {
       resource: typeof q.resource === "string" ? q.resource : null,
       expiresAt: new Date(Date.now() + LOGIN_TTL_MS)
     });
-    const install = new URL(env.HIGHLEVEL_INSTALL_URL);
-    install.searchParams.set("state", highLevelState);
-    return res.redirect(302, install.toString());
+    return res.redirect(302, highLevelAuthorizeUrl(env, highLevelState));
   });
 
   router.post("/oauth/token", express.urlencoded({ extended: false }), async (req, res) => {

@@ -5,7 +5,7 @@ import express from "express";
 
 import { app as mcpApp } from "./server.js";
 import { protectedResourceMetadata } from "./src/auth.js";
-import { authenticateIssuedToken, completeHighLevelLogin, createOAuthRouter } from "./src/oauth-server.js";
+import { authenticateIssuedToken, completeHighLevelLogin, createOAuthRouter, highLevelAuthorizeUrl } from "./src/oauth-server.js";
 
 const LOCATION_ID = "UwsfBVLmz7XSKJbhuOTS";
 const CHATGPT_REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect";
@@ -216,6 +216,9 @@ test("authorize requires PKCE S256 and a known resource, then sends the user to 
     const target = new URL(ok.headers.get("location"));
     assert.equal(target.origin + target.pathname, "https://marketplace.gohighlevel.com/oauth/chooselocation");
     assert.equal(target.searchParams.get("client_id"), "test-client");
+    assert.equal(target.searchParams.get("response_type"), "code");
+    assert.equal(target.searchParams.get("redirect_uri"), "https://staging.example.com/oauth/callback/social-crm");
+    assert.match(target.searchParams.get("scope"), /socialplanner\/post\.write/);
     assert.ok(target.searchParams.get("state"));
   });
 });
@@ -389,4 +392,13 @@ test("the MCP endpoint accepts a built-in access token and rejects a forged one"
     for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test("the HighLevel consent URL is the standard OAuth URL, taking version_id from the Marketplace install link", () => {
+  const url = new URL(highLevelAuthorizeUrl(env({ HIGHLEVEL_INSTALL_URL: "https://app.gohighlevel.com/integration/abc123/versions/def456" }), "s1"));
+  assert.equal(url.origin + url.pathname, "https://marketplace.gohighlevel.com/oauth/chooselocation");
+  assert.equal(url.searchParams.get("version_id"), "def456");
+  assert.equal(url.searchParams.get("state"), "s1");
+  assert.equal(url.searchParams.get("scope").split(" ").length, 20);
+  assert.equal(new URL(highLevelAuthorizeUrl(env({ HIGHLEVEL_OAUTH_SCOPES: "medias.readonly" }), "s")).searchParams.get("scope"), "medias.readonly");
 });
