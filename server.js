@@ -29,7 +29,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.5.4";
+const SERVICE_VERSION = "3.5.5";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -684,8 +684,8 @@ const tools = [
   {
     name: "connect_highlevel",
     title: "Connect a HighLevel sub-account",
-    description: "Start HighLevel Marketplace OAuth for the caller's own tenant. Returns a URL for the user to open in a browser and approve; the callback stores the connection automatically. Only tenant_owner/tenant_admin/uplifting_admin may call this. Use this first for a brand-new tenant that has no HighLevel connection yet -- every other tool needs one.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    description: "Start HighLevel Marketplace OAuth for the caller's own tenant, for one specific HighLevel sub-account (locationId). Returns a URL for the user to open in a browser and approve; the callback stores the connection automatically. Only tenant_owner/tenant_admin/uplifting_admin may call this. Use this first for a brand-new tenant that has no HighLevel connection yet -- every other tool needs one. locationId is required: ask the user for the HighLevel sub-account ID they want to connect if they have not already given it.",
+    inputSchema: { type: "object", properties: { locationId: { type: "string", description: "The HighLevel sub-account (location) ID to connect." } }, required: ["locationId"], additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true }
   },
   {
@@ -824,7 +824,7 @@ async function auditTool(req, values) {
 app.post("/onboarding/highlevel/start", authenticateMcpRequest, async (req, res) => {
   try {
     if (req.principal.authType !== "oauth") return res.status(403).json({ error: "oauth_user_required" });
-    const result = await createHighLevelOnboarding({ env: process.env, repository: req.tenantServices.repository }).start(req.principal);
+    const result = await createHighLevelOnboarding({ env: process.env, repository: req.tenantServices.repository }).start(req.principal, { locationId: req.body?.locationId });
     return res.json(result);
   } catch (error) {
     return res.status(error.status || 400).json({ error: redactSecrets(error.message) });
@@ -885,8 +885,8 @@ app.post("/mcp", async (req, res) => {
       authorizeTool(req.principal, toolName);
       if (toolName === "connect_highlevel") {
         if (req.principal.authType !== "oauth") throw new Error("connect_highlevel requires an OAuth user.");
-        const onboardingResult = await createHighLevelOnboarding({ env: process.env, repository: req.tenantServices.repository }).start(req.principal);
-        await auditTool(req, { tenantId: req.principal.tenantId, toolName, action: "tool.call", result: "success", metadata: {} });
+        const onboardingResult = await createHighLevelOnboarding({ env: process.env, repository: req.tenantServices.repository }).start(req.principal, { locationId: args.locationId });
+        await auditTool(req, { tenantId: req.principal.tenantId, toolName, action: "tool.call", result: "success", metadata: { locationId: args.locationId } });
         return res.json({
           jsonrpc: "2.0",
           id,

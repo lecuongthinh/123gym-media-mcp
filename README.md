@@ -12,6 +12,8 @@ Version **3.5.1** removed the OAuth-scope check (`uplifting:read`/`uplifting:wri
 
 Version **3.5.2** adds `connect_highlevel`, an MCP tool wrapping `/onboarding/highlevel/start` so ChatGPT can start HighLevel Marketplace OAuth for the caller's own tenant from inside the chat — a self-serve `tenant_owner` no longer needs a separate REST call outside ChatGPT to connect their sub-account. It runs before the generic tenant/connection lookup that every other tool goes through (that lookup would otherwise fail for a brand-new tenant with no connection yet, which is exactly the case this tool exists for), and still enforces the same owner/admin-only role check as the REST endpoint.
 
+Version **3.5.5** fixes a real install failure found by live testing: when the HighLevel user completing OAuth consent is an agency-level (Company) user -- which every person on Uplifting's own agency is -- HighLevel's token response has no `locationId` at all, even after picking exactly one sub-account on the consent screen (confirmed via `userType: "Company"`, `companyId` present, `isBulkInstallation: true`). `connect_highlevel` and `POST /onboarding/highlevel/start` now **require** a `locationId` argument naming the sub-account to bind the tenant to. The OAuth callback stores that intended location before redirecting (`oauth_states.intended_location_id`, migration `005_oauth_state_intended_location.sql`), and when the token response comes back Company-scoped it mints a location-scoped access token via `POST /oauth/locationToken` (`src/highlevel-location-token.js`) using the company token + that locationId. The resulting connection is marked `auth_mode: "company"`; refreshing it (`src/credential-provider.js`) refreshes the company token and re-mints a fresh location token each time, since HighLevel does not issue a location-level refresh token in this mode. A genuine single-location HighLevel user (no agency access) still gets `locationId` directly in the response and is stored as `auth_mode: "location"`, refreshed the original simpler way.
+
 ## Security model
 
 There are two independent OAuth relationships:
@@ -112,7 +114,7 @@ Do not place roles or access decisions only in Auth0. The backend always checks 
 
 1. Make sure Auth0's connection only lets in people you actually want as customers (invite-only or approval-required — this flag does not gate Auth0 itself).
 2. The customer adds the MCP staging URL in ChatGPT and logs in through Auth0 (signing up there too, if Auth0 allows it). On their very first successful login, the MCP auto-creates their `tenants` row, `users` row and a `tenant_owner` membership — no SQL needed.
-3. The customer (now `tenant_owner`) asks the agent to call the `connect_highlevel` tool from inside ChatGPT, opens the returned URL and completes HighLevel consent for their own sub-account. (Equivalent to calling `POST /onboarding/highlevel/start` directly, for anything other than ChatGPT.)
+3. The customer (now `tenant_owner`) asks the agent to call the `connect_highlevel` tool from inside ChatGPT with the `locationId` of the specific HighLevel sub-account to connect, opens the returned URL and completes HighLevel consent. (Equivalent to calling `POST /onboarding/highlevel/start` with `{ "locationId": "..." }` directly, for anything other than ChatGPT.) `locationId` is required — see the 3.5.5 note above for why the OAuth response alone cannot be trusted to name it.
 4. The callback tries to auto-resolve `connections.default_user_id` via HighLevel's Users API. If the connected app/token has that scope, it is set automatically; if not, `create_social_post` will require an explicit `userId` until an admin sets `default_user_id` manually (via SQL, or by asking the customer to run `list_location_users` and reporting back a HighLevel user id).
 5. Test `list_social_accounts` and a `create_social_post` draft to confirm both read and write reach HighLevel.
 
@@ -122,7 +124,7 @@ Do not place roles or access decisions only in Auth0. The backend always checks 
 2. In Supabase SQL Editor, insert the same Auth0 `sub` into `users` and create one active `memberships` row. Never insert a password or token.
 3. Add the tenant's HighLevel connection:
    - Pilot PIT: keep the token in Render and store only `env://VARIABLE_NAME` in `tenant_credentials.secret_ref`.
-   - Marketplace OAuth: the tenant owner calls `POST /onboarding/highlevel/start`, opens the returned URL and completes HighLevel consent. The callback validates a one-time state and stores encrypted tokens, and tries the same automatic `default_user_id` resolution described above.
+   - Marketplace OAuth: the tenant owner calls `POST /onboarding/highlevel/start` with `{ "locationId": "..." }`, opens the returned URL and completes HighLevel consent. The callback validates a one-time state and stores encrypted tokens, and tries the same automatic `default_user_id` resolution described above.
 4. If `default_user_id` did not resolve automatically (PIT path always needs this step manually), set `connections.default_user_id` for this tenant's connection row to a valid HighLevel user id from that sub-account (Settings → My Staff, the HighLevel Users API, or this MCP's own `list_location_users` tool once the connection exists). HighLevel's Social Planner rejects `create_social_post` for every status, including draft, when `userId` is absent — there is no "system" poster identity. Skipping this step means every `create_social_post` call fails with a 422 unless the caller supplies `userId` itself.
 5. Add the MCP staging URL in ChatGPT, select OAuth, complete login and scan tools.
 6. Test `list_social_accounts` first, then a `create_social_post` draft, to confirm both read and write actually reach HighLevel. Use only the Testing Agency location during staging integration tests.
@@ -149,7 +151,7 @@ The backend connects directly through `DATABASE_URL`; it does not use the Supaba
 5. Provision one Testing Agency Auth0 user and membership.
 6. Run `npm test` and `npm run check:config`.
 7. Deploy only `feature/oauth-multitenant-v1` to the staging Render service.
-8. Confirm `/health` reports version `3.5.2` and does not expose configuration.
+8. Confirm `/health` reports version `3.5.5` and does not expose configuration.
 9. Complete ChatGPT OAuth and run read-only `list_social_accounts` for `UwsfBVLmz7XSKJbhuOTS`.
 10. Attempt the 123 GYM `locationId` with the Testing Agency user and confirm it is blocked before any HighLevel request.
 11. Inspect `audit_events` for success/failure records without secrets.

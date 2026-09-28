@@ -22,3 +22,47 @@ test("encrypted credential provider rejects a credential bound to another locati
     encrypted_payload: encrypted, scopes: []
   }), /location binding mismatch/);
 });
+
+test("encrypted credential provider refreshes a Company-mode credential by minting a fresh location token", async () => {
+  const expired = encryptCredential({
+    auth_mode: "company",
+    company_id: "company-1",
+    company_refresh_token: "old-company-refresh",
+    location_id: "loc-1",
+    access_token: "stale-location-token",
+    expires_at: new Date(Date.now() - 1000).toISOString()
+  }, env);
+  let updated;
+  const repository = {
+    async updateEncryptedCredential(credentialId, payload, expiresAt) {
+      updated = { credentialId, payload, expiresAt };
+    }
+  };
+  const fetchImpl = async (url, options) => {
+    const parsed = new URL(String(url));
+    if (parsed.pathname === "/oauth/token") {
+      assert.equal(options.body.get("grant_type"), "refresh_token");
+      assert.equal(options.body.get("refresh_token"), "old-company-refresh");
+      assert.equal(options.body.get("user_type"), "Company");
+      return new Response(JSON.stringify({ access_token: "new-company-access", refresh_token: "new-company-refresh", expires_in: 86400 }), { status: 200 });
+    }
+    if (parsed.pathname === "/oauth/locationToken") {
+      assert.equal(options.headers.Authorization, "Bearer new-company-access");
+      assert.equal(options.body.get("companyId"), "company-1");
+      assert.equal(options.body.get("locationId"), "loc-1");
+      return new Response(JSON.stringify({ access_token: "fresh-location-token", expires_in: 3600 }), { status: 200 });
+    }
+    throw new Error(`Unexpected fetch: ${url}`);
+  };
+  const provider = new CompositeCredentialProvider({ env, repository, fetchImpl });
+  const result = await provider.getAccess({
+    connection_id: "c1", credential_id: "cred-1", location_id: "loc-1",
+    secret_backend: "encrypted_database", encrypted_payload: expired, scopes: []
+  });
+  assert.equal(result.accessToken, "fresh-location-token");
+  assert.equal(result.locationId, "loc-1");
+  assert.ok(updated);
+  const decrypted = decryptCredential(updated.payload, env);
+  assert.equal(decrypted.company_refresh_token, "new-company-refresh");
+  assert.equal(decrypted.access_token, "fresh-location-token");
+});

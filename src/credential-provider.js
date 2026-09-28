@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { mintLocationToken } from "./highlevel-location-token.js";
 
 function encryptionKey(env = process.env) {
   const encoded = env.TENANT_CREDENTIAL_ENCRYPTION_KEY;
@@ -63,6 +64,7 @@ export class CompositeCredentialProvider {
   }
 
   async #refreshHighLevel(connection, credential) {
+    if (credential.auth_mode === "company") return this.#refreshCompanyLocation(connection, credential);
     if (!credential.refresh_token) throw new Error("HighLevel OAuth refresh token is unavailable.");
     const response = await this.fetch("https://services.leadconnectorhq.com/oauth/token", {
       method: "POST",
@@ -84,6 +86,42 @@ export class CompositeCredentialProvider {
       scope: body.scope || credential.scope,
       location_id: body.locationId || credential.location_id,
       expires_at: new Date(Date.now() + Number(body.expires_in || 86400) * 1000).toISOString()
+    };
+    if (next.location_id !== connection.location_id) throw new Error("Refreshed credential location binding mismatch.");
+    await this.repository.updateEncryptedCredential(connection.credential_id, encryptCredential(next, this.env), next.expires_at);
+    return next;
+  }
+
+  // Company-scoped connections (see highlevel-location-token.js for why
+  // these exist): refresh the agency-level token, then re-mint a fresh
+  // location-scoped access token from it. There is no location-level
+  // refresh_token to rotate -- the location token is always re-derived.
+  async #refreshCompanyLocation(connection, credential) {
+    if (!credential.company_refresh_token) throw new Error("HighLevel OAuth refresh token is unavailable.");
+    const response = await this.fetch("https://services.leadconnectorhq.com/oauth/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded", Version: "v3" },
+      body: new URLSearchParams({
+        client_id: this.env.HIGHLEVEL_CLIENT_ID || "",
+        client_secret: this.env.HIGHLEVEL_CLIENT_SECRET || "",
+        grant_type: "refresh_token",
+        refresh_token: credential.company_refresh_token,
+        user_type: "Company"
+      })
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(`HighLevel OAuth company refresh failed (${response.status}).`);
+    const minted = await mintLocationToken({
+      companyAccessToken: body.access_token,
+      companyId: credential.company_id,
+      locationId: credential.location_id,
+      fetchImpl: this.fetch
+    });
+    const next = {
+      ...credential,
+      company_refresh_token: body.refresh_token || credential.company_refresh_token,
+      access_token: minted.accessToken,
+      expires_at: new Date(Date.now() + minted.expiresIn * 1000).toISOString()
     };
     if (next.location_id !== connection.location_id) throw new Error("Refreshed credential location binding mismatch.");
     await this.repository.updateEncryptedCredential(connection.credential_id, encryptCredential(next, this.env), next.expires_at);

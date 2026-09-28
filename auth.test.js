@@ -202,7 +202,7 @@ test("connect_highlevel starts onboarding without requiring an existing HighLeve
     const response = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer signed-user-token" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "connect_highlevel", arguments: {} } })
+      body: JSON.stringify({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "connect_highlevel", arguments: { locationId: TEST_LOCATION } } })
     });
     const payload = await response.json();
     assert.equal(response.status, 200);

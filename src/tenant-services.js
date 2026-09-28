@@ -162,11 +162,11 @@ export class PostgresConnectionRepository {
     );
   }
 
-  async createOAuthState({ stateHash, tenantId, actorUserId, expiresAt }) {
+  async createOAuthState({ stateHash, tenantId, actorUserId, expiresAt, intendedLocationId = null }) {
     await this.pool.query(
-      `INSERT INTO oauth_states (state_hash, tenant_id, actor_user_id, provider, expires_at)
-       VALUES ($1, $2, $3, 'highlevel', $4)`,
-      [stateHash, tenantId, actorUserId, expiresAt]
+      `INSERT INTO oauth_states (state_hash, tenant_id, actor_user_id, provider, expires_at, intended_location_id)
+       VALUES ($1, $2, $3, 'highlevel', $4, $5)`,
+      [stateHash, tenantId, actorUserId, expiresAt, intendedLocationId]
     );
   }
 
@@ -175,7 +175,7 @@ export class PostgresConnectionRepository {
       `UPDATE oauth_states
           SET used_at = now()
         WHERE state_hash = $1 AND provider = 'highlevel' AND used_at IS NULL AND expires_at > now()
-      RETURNING tenant_id, actor_user_id`,
+      RETURNING tenant_id, actor_user_id, intended_location_id`,
       [stateHash]
     );
     return rows[0] || null;
