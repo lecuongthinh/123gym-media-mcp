@@ -95,7 +95,8 @@ function diagnosticError(error) {
     /^[0-9A-Z]{5}$/.test(error.code) ? error.code : null;
   return {
     errorClass: sqlState ? "DatabaseError" : "Error",
-    errorMessage: sqlState ? `SQLSTATE ${sqlState}` : "Unexpected error"
+    errorMessage: sqlState ? `SQLSTATE ${sqlState}` : "Unexpected error",
+    ...(sqlState || typeof error?.message !== "string" ? {} : { errorDetail: redactSecrets(error.message).slice(0, 200) })
   };
 }
 
