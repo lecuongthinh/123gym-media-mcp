@@ -31,3 +31,14 @@ export function pickDefaultUserId(users) {
   if (preferred) return preferred.id;
   return users.find((user) => user.id)?.id || null;
 }
+
+export async function fetchHighLevelLocationName({ accessToken, locationId, fetchImpl = globalThis.fetch, baseUrl = LC_BASE_URL }) {
+  const response = await fetchImpl(`${baseUrl}/locations/${encodeURIComponent(locationId)}`, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${accessToken}`, Version: "2021-07-28", Accept: "application/json" }
+  });
+  if (!response.ok) return null;
+  const data = await response.json().catch(() => ({}));
+  const name = data.location?.name || data.name;
+  return typeof name === "string" && name.trim() ? name.trim() : null;
+}

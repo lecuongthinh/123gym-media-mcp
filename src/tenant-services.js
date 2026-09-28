@@ -214,38 +214,7 @@ export class PostgresConnectionRepository {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const previous = await client.query(
-        `SELECT credential_id FROM connections
-          WHERE tenant_id = $1 AND provider = 'highlevel'
-          FOR UPDATE`,
-        [tenantId]
-      );
-      const credential = await client.query(
-        `INSERT INTO tenant_credentials (secret_backend, secret_ref, credential_type, encrypted_payload, encryption_version, expires_at)
-         VALUES ('encrypted_database', $1, 'oauth2', $2, 1, $3)
-         RETURNING id`,
-        [`encrypted://highlevel/${tenantId}/${Date.now()}`, encryptedPayload, expiresAt]
-      );
-      await client.query(
-        `INSERT INTO connections (tenant_id, provider, external_location_id, auth_type, status, scopes, credential_id, default_user_id)
-         VALUES ($1, 'highlevel', $2, 'oauth2', 'active', $3, $4, $5)
-         ON CONFLICT (tenant_id, provider) DO UPDATE SET
-           external_location_id = EXCLUDED.external_location_id,
-           auth_type = 'oauth2', status = 'active', scopes = EXCLUDED.scopes,
-           credential_id = EXCLUDED.credential_id,
-           default_user_id = COALESCE(EXCLUDED.default_user_id, connections.default_user_id),
-           updated_at = now()`,
-        [tenantId, locationId, scopes, credential.rows[0].id, defaultUserId]
-      );
-      const previousCredentialId = previous.rows[0]?.credential_id;
-      if (previousCredentialId && previousCredentialId !== credential.rows[0].id) {
-        await client.query(
-          `DELETE FROM tenant_credentials tc
-            WHERE tc.id = $1
-              AND NOT EXISTS (SELECT 1 FROM connections c WHERE c.credential_id = tc.id)`,
-          [previousCredentialId]
-        );
-      }
+      await this.#saveConnection(client, { tenantId, locationId, encryptedPayload, expiresAt, scopes, defaultUserId });
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");
@@ -253,6 +222,233 @@ export class PostgresConnectionRepository {
     } finally {
       client.release();
     }
+  }
+
+  async #saveConnection(client, { tenantId, locationId, encryptedPayload, expiresAt, scopes, defaultUserId = null }) {
+    const previous = await client.query(
+      `SELECT credential_id FROM connections
+        WHERE tenant_id = $1 AND provider = 'highlevel'
+        FOR UPDATE`,
+      [tenantId]
+    );
+    const credential = await client.query(
+      `INSERT INTO tenant_credentials (secret_backend, secret_ref, credential_type, encrypted_payload, encryption_version, expires_at)
+       VALUES ('encrypted_database', $1, 'oauth2', $2, 1, $3)
+       RETURNING id`,
+      [`encrypted://highlevel/${tenantId}/${Date.now()}`, encryptedPayload, expiresAt]
+    );
+    await client.query(
+      `INSERT INTO connections (tenant_id, provider, external_location_id, auth_type, status, scopes, credential_id, default_user_id)
+       VALUES ($1, 'highlevel', $2, 'oauth2', 'active', $3, $4, $5)
+       ON CONFLICT (tenant_id, provider) DO UPDATE SET
+         external_location_id = EXCLUDED.external_location_id,
+         auth_type = 'oauth2', status = 'active', scopes = EXCLUDED.scopes,
+         credential_id = EXCLUDED.credential_id,
+         default_user_id = COALESCE(EXCLUDED.default_user_id, connections.default_user_id),
+         updated_at = now()`,
+      [tenantId, locationId, scopes, credential.rows[0].id, defaultUserId]
+    );
+    const previousCredentialId = previous.rows[0]?.credential_id;
+    if (previousCredentialId && previousCredentialId !== credential.rows[0].id) {
+      await client.query(
+        `DELETE FROM tenant_credentials tc
+          WHERE tc.id = $1
+            AND NOT EXISTS (SELECT 1 FROM connections c WHERE c.credential_id = tc.id)`,
+        [previousCredentialId]
+      );
+    }
+  }
+
+  // ---- Built-in OAuth authorization server storage -------------------------
+
+  async registerOAuthClient({ clientId, clientName, redirectUris }) {
+    await this.pool.query(
+      `INSERT INTO oauth_clients (client_id, client_name, redirect_uris) VALUES ($1, $2, $3)`,
+      [clientId, clientName || null, redirectUris]
+    );
+  }
+
+  async findOAuthClient(clientId) {
+    const { rows } = await this.pool.query(
+      `SELECT client_id, client_name, redirect_uris FROM oauth_clients WHERE client_id = $1`,
+      [clientId]
+    );
+    return rows[0] || null;
+  }
+
+  async createLoginRequest({ stateHash, clientId, redirectUri, codeChallenge, clientState, resource, expiresAt }) {
+    await this.pool.query(
+      `INSERT INTO oauth_login_requests (state_hash, client_id, redirect_uri, code_challenge, client_state, resource, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [stateHash, clientId, redirectUri, codeChallenge, clientState || null, resource || null, expiresAt]
+    );
+  }
+
+  async consumeLoginRequest(stateHash) {
+    const { rows } = await this.pool.query(
+      `UPDATE oauth_login_requests SET used_at = now()
+        WHERE state_hash = $1 AND used_at IS NULL AND expires_at > now()
+      RETURNING client_id, redirect_uri, code_challenge, client_state, resource`,
+      [stateHash]
+    );
+    return rows[0] || null;
+  }
+
+  // One transaction: identify the HighLevel user, find or create the tenant
+  // that owns this sub-account, join the user to it, and store the freshly
+  // granted HighLevel credential. Logging in and connecting are the same step.
+  async provisionHighLevelLogin({
+    subject, email, displayName, locationId, newMemberRole, tenantName, allowCreateTenant,
+    encryptedPayload, expiresAt, scopes, defaultUserId = null
+  }) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const userResult = await client.query(
+        `INSERT INTO users (auth_subject, email, display_name, last_login_at)
+         VALUES ($1, $2, $3, now())
+         ON CONFLICT (auth_subject) DO UPDATE SET
+           email = COALESCE(EXCLUDED.email, users.email),
+           display_name = COALESCE(EXCLUDED.display_name, users.display_name),
+           last_login_at = now(), updated_at = now()
+         RETURNING id, status`,
+        [subject, email || null, displayName || null]
+      );
+      const user = userResult.rows[0];
+      if (user.status !== "active") throw new TenantAuthorizationError("User account is not active.", "USER_INACTIVE");
+
+      const existing = await client.query(
+        `SELECT c.tenant_id, t.status AS tenant_status
+           FROM connections c JOIN tenants t ON t.id = c.tenant_id
+          WHERE c.provider = 'highlevel' AND c.external_location_id = $1`,
+        [locationId]
+      );
+      let tenantId;
+      let created = false;
+      if (existing.rowCount > 0) {
+        if (existing.rows[0].tenant_status !== "active") throw new TenantAuthorizationError("This account is suspended.", "TENANT_INACTIVE");
+        tenantId = existing.rows[0].tenant_id;
+      } else {
+        if (!allowCreateTenant) throw new TenantAuthorizationError("Self-serve sign-up is disabled.", "SIGNUP_DISABLED");
+        const baseSlug = slugify(tenantName);
+        let tenant;
+        for (let attempt = 0; attempt < 5 && !tenant; attempt += 1) {
+          const slug = attempt === 0 ? baseSlug : `${baseSlug}-${randomBytes(3).toString("hex")}`;
+          const inserted = await client.query(
+            `INSERT INTO tenants (slug, display_name) VALUES ($1, $2)
+             ON CONFLICT (slug) DO NOTHING RETURNING id`,
+            [slug, tenantName]
+          );
+          tenant = inserted.rows[0];
+        }
+        if (!tenant) throw new Error("Unable to allocate a unique tenant slug.");
+        tenantId = tenant.id;
+        created = true;
+      }
+
+      const memberCount = await client.query(
+        `SELECT count(*)::int AS n FROM memberships WHERE tenant_id = $1 AND status = 'active'`,
+        [tenantId]
+      );
+      const role = created || memberCount.rows[0].n === 0 ? "tenant_owner" : newMemberRole;
+      await client.query(
+        `INSERT INTO memberships (user_id, tenant_id, role) VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, tenant_id) DO NOTHING`,
+        [user.id, tenantId, role]
+      );
+      const membership = await client.query(
+        `SELECT role, status FROM memberships WHERE user_id = $1 AND tenant_id = $2`,
+        [user.id, tenantId]
+      );
+      if (membership.rows[0].status !== "active") throw new TenantAuthorizationError("Your access to this account was revoked.", "MEMBERSHIP_REVOKED");
+
+      await this.#saveConnection(client, { tenantId, locationId, encryptedPayload, expiresAt, scopes, defaultUserId });
+      await client.query(
+        `INSERT INTO audit_events (actor_user_id, tenant_id, action, result, metadata)
+         VALUES ($1, $2, $3, 'success', $4::jsonb)`,
+        [user.id, tenantId, created ? "tenant.self_serve_provisioned" : "highlevel.login", JSON.stringify({ locationId, role: membership.rows[0].role })]
+      );
+      await client.query("COMMIT");
+      return { userId: user.id, tenantId, role: membership.rows[0].role, created };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async createAuthCode({ codeHash, clientId, redirectUri, codeChallenge, userId, tenantId, expiresAt }) {
+    await this.pool.query(
+      `INSERT INTO oauth_auth_codes (code_hash, client_id, redirect_uri, code_challenge, user_id, tenant_id, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [codeHash, clientId, redirectUri, codeChallenge, userId, tenantId, expiresAt]
+    );
+  }
+
+  async consumeAuthCode(codeHash) {
+    const { rows } = await this.pool.query(
+      `UPDATE oauth_auth_codes SET used_at = now()
+        WHERE code_hash = $1 AND used_at IS NULL AND expires_at > now()
+      RETURNING client_id, redirect_uri, code_challenge, user_id, tenant_id`,
+      [codeHash]
+    );
+    return rows[0] || null;
+  }
+
+  async insertOAuthToken({ tokenHash, kind, familyId, clientId, userId, tenantId, expiresAt }) {
+    await this.pool.query(
+      `INSERT INTO oauth_tokens (token_hash, kind, family_id, client_id, user_id, tenant_id, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [tokenHash, kind, familyId, clientId, userId, tenantId, expiresAt]
+    );
+  }
+
+  async findAccessToken(tokenHash) {
+    const { rows } = await this.pool.query(
+      `SELECT user_id, tenant_id, client_id FROM oauth_tokens
+        WHERE token_hash = $1 AND kind = 'access' AND revoked_at IS NULL AND expires_at > now()`,
+      [tokenHash]
+    );
+    return rows[0] || null;
+  }
+
+  // Returns the token's owner when it is a live, unused refresh token (and
+  // marks it used). A refresh token that was already used is being replayed:
+  // revoke its whole family and report nothing.
+  async consumeRefreshToken(tokenHash) {
+    const { rows } = await this.pool.query(
+      `UPDATE oauth_tokens SET used_at = now()
+        WHERE token_hash = $1 AND kind = 'refresh' AND used_at IS NULL AND revoked_at IS NULL AND expires_at > now()
+      RETURNING family_id, client_id, user_id, tenant_id`,
+      [tokenHash]
+    );
+    if (rows[0]) return rows[0];
+    await this.pool.query(
+      `UPDATE oauth_tokens SET revoked_at = now()
+        WHERE revoked_at IS NULL AND family_id = (
+          SELECT family_id FROM oauth_tokens WHERE token_hash = $1 AND kind = 'refresh' AND used_at IS NOT NULL)`,
+      [tokenHash]
+    );
+    return null;
+  }
+
+  async resolvePrincipalForUserTenant(userId, tenantId) {
+    const { rows } = await this.pool.query(
+      `SELECT u.id, u.auth_subject, u.email, m.id AS membership_id, m.role, t.id AS tenant_id, t.display_name AS tenant_name
+         FROM users u
+         JOIN memberships m ON m.user_id = u.id AND m.tenant_id = $2 AND m.status = 'active'
+         JOIN tenants t ON t.id = m.tenant_id AND t.status = 'active'
+        WHERE u.id = $1 AND u.status = 'active'`,
+      [userId, tenantId]
+    );
+    return rows[0] || null;
+  }
+
+  async deleteExpiredOAuthArtifacts() {
+    await this.pool.query(`DELETE FROM oauth_tokens WHERE expires_at < now() - interval '1 day'`);
+    await this.pool.query(`DELETE FROM oauth_auth_codes WHERE expires_at < now() - interval '1 day'`);
+    await this.pool.query(`DELETE FROM oauth_login_requests WHERE expires_at < now() - interval '1 day'`);
   }
 
   async close() {

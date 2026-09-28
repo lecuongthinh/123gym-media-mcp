@@ -61,17 +61,35 @@ export function createAuth0Verifier(env = process.env, overrides = {}) {
   };
 }
 
+// The built-in authorization server (see oauth-server.js) signs users in
+// through HighLevel instead of an external identity provider.
+export function builtInOAuthEnabled(env = process.env) {
+  return env.OAUTH_SERVER_ENABLED === "true" && Boolean(
+    String(env.MCP_RESOURCE_URL || "").trim() && env.HIGHLEVEL_INSTALL_URL && env.HIGHLEVEL_REDIRECT_URI &&
+    env.HIGHLEVEL_CLIENT_ID && env.HIGHLEVEL_CLIENT_SECRET && env.TENANT_CREDENTIAL_ENCRYPTION_KEY
+  );
+}
+
 export function authConfiguration(env = process.env) {
   const issuer = normalizeIssuer(env.AUTH0_ISSUER_BASE_URL);
   const resource = String(env.MCP_RESOURCE_URL || "").replace(/\/+$/, "");
-  const oauthReady = Boolean(issuer && env.AUTH0_AUDIENCE && resource);
+  const auth0Ready = Boolean(issuer && env.AUTH0_AUDIENCE && resource);
+  const builtInReady = builtInOAuthEnabled(env);
   const legacyAdminReady = env.ENABLE_LEGACY_ADMIN_AUTH === "true" && Boolean(env.MCP_ADMIN_API_KEY);
-  return { issuer, resource, oauthReady, legacyAdminReady };
+  return { issuer, resource, oauthReady: auth0Ready || builtInReady, auth0Ready, builtInReady, legacyAdminReady };
 }
 
 export function protectedResourceMetadata(env = process.env) {
-  const { issuer, resource, oauthReady } = authConfiguration(env);
+  const { issuer, resource, oauthReady, builtInReady } = authConfiguration(env);
   if (!oauthReady) throw new Error("OAuth protected resource metadata is not configured.");
+  if (builtInReady) {
+    return {
+      resource,
+      authorization_servers: [resource],
+      bearer_methods_supported: ["header"],
+      resource_documentation: env.MCP_DOCUMENTATION_URL || `${resource}/docs`
+    };
+  }
   return {
     resource,
     authorization_servers: [issuer],

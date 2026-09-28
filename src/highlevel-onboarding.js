@@ -17,6 +17,28 @@ function requireOwner(principal) {
   }
 }
 
+export async function exchangeHighLevelCode({ env = process.env, code, fetchImpl = globalThis.fetch }) {
+  const response = await fetchImpl(HIGHLEVEL_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Version: "v3" },
+    body: new URLSearchParams({
+      client_id: env.HIGHLEVEL_CLIENT_ID || "",
+      client_secret: env.HIGHLEVEL_CLIENT_SECRET || "",
+      grant_type: "authorization_code",
+      code,
+      user_type: "Location",
+      redirect_uri: env.HIGHLEVEL_REDIRECT_URI || ""
+    })
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(`HighLevel OAuth token exchange failed (${response.status}).`);
+  if (!body.access_token || !body.refresh_token) {
+    console.error("[highlevel-onboarding] Incomplete OAuth token response. Keys present:", Object.keys(body));
+    throw new Error("HighLevel OAuth response is incomplete.");
+  }
+  return body;
+}
+
 export function createHighLevelOnboarding({ env = process.env, repository, fetchImpl = globalThis.fetch } = {}) {
   const callbackUrl = env.HIGHLEVEL_REDIRECT_URI;
 
@@ -48,24 +70,7 @@ export function createHighLevelOnboarding({ env = process.env, repository, fetch
     if (!code || !state) throw new Error("HighLevel OAuth callback requires code and state.");
     const authorization = await repository.consumeOAuthState(sha256(state));
     if (!authorization) throw new Error("HighLevel OAuth state is invalid, expired, or already used.");
-    const response = await fetchImpl(HIGHLEVEL_TOKEN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", Version: "v3" },
-      body: new URLSearchParams({
-        client_id: env.HIGHLEVEL_CLIENT_ID || "",
-        client_secret: env.HIGHLEVEL_CLIENT_SECRET || "",
-        grant_type: "authorization_code",
-        code,
-        user_type: "Location",
-        redirect_uri: callbackUrl || ""
-      })
-    });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(`HighLevel OAuth token exchange failed (${response.status}).`);
-    if (!body.access_token || !body.refresh_token) {
-      console.error("[highlevel-onboarding] Incomplete OAuth token response. Keys present:", Object.keys(body));
-      throw new Error("HighLevel OAuth response is incomplete.");
-    }
+    const body = await exchangeHighLevelCode({ env, code, fetchImpl });
 
     const intendedLocationId = authorization.intended_location_id;
     let secret;

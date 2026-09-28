@@ -18,6 +18,7 @@ import {
   requireScopes
 } from "./src/auth.js";
 import { createHighLevelOnboarding } from "./src/highlevel-onboarding.js";
+import { authenticateIssuedToken, completeHighLevelLogin, createOAuthRouter } from "./src/oauth-server.js";
 import { fetchHighLevelUsers } from "./src/highlevel-users.js";
 
 const app = express();
@@ -29,7 +30,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.6.0";
+const SERVICE_VERSION = "3.7.0";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -48,6 +49,8 @@ app.get("/docs", (req, res) => res.json({
   mcp: "/mcp",
   version: SERVICE_VERSION
 }));
+
+app.use(createOAuthRouter({ env: process.env, getRepository: (req) => requestServices(req).repository }));
 
 function constantTimeEqual(left, right) {
   const a = Buffer.from(String(left || ""));
@@ -126,9 +129,20 @@ app.use("/mcp", (req, res, next) => {
 });
 
 async function resolveOAuthPrincipal(req, token) {
-  const identity = await requestVerifier(req)(token);
   const services = requestServices(req);
   req.tenantServices = services;
+  const configuration = authConfiguration(process.env);
+  if (configuration.builtInReady) {
+    const issued = await authenticateIssuedToken({ token, repository: services.repository });
+    if (issued) {
+      req.principal = issued;
+      return { subject: issued.subject };
+    }
+  }
+  if (!configuration.auth0Ready && !req.app.locals.auth0Verifier) {
+    throw new AuthenticationError("Bearer access token is invalid or expired.");
+  }
+  const identity = await requestVerifier(req)(token);
   req.principal = await authorizeUserPrincipal({
     identity,
     repository: services.repository,
@@ -834,6 +848,9 @@ app.post("/onboarding/highlevel/start", authenticateMcpRequest, async (req, res)
 app.get("/oauth/callback/social-crm", async (req, res) => {
   const services = requestServices(req);
   try {
+    const login = await completeHighLevelLogin({ query: req.query, repository: services.repository, env: process.env });
+    if (login?.redirectUrl) return res.redirect(302, login.redirectUrl);
+    if (login) return res.status(login.status).type("html").send(login.html);
     const result = await createHighLevelOnboarding({ env: process.env, repository: services.repository }).callback(req.query);
     return res.json(result);
   } catch (error) {
