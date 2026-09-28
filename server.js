@@ -22,6 +22,13 @@ import { authenticateIssuedToken, completeHighLevelLogin, createOAuthRouter } fr
 import { fetchHighLevelUsers } from "./src/highlevel-users.js";
 
 const app = express();
+app.use((req, res, next) => {
+  res.on("finish", () => {
+    if (req.path === "/health") return;
+    console.info(JSON.stringify({ timestamp: new Date().toISOString(), event: "http_request", method: req.method, path: req.path, status: res.statusCode }));
+  });
+  next();
+});
 app.use(express.json({ limit: "10mb" }));
 
 const PORT = process.env.PORT || 10000;
