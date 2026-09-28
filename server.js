@@ -164,6 +164,8 @@ async function resolveOAuthPrincipal(req, token) {
   return identity;
 }
 
+const PUBLIC_MCP_METHODS = new Set(["initialize", "notifications/initialized", "tools/list"]);
+
 async function authenticateMcpRequest(req, res, next) {
   const id = req.body?.id ?? null;
   const configuration = authConfiguration(process.env);
@@ -193,6 +195,14 @@ async function authenticateMcpRequest(req, res, next) {
       mcpDiagnostic(req, "legacy_admin_authorized", {
         authentication: "success", role: "uplifting_admin"
       });
+      return next();
+    }
+    // Tool discovery carries no data, so ChatGPT can list the tools before the
+    // user signs in; every tools/call still needs a valid token.
+    if (!token && !suppliedAdminKey && configuration.oauthReady && PUBLIC_MCP_METHODS.has(req.body?.method)) {
+      req.principal = null;
+      req.mcpAuthentication = "anonymous_discovery";
+      req.mcpDiagnosticStage = "mcp_handler";
       return next();
     }
     mcpDiagnostic(req, "authentication_failed", {
@@ -894,6 +904,9 @@ app.use("/mcp", authenticateMcpRequest);
 app.post("/mcp", async (req, res) => {
   const request = req.body || {};
   const id = request.id ?? null;
+  if (!req.principal && !PUBLIC_MCP_METHODS.has(request.method)) {
+    return res.status(401).json({ jsonrpc: "2.0", id, error: { code: -32002, message: "OAuth authentication required." } });
+  }
   try {
     if (request.method === "initialize") {
       mcpDiagnostic(req, "initialize_handled");

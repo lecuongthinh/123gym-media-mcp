@@ -405,3 +405,32 @@ test("the HighLevel consent URL is the standard OAuth URL, taking version_id fro
   assert.equal(whiteLabel.searchParams.get("client_id"), "test-client");
   assert.equal(new URL(highLevelAuthorizeUrl(env({ HIGHLEVEL_OAUTH_SCOPES: "medias.readonly" }), "s")).searchParams.get("scope"), "medias.readonly");
 });
+
+test("tool discovery works without a token but every tool call still requires one", async () => {
+  const repository = new FakeRepository();
+  const previous = {};
+  const values = env({ AUTH0_ISSUER_BASE_URL: undefined, AUTH0_AUDIENCE: undefined });
+  for (const [key, value] of Object.entries(values)) { previous[key] = process.env[key]; if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  mcpApp.locals.tenantServices = { repository, credentialProvider: {} };
+  const server = mcpApp.listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const rpc = (body, headers = {}) => fetch(`${base}/mcp`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, ...body }) });
+  try {
+    const list = await rpc({ method: "tools/list" });
+    assert.equal(list.status, 200);
+    assert.ok((await list.json()).result.tools.length > 0);
+    assert.equal((await rpc({ method: "initialize" })).status, 200);
+    for (const method of ["tools/call", "resources/list"]) {
+      const denied = await rpc({ method, params: { name: "list_social_accounts", arguments: {} } });
+      assert.equal(denied.status, 401, method);
+      assert.match(denied.headers.get("www-authenticate"), /resource_metadata=/);
+    }
+    const badToken = await rpc({ method: "tools/list" }, { authorization: "Bearer uat_forged" });
+    assert.equal(badToken.status, 401, "a presented but invalid token is still rejected");
+  } finally {
+    delete mcpApp.locals.tenantServices;
+    for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
