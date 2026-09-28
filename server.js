@@ -29,7 +29,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.5.6";
+const SERVICE_VERSION = "3.5.7";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -879,7 +879,7 @@ app.post("/mcp", async (req, res) => {
     }
     if (request.method === "tools/call") {
       const toolName = request.params?.name;
-      const args = request.params?.arguments || {};
+      let args = request.params?.arguments || {};
       const tool = tools.find((item) => item.name === toolName);
       if (!tool) throw new Error(`Unknown tool: ${toolName}`);
       authorizeTool(req.principal, toolName);
@@ -897,6 +897,11 @@ app.post("/mcp", async (req, res) => {
         });
       }
       const authorizedContext = await requestTenantContext(req, args.locationId);
+      // requestTenantContext already rejected any caller-supplied locationId
+      // that isn't this tenant's own. Pin every handler to that location so
+      // an omitted locationId can never fall back to the global 123 GYM
+      // default baked into the handlers' own parameter defaults.
+      args = { ...args, locationId: authorizedContext.locationId };
       let result;
       if (toolName === "upload_leadconnector_media") {
         result = await uploadMedia(args, authorizedContext);

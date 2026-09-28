@@ -144,6 +144,38 @@ test("OAuth user can call a read tool only for its membership tenant", async () 
   }));
 });
 
+test("OAuth user who omits locationId is pinned to their own tenant's location, never the 123 GYM default", async () => {
+  await withProcessEnv({ ...oauthEnv(), LC_PRIVATE_TOKEN_TESTING_AGENCY: "testing-token" }, () => withServer(async (baseUrl) => {
+    app.locals.auth0Verifier = async () => ({
+      subject: "auth0|testing-user", email: "tester@example.com", displayName: "Tester",
+      tenantIdClaim: TEST_TENANT_ID, scopes: new Set()
+    });
+    app.locals.tenantServices = testServices();
+    const realFetch = globalThis.fetch;
+    let upstreamUrl;
+    globalThis.fetch = async (url, options) => {
+      if (String(url).startsWith("https://services.leadconnectorhq.com/")) {
+        upstreamUrl = String(url);
+        assert.equal(options.headers.Authorization, "Bearer testing-token");
+        return new Response(JSON.stringify({ results: { accounts: [] } }), { status: 200 });
+      }
+      return realFetch(url, options);
+    };
+    try {
+      const response = await fetch(`${baseUrl}/mcp`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer signed-user-token" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "list_social_accounts", arguments: {} } })
+      });
+      const payload = await response.json();
+      assert.equal(response.status, 200);
+      assert.equal(payload.error, undefined);
+      assert.match(upstreamUrl, new RegExp(`/social-media-posting/${TEST_LOCATION}/accounts$`));
+      assert.doesNotMatch(upstreamUrl, new RegExp(GYM_LOCATION));
+    } finally { globalThis.fetch = realFetch; }
+  }));
+});
+
 test("OAuth user cannot switch locationId to 123 GYM", async () => {
   await withProcessEnv(oauthEnv(), () => withServer(async (baseUrl) => {
     app.locals.auth0Verifier = async () => ({ subject: "auth0|testing-user", tenantIdClaim: TEST_TENANT_ID, scopes: new Set(["uplifting:read"]) });

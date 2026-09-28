@@ -14,7 +14,9 @@ Version **3.5.2** adds `connect_highlevel`, an MCP tool wrapping `/onboarding/hi
 
 Version **3.5.5** fixes a real install failure found by live testing: when the HighLevel user completing OAuth consent is an agency-level (Company) user -- which every person on Uplifting's own agency is -- HighLevel's token response has no `locationId` at all, even after picking exactly one sub-account on the consent screen (confirmed via `userType: "Company"`, `companyId` present, `isBulkInstallation: true`). `connect_highlevel` and `POST /onboarding/highlevel/start` now **require** a `locationId` argument naming the sub-account to bind the tenant to. The OAuth callback stores that intended location before redirecting (`oauth_states.intended_location_id`, migration `005_oauth_state_intended_location.sql`), and when the token response comes back Company-scoped it mints a location-scoped access token via `POST /oauth/locationToken` (`src/highlevel-location-token.js`) using the company token + that locationId. The resulting connection is marked `auth_mode: "company"`; refreshing it (`src/credential-provider.js`) refreshes the company token and re-mints a fresh location token each time, since HighLevel does not issue a location-level refresh token in this mode. A genuine single-location HighLevel user (no agency access) still gets `locationId` directly in the response and is stored as `auth_mode: "location"`, refreshed the original simpler way.
 
-Version **3.5.6** rewrote every tool's `locationId` description after live testing showed ChatGPT reading the old wording ("Defaults to 123 GYM for backward compatibility") as an instruction to actively fill in 123 GYM's location ID on every call, even when told not to -- which then failed as `Cross-tenant location access blocked` for any other tenant. The description now says explicitly to omit `locationId` in almost every call and only pass it when the user names a different location than the one already authorized.
+Version **3.5.6** rewrote every tool's `locationId` description ("Defaults to 123 GYM for backward compatibility" read like an instruction to the model). That turned out not to be the actual cause of the `Cross-tenant location access blocked` failures -- see 3.5.7 -- but the old wording was still misleading, so the rewrite stays.
+
+Version **3.5.7** fixes the real cause of `Cross-tenant location access blocked` for any OAuth tenant other than 123 GYM when a tool is called without `locationId` (confirmed live with an empty `{}` call): the tool handlers each declare `locationId = DEFAULT_LOCATION_ID` (123 GYM) as their own parameter default, so an omitted `locationId` silently became 123 GYM and then failed the tenant check against the caller's real location. The `/mcp` `tools/call` dispatch now overwrites `args.locationId` with the authorized tenant's own location right after `requestTenantContext` (which has already rejected any caller-supplied `locationId` that isn't theirs), so the handlers' 123 GYM default is unreachable for OAuth callers. This is the original "stop silently defaulting to the production location" concern, finally closed for the OAuth path.
 
 ## Security model
 
@@ -153,7 +155,7 @@ The backend connects directly through `DATABASE_URL`; it does not use the Supaba
 5. Provision one Testing Agency Auth0 user and membership.
 6. Run `npm test` and `npm run check:config`.
 7. Deploy only `feature/oauth-multitenant-v1` to the staging Render service.
-8. Confirm `/health` reports version `3.5.6` and does not expose configuration.
+8. Confirm `/health` reports version `3.5.7` and does not expose configuration.
 9. Complete ChatGPT OAuth and run read-only `list_social_accounts` for `UwsfBVLmz7XSKJbhuOTS`.
 10. Attempt the 123 GYM `locationId` with the Testing Agency user and confirm it is blocked before any HighLevel request.
 11. Inspect `audit_events` for success/failure records without secrets.
