@@ -831,7 +831,7 @@ app.post("/onboarding/highlevel/start", authenticateMcpRequest, async (req, res)
   }
 });
 
-app.get("/oauth/callback/highlevel", async (req, res) => {
+app.get("/oauth/callback/social-crm", async (req, res) => {
   const services = requestServices(req);
   try {
     const result = await createHighLevelOnboarding({ env: process.env, repository: services.repository }).callback(req.query);
