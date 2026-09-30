@@ -435,7 +435,7 @@ export class PostgresConnectionRepository {
 
   async resolvePrincipalForUserTenant(userId, tenantId) {
     const { rows } = await this.pool.query(
-      `SELECT u.id, u.auth_subject, u.email, m.id AS membership_id, m.role, t.id AS tenant_id, t.display_name AS tenant_name
+      `SELECT u.id, u.auth_subject, u.email, m.id AS membership_id, m.role, t.id AS tenant_id, t.display_name AS tenant_name, t.plan
          FROM users u
          JOIN memberships m ON m.user_id = u.id AND m.tenant_id = $2 AND m.status = 'active'
          JOIN tenants t ON t.id = m.tenant_id AND t.status = 'active'
@@ -443,6 +443,29 @@ export class PostgresConnectionRepository {
       [userId, tenantId]
     );
     return rows[0] || null;
+  }
+
+  // Usage counters (Phase 1 pricing foundation -- see migration 009). One row
+  // per tenant/metric/calendar-month; `period` is 'YYYY-MM' in UTC, computed
+  // by the caller so this stays a plain increment. Counting failures must
+  // never block the feature that triggered them, so callers should treat
+  // this as best-effort and not await it inline with the user-facing result.
+  async incrementUsage({ tenantId, metric, period, by = 1 }) {
+    await this.pool.query(
+      `INSERT INTO tenant_usage_counters (tenant_id, metric, period, count)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (tenant_id, metric, period)
+       DO UPDATE SET count = tenant_usage_counters.count + EXCLUDED.count, updated_at = now()`,
+      [tenantId, metric, period, by]
+    );
+  }
+
+  async getUsage({ tenantId, metric, period }) {
+    const { rows } = await this.pool.query(
+      `SELECT count FROM tenant_usage_counters WHERE tenant_id = $1 AND metric = $2 AND period = $3`,
+      [tenantId, metric, period]
+    );
+    return rows[0]?.count ?? 0;
   }
 
   async deleteExpiredOAuthArtifacts() {

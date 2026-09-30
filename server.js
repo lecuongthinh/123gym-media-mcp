@@ -37,7 +37,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.9.0";
+const SERVICE_VERSION = "3.10.0";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -58,6 +58,45 @@ app.get("/docs", (req, res) => res.json({
 }));
 
 app.use(createOAuthRouter({ env: process.env, getRepository: (req) => requestServices(req).repository }));
+
+// 'YYYY-MM' in UTC -- the period key tenant_usage_counters rows are keyed by.
+function currentUsagePeriod() {
+  return new Date().toISOString().slice(0, 7);
+}
+
+// Usage counting (Phase 1 pricing foundation) must never block the tool
+// call that triggered it -- a counter write failing is not the caller's
+// problem, so this only logs and swallows the error.
+function recordUsage(req, { tenantId, metric, by }) {
+  if (!by) return;
+  const repository = req.tenantServices?.repository;
+  if (typeof repository?.incrementUsage !== "function") return;
+  repository.incrementUsage({ tenantId, metric, period: currentUsagePeriod(), by })
+    .catch((error) => console.error("[usage] failed to record", { metric, tenantId, errorMessage: error?.message || "Error" }));
+}
+
+// Fixed-window per-tenant abuse guard on tools/call, independent of the
+// plan/pricing usage counters above -- a runaway automation loop or a
+// leaked token should not be able to hammer one Render instance into the
+// ground for every other tenant. In-memory only (fine for the current
+// single-instance deployment; a multi-instance deployment would need this
+// moved to a shared store).
+const rateLimitWindows = new Map();
+function checkRateLimit(key) {
+  const limit = Number(process.env.TENANT_RATE_LIMIT_PER_MINUTE || 60);
+  const now = Date.now();
+  const windowStart = Math.floor(now / 60_000);
+  const entry = rateLimitWindows.get(key);
+  if (!entry || entry.windowStart !== windowStart) {
+    rateLimitWindows.set(key, { windowStart, count: 1 });
+    return true;
+  }
+  entry.count += 1;
+  return entry.count <= limit;
+}
+function resetRateLimitStateForTests() {
+  rateLimitWindows.clear();
+}
 
 function constantTimeEqual(left, right) {
   const a = Buffer.from(String(left || ""));
@@ -1001,6 +1040,11 @@ app.post("/mcp", async (req, res) => {
       const tool = tools.find((item) => item.name === toolName);
       if (!tool) throw new Error(`Unknown tool: ${toolName}`);
       authorizeTool(req.principal, toolName);
+      const rateLimitKey = req.principal.tenantId || req.principal.userId || req.ip;
+      if (!checkRateLimit(rateLimitKey)) {
+        mcpDiagnostic(req, "rate_limited", { toolName });
+        return res.json({ jsonrpc: "2.0", id, error: { code: -32029, message: "Too many requests. Please wait a moment and try again." } });
+      }
       if (toolName === "connect_highlevel") {
         if (req.principal.authType !== "oauth") throw new Error("connect_highlevel requires an OAuth user.");
         const onboardingResult = await createHighLevelOnboarding({ env: process.env, repository: req.tenantServices.repository }).start(req.principal, { locationId: args.locationId });
@@ -1072,6 +1116,10 @@ app.post("/mcp", async (req, res) => {
       };
       if (socialHandlers[toolName]) {
         result = await socialHandlers[toolName](args, authorizedContext);
+        if (toolName === "create_social_post") {
+          const createdCount = (result.results || []).filter((entry) => entry.action === "created").length;
+          recordUsage(req, { tenantId: authorizedContext.tenantId, metric: "posts_created", by: createdCount });
+        }
         await auditTool(req, { tenantId: authorizedContext.tenantId, toolName, action: "tool.call", result: "success", metadata: { locationId: authorizedContext.locationId } });
         return res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result } });
       }
@@ -1116,6 +1164,7 @@ export {
   listSocialAccounts,
   listSocialCategories,
   listSocialTags,
+  resetRateLimitStateForTests,
   resolveTenant,
   safeFileName,
   tenantRegistry,

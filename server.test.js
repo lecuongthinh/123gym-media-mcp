@@ -11,12 +11,14 @@ import {
   listSocialAccounts,
   listSocialCategories,
   listSocialTags,
+  resetRateLimitStateForTests,
   resolveTenant,
   safeFileName,
   tools,
   uploadMedia,
   validateLocationBinding
 } from "./server.js";
+import { createTenantServices } from "./src/tenant-services.js";
 
 const GYM_LOCATION = "pUePVc6UKEUecvZS6EYU";
 const TEST_LOCATION = "UwsfBVLmz7XSKJbhuOTS";
@@ -118,7 +120,7 @@ test("legacy admin key is opt-in, x-api-key only, and not accepted as OAuth Bear
       body: JSON.stringify({ jsonrpc: "2.0", id: 103, method: "initialize" })
     });
     assert.equal(accepted.status, 200);
-    assert.equal((await accepted.json()).result.serverInfo.version, "3.9.0");
+    assert.equal((await accepted.json()).result.serverInfo.version, "3.10.0");
 
     const rejected = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -135,7 +137,7 @@ test("health response contains no authentication or tenant secrets", async () =>
     const text = await response.text();
     assert.equal(response.status, 200);
     assert.doesNotMatch(text, /health-admin-secret|health-tenant-secret|LC_TENANTS_JSON|LC_PRIVATE_TOKEN/);
-    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.9.0" });
+    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.10.0" });
   }));
 });
 
@@ -448,4 +450,95 @@ test("upstream errors redact tenant tokens and Authorization values", async () =
       });
     });
   });
+});
+
+function legacyRepositoryFor(locationId, tenantId, tenantName, tokenEnv, incrementUsage) {
+  return {
+    async findActiveConnectionByLocationId(requested) {
+      if (requested !== locationId) return null;
+      return {
+        tenant_id: tenantId, tenant_name: tenantName, connection_id: `connection:${tenantId}`,
+        location_id: locationId, tenant_status: "active", connection_status: "active",
+        secret_backend: "environment", secret_ref: `env://${tokenEnv}`,
+        credential_type: "private_integration_token", scopes: ["social:read"], default_user_id: "tenant-default-user-id"
+      };
+    },
+    async findActiveConnectionByTenantId(requested) {
+      return requested === tenantId ? this.findActiveConnectionByLocationId(locationId) : null;
+    },
+    incrementUsage
+  };
+}
+
+test("create_social_post via /mcp records how many posts were actually created, in the tenant's usage counter", async () => {
+  resetRateLimitStateForTests();
+  const usageCalls = [];
+  const repository = legacyRepositoryFor(TEST_LOCATION, TEST_TENANT_ID, "Testing Agency", "LC_PRIVATE_TOKEN_TESTING_AGENCY", async (call) => { usageCalls.push(call); });
+  await withProcessEnv({ MCP_ADMIN_API_KEY: "usage-admin-secret", ENABLE_LEGACY_ADMIN_AUTH: "true", ...tenantEnv() }, async () => {
+    app.locals.tenantServices = createTenantServices(process.env, { repository });
+    let postsListCalls = 0;
+    const realFetch = globalThis.fetch;
+    // Both this test's own HTTP call to the local test server AND that
+    // server's own outbound call to LeadConnector go through the same
+    // process-global fetch, so the mock must pass the local one through
+    // untouched and only intercept the upstream LeadConnector paths.
+    const upstream = async (url, options) => {
+      const parsed = new URL(String(url));
+      if (parsed.pathname === `/social-media-posting/${TEST_LOCATION}/accounts`) {
+        return new Response(JSON.stringify({ success: true, results: { accounts: [
+          { id: TEST_ACCOUNT_ID, platform: "facebook", active: true, isExpired: false, deleted: false }
+        ] } }), { status: 200 });
+      }
+      if (parsed.pathname === `/social-media-posting/${TEST_LOCATION}/posts/list`) {
+        postsListCalls += 1;
+        if (postsListCalls === 1) return new Response(JSON.stringify({ success: true, results: { posts: [] } }), { status: 200 });
+        return new Response(JSON.stringify({ success: true, results: { posts: [
+          { _id: "new-post-id", summary: "Hello usage counter", accountIds: [TEST_ACCOUNT_ID], status: "draft" }
+        ] } }), { status: 200 });
+      }
+      if (parsed.pathname === `/social-media-posting/${TEST_LOCATION}/posts`) {
+        return new Response(JSON.stringify({ success: true, results: { post: { _id: "new-post-id", status: "draft" } } }), { status: 200 });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    };
+    await withTestServer(async (baseUrl) => {
+      globalThis.fetch = (url, options) => (String(url).startsWith(baseUrl) ? realFetch(url, options) : upstream(url, options));
+      try {
+        const response = await realFetch(`${baseUrl}/mcp`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-api-key": "usage-admin-secret" },
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "create_social_post", arguments: { locationId: TEST_LOCATION, summary: "Hello usage counter" } } })
+        });
+        const payload = await response.json();
+        assert.equal(payload.result.structuredContent.results[0].action, "created");
+        assert.equal(usageCalls.length, 1);
+        assert.equal(usageCalls[0].tenantId, TEST_TENANT_ID);
+        assert.equal(usageCalls[0].metric, "posts_created");
+        assert.equal(usageCalls[0].by, 1);
+        assert.match(usageCalls[0].period, /^\d{4}-\d{2}$/);
+      } finally {
+        globalThis.fetch = realFetch;
+      }
+    });
+  });
+});
+
+test("tools/call rate-limits a tenant after too many requests in one minute, independent of what the tool itself does", async () => {
+  resetRateLimitStateForTests();
+  await withProcessEnv({ MCP_ADMIN_API_KEY: "rate-limit-admin-secret", ENABLE_LEGACY_ADMIN_AUTH: "true", TENANT_RATE_LIMIT_PER_MINUTE: "3", ...tenantEnv() }, () => withTestServer(async (baseUrl) => {
+    const call = () => fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": "rate-limit-admin-secret" },
+      // invite_team_member rejects a legacy_admin caller synchronously,
+      // before any tenant lookup or upstream fetch -- no mock needed, and it
+      // proves the rate limit is checked regardless of what the tool call
+      // itself would have done.
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "invite_team_member", arguments: {} } })
+    }).then((response) => response.json());
+    const results = [];
+    for (let i = 0; i < 4; i += 1) results.push(await call());
+    for (const result of results.slice(0, 3)) assert.notEqual(result.error?.code, -32029);
+    assert.equal(results[3].error.code, -32029);
+    assert.match(results[3].error.message, /Too many requests/);
+  }));
 });

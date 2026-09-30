@@ -172,6 +172,7 @@ export async function authenticateIssuedToken({ token, repository }) {
     email: record.email,
     tenantId: record.tenant_id,
     tenantName: record.tenant_name,
+    plan: record.plan,
     membershipId: record.membership_id,
     role: record.role,
     scopes: new Set()
