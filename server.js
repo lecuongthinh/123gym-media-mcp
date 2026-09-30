@@ -37,7 +37,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.8.0";
+const SERVICE_VERSION = "3.8.1";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -483,8 +483,21 @@ async function listSocialTags({ locationId = DEFAULT_LOCATION_ID, search, limit,
   if (skip !== undefined) params.set("skip", String(Math.max(0, Number(skip) || 0)));
   const query = params.toString();
   const data = await socialRequest(locationId, `/tags${query ? `?${query}` : ""}`, { authorizedContext });
-  const tags = data?.results?.tags || data?.tags || [];
-  return { count: tags.length, tags: tags.map((tag) => ({ id: tag._id, name: tag.name })) };
+  let tags = data?.results?.tags ?? data?.tags ?? [];
+  if (!Array.isArray(tags)) {
+    // TEMP diagnostic (v3.8.1): field names only, never values, to find the
+    // real shape of this undocumented-beyond-changelog response without
+    // logging tenant data. Remove once the real shape is confirmed live.
+    console.info(JSON.stringify({
+      timestamp: new Date().toISOString(), event: "list_social_tags_shape_probe",
+      topLevelKeys: Object.keys(data || {}),
+      resultsKeys: Object.keys(data?.results || {}),
+      tagsType: typeof tags,
+      tagsKeys: tags && typeof tags === "object" ? Object.keys(tags) : null
+    }));
+    tags = Array.isArray(tags?.tags) ? tags.tags : Array.isArray(tags?.items) ? tags.items : [];
+  }
+  return { count: tags.length, tags: tags.map((tag) => ({ id: tag._id || tag.id, name: tag.name })) };
 }
 
 const BLOCKED_ACCOUNT_PATTERN = /t[oô] hi[eệ]u|56\s*t[oô]\s*hi[eệ]u|tuy[eể]n\s*d[uụ]ng|balance\s*fit/i;
