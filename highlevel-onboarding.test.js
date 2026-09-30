@@ -157,7 +157,7 @@ test("HighLevel onboarding mints a location-scoped token for a Company (agency) 
   assert.equal(decrypted.access_token, "location-access-token");
 });
 
-test("HighLevel onboarding rejects a Company grant when connect_highlevel was called without locationId", async () => {
+test("HighLevel onboarding rejects a Company grant when connect_social_account was called without locationId", async () => {
   const configuration = env();
   const repository = repositoryWithState({
     async saveHighLevelOAuthConnection() { throw new Error("must not save"); },

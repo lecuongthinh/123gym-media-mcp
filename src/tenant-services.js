@@ -594,7 +594,7 @@ export class EnvironmentCredentialProvider {
     const match = /^env:\/\/([A-Z][A-Z0-9_]*)$/.exec(connection.secret_ref || "");
     if (!match) throw new Error("Invalid environment credential reference.");
     const accessToken = this.env[match[1]];
-    if (!accessToken) throw new Error(`HighLevel credential is not configured for connection ${connection.connection_id}.`);
+    if (!accessToken) throw new Error(`Credential is not configured for connection ${connection.connection_id}.`);
     return {
       accessToken,
       locationId: connection.location_id,
@@ -677,7 +677,7 @@ export async function authorizeUserPrincipal({ identity, repository, allowSelfSe
 export async function authorizeTenantContext({ tenantId, requestedLocationId, repository, credentialProvider, actor = null }) {
   if (!tenantId) throw new TenantAuthorizationError("Authorized tenant is required.", "TENANT_CONTEXT_MISSING");
   const connection = await repository.findActiveConnectionByTenantId(tenantId);
-  if (!connection) throw new TenantAuthorizationError("No active HighLevel connection exists for the authorized tenant.", "CONNECTION_NOT_FOUND");
+  if (!connection) throw new TenantAuthorizationError("No active connection exists for the authorized tenant.", "CONNECTION_NOT_FOUND");
   if (requestedLocationId && requestedLocationId !== connection.location_id) {
     throw new TenantAuthorizationError("Cross-tenant location access blocked.");
   }

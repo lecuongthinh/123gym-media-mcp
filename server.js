@@ -37,7 +37,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.10.0";
+const SERVICE_VERSION = "3.11.0";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -298,7 +298,7 @@ function resolveTenant(requestedLocationId, env = process.env) {
   const tenant = tenantRegistry(env)[locationId];
   if (!tenant) throw new Error("Unknown or unauthorized locationId.");
   const token = env[tenant.tokenEnv];
-  if (!token) throw new Error(`LeadConnector credential is not configured for tenant ${tenant.name}.`);
+  if (!token) throw new Error(`Credential is not configured for tenant ${tenant.name}.`);
   return { locationId, name: tenant.name, tokenEnv: tenant.tokenEnv, token };
 }
 
@@ -323,7 +323,7 @@ async function parseResponse(response) {
   try { data = JSON.parse(text); } catch { data = { raw: text }; }
   if (!response.ok) {
     const detail = Array.isArray(data?.message) ? data.message.join("; ") : (typeof data?.message === "string" ? data.message : data?.error);
-    throw new Error(`LeadConnector API failed (${response.status})${detail ? `: ${redactSecrets(detail).slice(0, 500)}` : ""}`);
+    throw new Error(`Upstream request failed (${response.status})${detail ? `: ${redactSecrets(detail).slice(0, 500)}` : ""}`);
   }
   return data;
 }
@@ -370,9 +370,9 @@ function sanitizeDebugResponse(value, accessToken) {
 function validateLocationBinding(path, locationId) {
   const url = new URL(path, LC_BASE_URL);
   const socialMatch = url.pathname.match(/^\/social-media-posting\/([^/]+)\//);
-  if (socialMatch && decodeURIComponent(socialMatch[1]) !== locationId) throw new Error("Cross-tenant LeadConnector request blocked.");
+  if (socialMatch && decodeURIComponent(socialMatch[1]) !== locationId) throw new Error("Cross-tenant request blocked.");
   const queryLocation = url.searchParams.get("locationId") || url.searchParams.get("altId");
-  if (queryLocation && queryLocation !== locationId) throw new Error("Cross-tenant LeadConnector request blocked.");
+  if (queryLocation && queryLocation !== locationId) throw new Error("Cross-tenant request blocked.");
 }
 
 async function tenantRequest(locationId, path, { method = "GET", body, headers = {}, version = "2021-07-28", authorizedContext } = {}) {
@@ -737,7 +737,7 @@ const openAIFileSchema = {
 const mediaItemSchema = {
   type: "object",
   properties: {
-    url: { type: "string", description: "LeadConnector or public HTTPS media URL." },
+    url: { type: "string", description: "A media library or public HTTPS media URL." },
     type: { type: "string", description: "MIME type such as image/png or video/mp4." },
     caption: { type: "string" }
   },
@@ -764,7 +764,7 @@ const socialPostProperties = {
   applyWatermark: { type: "boolean" },
   tiktokPostDetails: { type: "object", additionalProperties: true },
   gmbPostDetails: { type: "object", additionalProperties: true },
-  userId: { type: "string", description: "LeadConnector user ID creating the post." },
+  userId: { type: "string", description: "The account's user ID creating the post." },
   linkedinPostDetails: { type: "object", additionalProperties: true },
   pinterestPostDetails: { type: "object", additionalProperties: true },
   facebookPostDetails: { type: "object", additionalProperties: true },
@@ -773,11 +773,28 @@ const socialPostProperties = {
   communityPostDetails: { type: "object", additionalProperties: true }
 };
 
+// Sent once in the MCP `initialize` response as soft process guidance for
+// the model -- new customers don't know what this connector can/can't do or
+// what order to do things in, and a live test showed the model answering
+// "find my media library" from ChatGPT's own file history instead of
+// calling search_media_library. Critical rules also live in each tool's own
+// description (that's what actually gates behavior); this is an overview a
+// tool description alone can't give, since it needs to compare across tools.
+const MCP_INSTRUCTIONS = `This connects to the customer's own social media / CRM account (posts, media, accounts, stats) -- it is a separate system from ChatGPT itself.
+
+First-time setup: if a tool fails saying no connection exists, call connect_social_account first (owner/admin only) -- every other tool needs a connection.
+
+Media library rule: "my media library", "our gallery", "photos we already have", or anything the user says is already in their account means their CONNECTED account's media library -- call search_media_library. Never answer this from ChatGPT's own uploaded files, generated images, or ChatGPT's Media Library; those are a completely different, unrelated place. Use upload_media only to add something new to their account.
+
+Posts: default to draft unless the user explicitly says to schedule or publish. category/tag fields need real ids, not names typed by the user -- call list_social_categories / list_social_tags first to resolve them. Call list_social_accounts before create_social_post if you don't already know the target account.
+
+Team members who are not the account's Admin cannot connect it themselves (the platform only allows an Admin to do that) -- use invite_team_member for them instead of asking them to run connect_social_account.`;
+
 const tools = [
   {
-    name: "upload_leadconnector_media",
-    title: "Upload media to LeadConnector",
-    description: "Upload an image or video from the current ChatGPT conversation, generated images, ChatGPT Media Library, or import a public HTTPS URL into LeadConnector Media Library. Prefer file for ChatGPT-generated and Library media.",
+    name: "upload_media",
+    title: "Upload media to the account's media library",
+    description: "Upload an image or video -- from the current ChatGPT conversation, a ChatGPT-generated image, ChatGPT's own Media Library, or a public HTTPS URL -- into the customer's own connected media library (used for social posts). Prefer file for ChatGPT-generated and ChatGPT-Library media.",
     inputSchema: {
       type: "object",
       properties: {
@@ -785,15 +802,16 @@ const tools = [
         file: openAIFileSchema,
         fileUrl: { type: "string", description: "Optional public HTTPS image/video URL. Use only when no ChatGPT file is available." },
         fileName: { type: "string", description: "Optional destination filename." },
-        parentId: { type: "string", description: "Optional LeadConnector destination folder ID." }
+        parentId: { type: "string", description: "Optional destination folder ID in the account's media library." }
       }
     },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     _meta: { "openai/fileParams": ["file"], "openai/toolInvocation/invoking": "Uploading media…", "openai/toolInvocation/invoked": "Media uploaded" }
   },
   {
-    name: "search_leadconnector_media",
-    description: "Search and list media from the selected allowlisted tenant's LeadConnector Media Library.",
+    name: "search_media_library",
+    title: "Search the account's media library",
+    description: "Search and list media already stored in the customer's own connected media library (their CRM/Social Planner account) -- this is NOT ChatGPT's own uploaded files, generated images, or ChatGPT's Media Library. Always call this tool (never answer from ChatGPT's own file/image history) whenever the user refers to their media library, gallery, existing photos/videos, or asks to find/reuse something already in their account.",
     inputSchema: { type: "object", properties: { search: { type: "string" }, mediaType: { type: "string", enum: ["all", "image", "video"] }, limit: { type: "integer", minimum: 1, maximum: 100 }, offset: { type: "integer", minimum: 0 }, locationId: socialPostProperties.locationId } },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
   },
@@ -804,7 +822,7 @@ const tools = [
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true }
   },
   {
-    name: "connect_highlevel",
+    name: "connect_social_account",
     title: "Connect a sub-account",
     description: "Start Uplifting OAuth for the caller's own tenant, for one specific sub-account (locationId). Returns a URL for the user to open in a browser and approve; the callback stores the connection automatically. Only tenant_owner/tenant_admin/uplifting_admin may call this. Use this first for a brand-new tenant that has no connection yet -- every other tool needs one. If the call fails saying locationId is required, ask the user for the sub-account ID to connect.",
     inputSchema: { type: "object", properties: { locationId: { type: "string", description: "The sub-account (location) ID to connect. Optional when Uplifting already assigned one to this account; required otherwise." } }, additionalProperties: false },
@@ -835,7 +853,7 @@ const tools = [
   {
     name: "list_social_accounts",
     title: "List connected social accounts",
-    description: "List social accounts and groups connected to LeadConnector Social Planner. Use before creating or filtering posts.",
+    description: "List social accounts and groups connected to Social Planner. Use before creating or filtering posts.",
     inputSchema: { type: "object", properties: { locationId: socialPostProperties.locationId } },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
   },
@@ -878,7 +896,7 @@ const tools = [
   {
     name: "create_social_post",
     title: "Create social post",
-    description: "Create a brand-safe LeadConnector Social Planner post. Defaults to draft, auto-selects eligible 123 GYM accounts when omitted, splits Facebook and Google, prevents exact retries, and verifies the result through list_social_posts.",
+    description: "Create a brand-safe Social Planner post. Defaults to draft, auto-selects eligible 123 GYM accounts when omitted, splits Facebook and Google, prevents exact retries, and verifies the result through list_social_posts.",
     inputSchema: { type: "object", properties: { ...socialPostProperties, verify: { type: "boolean", description: "Verify creation through the list endpoint. Defaults true." }, splitByPlatform: { type: "boolean", description: "Split Facebook and Google into separate create requests. Defaults true." } } },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     _meta: { "openai/toolInvocation/invoking": "Creating social post…", "openai/toolInvocation/invoked": "Social post created" }
@@ -912,7 +930,7 @@ const tools = [
 ];
 
 const READ_ONLY_TOOLS = new Set([
-  "search_leadconnector_media", "inspect_media", "list_location_users", "list_social_accounts", "list_social_posts",
+  "search_media_library", "inspect_media", "list_location_users", "list_social_accounts", "list_social_posts",
   "list_social_categories", "list_social_tags", "get_social_post", "get_social_statistics"
 ]);
 const DELETE_TOOLS = new Set(["delete_social_post"]);
@@ -1024,7 +1042,16 @@ app.post("/mcp", async (req, res) => {
   try {
     if (request.method === "initialize") {
       mcpDiagnostic(req, "initialize_handled");
-      return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: "uplifting-social-ai", version: SERVICE_VERSION } } });
+      return res.json({
+        jsonrpc: "2.0",
+        id,
+        result: {
+          protocolVersion: "2025-03-26",
+          capabilities: { tools: {} },
+          serverInfo: { name: "uplifting-social-ai", version: SERVICE_VERSION },
+          instructions: MCP_INSTRUCTIONS
+        }
+      });
     }
     if (request.method === "notifications/initialized") {
       mcpDiagnostic(req, "initialized_notification_handled");
@@ -1045,8 +1072,8 @@ app.post("/mcp", async (req, res) => {
         mcpDiagnostic(req, "rate_limited", { toolName });
         return res.json({ jsonrpc: "2.0", id, error: { code: -32029, message: "Too many requests. Please wait a moment and try again." } });
       }
-      if (toolName === "connect_highlevel") {
-        if (req.principal.authType !== "oauth") throw new Error("connect_highlevel requires an OAuth user.");
+      if (toolName === "connect_social_account") {
+        if (req.principal.authType !== "oauth") throw new Error("connect_social_account requires an OAuth user.");
         const onboardingResult = await createHighLevelOnboarding({ env: process.env, repository: req.tenantServices.repository }).start(req.principal, { locationId: args.locationId });
         await auditTool(req, { tenantId: req.principal.tenantId, toolName, action: "tool.call", result: "success", metadata: { locationId: args.locationId } });
         return res.json({
@@ -1087,12 +1114,12 @@ app.post("/mcp", async (req, res) => {
       // default baked into the handlers' own parameter defaults.
       args = { ...args, locationId: authorizedContext.locationId };
       let result;
-      if (toolName === "upload_leadconnector_media") {
+      if (toolName === "upload_media") {
         result = await uploadMedia(args, authorizedContext);
         await auditTool(req, { tenantId: authorizedContext.tenantId, toolName, action: "tool.call", result: "success", metadata: { locationId: authorizedContext.locationId } });
-        return res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Uploaded to LeadConnector: ${result.url || result.fileId || "success"}` }], structuredContent: result } });
+        return res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: `Uploaded: ${result.url || result.fileId || "success"}` }], structuredContent: result } });
       }
-      if (toolName === "search_leadconnector_media") {
+      if (toolName === "search_media_library") {
         result = await listMedia(args, authorizedContext);
         await auditTool(req, { tenantId: authorizedContext.tenantId, toolName, action: "tool.call", result: "success", metadata: { locationId: authorizedContext.locationId } });
         return res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result } });

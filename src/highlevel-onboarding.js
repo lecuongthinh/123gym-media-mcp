@@ -52,7 +52,7 @@ export function createHighLevelOnboarding({ env = process.env, repository, fetch
       throw new Error("This account is assigned to a different sub-account than the one requested.");
     }
     locationId = locationId || invitedLocationId;
-    if (!locationId) throw new Error("connect_highlevel requires locationId: the sub-account to connect.");
+    if (!locationId) throw new Error("connect_social_account requires locationId: the sub-account to connect.");
     const state = randomBytes(32).toString("base64url");
     await repository.createOAuthState({
       stateHash: sha256(state),
@@ -99,7 +99,7 @@ export function createHighLevelOnboarding({ env = process.env, repository, fetch
       // during consent -- confirmed against the real API 2026-09-28. Mint a
       // location-scoped token for the sub-account the caller asked for.
       if (!body.companyId) throw new Error("Uplifting OAuth response is incomplete.");
-      if (!intendedLocationId) throw new Error("This install granted company-wide access; connect_highlevel must be called with locationId.");
+      if (!intendedLocationId) throw new Error("This install granted company-wide access; connect_social_account must be called with locationId.");
       const minted = await mintLocationToken({ companyAccessToken: body.access_token, companyId: body.companyId, locationId: intendedLocationId, fetchImpl });
       locationId = intendedLocationId;
       secret = {

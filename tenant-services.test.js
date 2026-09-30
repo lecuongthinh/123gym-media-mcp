@@ -90,7 +90,7 @@ test("credential routing fails closed when selected tenant secret is missing", a
   const services = pilotServices({ LC_PRIVATE_TOKEN_TESTING_AGENCY: undefined });
   await assert.rejects(
     () => authorizeTenantContext({ tenantId: TEST_TENANT_ID, requestedLocationId: TEST_LOCATION, ...services }),
-    /credential is not configured/
+    /Credential is not configured/
   );
 });
 

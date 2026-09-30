@@ -69,7 +69,7 @@ async function withTestServer(fn) {
 }
 
 test("upload tool declares a valid ChatGPT file parameter", () => {
-  const upload = tools.find((tool) => tool.name === "upload_leadconnector_media");
+  const upload = tools.find((tool) => tool.name === "upload_media");
   assert.deepEqual(upload._meta["openai/fileParams"], ["file"]);
   assert.deepEqual(upload.inputSchema.properties.file.required, ["download_url", "file_id"]);
   assert.ok(upload.inputSchema.properties.file.properties.mime_type);
@@ -120,7 +120,7 @@ test("legacy admin key is opt-in, x-api-key only, and not accepted as OAuth Bear
       body: JSON.stringify({ jsonrpc: "2.0", id: 103, method: "initialize" })
     });
     assert.equal(accepted.status, 200);
-    assert.equal((await accepted.json()).result.serverInfo.version, "3.10.0");
+    assert.equal((await accepted.json()).result.serverInfo.version, "3.11.0");
 
     const rejected = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -131,13 +131,27 @@ test("legacy admin key is opt-in, x-api-key only, and not accepted as OAuth Bear
   }));
 });
 
+test("initialize gives the model process instructions, including the media-library disambiguation", async () => {
+  await withProcessEnv({ MCP_ADMIN_API_KEY: "instructions-admin-secret", ENABLE_LEGACY_ADMIN_AUTH: "true" }, () => withTestServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": "instructions-admin-secret" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 105, method: "initialize" })
+    });
+    const payload = await response.json();
+    assert.match(payload.result.instructions, /search_media_library/);
+    assert.match(payload.result.instructions, /ChatGPT's own uploaded files/);
+    assert.match(payload.result.instructions, /connect_social_account/);
+  }));
+});
+
 test("health response contains no authentication or tenant secrets", async () => {
   await withProcessEnv({ MCP_ADMIN_API_KEY: "health-admin-secret", ENABLE_LEGACY_ADMIN_AUTH: "true", LC_TENANTS_JSON: TEST_REGISTRY, LC_PRIVATE_TOKEN: "health-tenant-secret" }, () => withTestServer(async (baseUrl) => {
     const response = await fetch(`${baseUrl}/health`);
     const text = await response.text();
     assert.equal(response.status, 200);
     assert.doesNotMatch(text, /health-admin-secret|health-tenant-secret|LC_TENANTS_JSON|LC_PRIVATE_TOKEN/);
-    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.10.0" });
+    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.11.0" });
   }));
 });
 
@@ -193,7 +207,7 @@ test("MCP tools/list exposes the file-aware upload schema", async (t) => {
   }));
   const payload = await response.json();
   assert.equal(response.status, 200);
-  assert.equal(payload.result.tools[0].name, "upload_leadconnector_media");
+  assert.equal(payload.result.tools[0].name, "upload_media");
   assert.deepEqual(payload.result.tools[0]._meta["openai/fileParams"], ["file"]);
   assert.equal(payload.result.tools[0].inputSchema.properties.locationId.type, "string");
   assert.equal(payload.result.tools.length, 15);
@@ -263,7 +277,7 @@ test("tenant resolver rejects unknown tenants without legacy fallback", () => {
 });
 
 test("tenant resolver fails closed when the selected token is missing", () => {
-  assert.throws(() => resolveTenant(TEST_LOCATION, tenantEnv({ LC_PRIVATE_TOKEN_TESTING_AGENCY: undefined })), /credential is not configured for tenant Testing Agency/);
+  assert.throws(() => resolveTenant(TEST_LOCATION, tenantEnv({ LC_PRIVATE_TOKEN_TESTING_AGENCY: undefined })), /Credential is not configured for tenant Testing Agency/);
 });
 
 test("media upload uses the selected tenant token and returns its location", async () => {
