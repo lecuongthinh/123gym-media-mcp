@@ -37,7 +37,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.7.0";
+const SERVICE_VERSION = "3.8.0";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -461,6 +461,32 @@ async function listSocialAccounts({ locationId = DEFAULT_LOCATION_ID } = {}, aut
   return await socialRequest(locationId, "/accounts", { authorizedContext });
 }
 
+// Resolve category/tag names to the real IDs HighLevel requires -- create_social_post
+// silently drops an unrecognized categoryId/tag, so the caller must look these up
+// first rather than guess. HighLevel had not shipped create/update/delete for these
+// at the time this was written, only listing.
+async function listSocialCategories({ locationId = DEFAULT_LOCATION_ID, search, limit, skip } = {}, authorizedContext) {
+  const params = new URLSearchParams();
+  if (search) params.set("searchText", search);
+  if (limit !== undefined) params.set("limit", String(Math.min(Math.max(1, Number(limit) || 20), 100)));
+  if (skip !== undefined) params.set("skip", String(Math.max(0, Number(skip) || 0)));
+  const query = params.toString();
+  const data = await socialRequest(locationId, `/categories${query ? `?${query}` : ""}`, { authorizedContext });
+  const categories = data?.results?.categories || data?.categories || [];
+  return { count: categories.length, categories: categories.map((category) => ({ id: category._id, name: category.name })) };
+}
+
+async function listSocialTags({ locationId = DEFAULT_LOCATION_ID, search, limit, skip } = {}, authorizedContext) {
+  const params = new URLSearchParams();
+  if (search) params.set("searchText", search);
+  if (limit !== undefined) params.set("limit", String(Math.min(Math.max(1, Number(limit) || 20), 100)));
+  if (skip !== undefined) params.set("skip", String(Math.max(0, Number(skip) || 0)));
+  const query = params.toString();
+  const data = await socialRequest(locationId, `/tags${query ? `?${query}` : ""}`, { authorizedContext });
+  const tags = data?.results?.tags || data?.tags || [];
+  return { count: tags.length, tags: tags.map((tag) => ({ id: tag._id, name: tag.name })) };
+}
+
 const BLOCKED_ACCOUNT_PATTERN = /t[oô] hi[eệ]u|56\s*t[oô]\s*hi[eệ]u|tuy[eể]n\s*d[uụ]ng|balance\s*fit/i;
 const ALLOWED_SOCIAL_PLATFORMS = new Set(["facebook", "google"]);
 
@@ -681,8 +707,8 @@ const socialPostProperties = {
   type: { type: "string", enum: ["post", "story", "reel", "short"] },
   postApprovalDetails: { type: "object", additionalProperties: true },
   scheduleTimeUpdated: { type: "boolean" },
-  tags: { type: "array", items: { type: "string" } },
-  categoryId: { type: "string" },
+  tags: { type: "array", items: { type: "string" }, description: "Tag IDs, not names. Call list_social_tags first to resolve a tag's name to its id; an unrecognized value is silently dropped by HighLevel." },
+  categoryId: { type: "string", description: "A category's id, not its name. Call list_social_categories first to resolve the name the user gave you to its id; an unrecognized value is silently dropped by HighLevel." },
   applyWatermark: { type: "boolean" },
   tiktokPostDetails: { type: "object", additionalProperties: true },
   gmbPostDetails: { type: "object", additionalProperties: true },
@@ -747,6 +773,20 @@ const tools = [
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
   },
   {
+    name: "list_social_categories",
+    title: "List Social Planner categories",
+    description: "List this tenant's Social Planner categories, with their real ids. Call this before passing categoryId to create_social_post or update_social_post -- the field needs the id, not the name the user says.",
+    inputSchema: { type: "object", properties: { locationId: socialPostProperties.locationId, search: { type: "string", description: "Filter by category name." }, limit: { type: "integer", minimum: 1, maximum: 100 }, skip: { type: "integer", minimum: 0 } } },
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
+  },
+  {
+    name: "list_social_tags",
+    title: "List Social Planner tags",
+    description: "List this tenant's Social Planner tags, with their real ids. Call this before passing tags to create_social_post or update_social_post -- the field needs ids, not the names the user says.",
+    inputSchema: { type: "object", properties: { locationId: socialPostProperties.locationId, search: { type: "string", description: "Filter by tag name." }, limit: { type: "integer", minimum: 1, maximum: 100 }, skip: { type: "integer", minimum: 0 } } },
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
+  },
+  {
     name: "list_social_posts",
     title: "List social posts",
     description: "List Social Planner posts. If accountIds is omitted, automatically uses eligible 123 GYM/La Charme Facebook and Google accounts while excluding Tô Hiệu, recruitment and Balance Fit accounts.",
@@ -806,7 +846,7 @@ const tools = [
 
 const READ_ONLY_TOOLS = new Set([
   "search_leadconnector_media", "inspect_media", "list_location_users", "list_social_accounts", "list_social_posts",
-  "get_social_post", "get_social_statistics"
+  "list_social_categories", "list_social_tags", "get_social_post", "get_social_statistics"
 ]);
 const DELETE_TOOLS = new Set(["delete_social_post"]);
 
@@ -971,6 +1011,8 @@ app.post("/mcp", async (req, res) => {
       const socialHandlers = {
         list_location_users: listLocationUsers,
         list_social_accounts: listSocialAccounts,
+        list_social_categories: listSocialCategories,
+        list_social_tags: listSocialTags,
         list_social_posts: listSocialPosts,
         get_social_post: getSocialPost,
         create_social_post: createSocialPost,
@@ -1022,6 +1064,8 @@ export {
   listLocationUsers,
   listMedia,
   listSocialAccounts,
+  listSocialCategories,
+  listSocialTags,
   resolveTenant,
   safeFileName,
   tenantRegistry,

@@ -9,6 +9,8 @@ import {
   listLocationUsers,
   listMedia,
   listSocialAccounts,
+  listSocialCategories,
+  listSocialTags,
   resolveTenant,
   safeFileName,
   tools,
@@ -116,7 +118,7 @@ test("legacy admin key is opt-in, x-api-key only, and not accepted as OAuth Bear
       body: JSON.stringify({ jsonrpc: "2.0", id: 103, method: "initialize" })
     });
     assert.equal(accepted.status, 200);
-    assert.equal((await accepted.json()).result.serverInfo.version, "3.7.0");
+    assert.equal((await accepted.json()).result.serverInfo.version, "3.8.0");
 
     const rejected = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -133,7 +135,7 @@ test("health response contains no authentication or tenant secrets", async () =>
     const text = await response.text();
     assert.equal(response.status, 200);
     assert.doesNotMatch(text, /health-admin-secret|health-tenant-secret|LC_TENANTS_JSON|LC_PRIVATE_TOKEN/);
-    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.7.0" });
+    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.8.0" });
   }));
 });
 
@@ -192,7 +194,7 @@ test("MCP tools/list exposes the file-aware upload schema", async (t) => {
   assert.equal(payload.result.tools[0].name, "upload_leadconnector_media");
   assert.deepEqual(payload.result.tools[0]._meta["openai/fileParams"], ["file"]);
   assert.equal(payload.result.tools[0].inputSchema.properties.locationId.type, "string");
-  assert.equal(payload.result.tools.length, 12);
+  assert.equal(payload.result.tools.length, 14);
   assert.ok(payload.result.tools.some((tool) => tool.name === "create_social_post"));
   assert.ok(payload.result.tools.some((tool) => tool.name === "get_social_statistics"));
   assert.deepEqual(payload.result.tools.find((tool) => tool.name === "list_social_accounts").securitySchemes, [{ type: "oauth2", scopes: ["uplifting:read"] }]);
@@ -321,6 +323,35 @@ test("social account discovery uses the token matching the URL location", async 
       return new Response(JSON.stringify({ success: true, results: { accounts: [] } }), { status: 200 });
     }, async () => {
       await listSocialAccounts({ locationId: TEST_LOCATION });
+    });
+  });
+});
+
+test("list_social_categories resolves names to the real HighLevel ids, so create_social_post is never called with a guessed categoryId", async () => {
+  await withProcessEnv(tenantEnv(), async () => {
+    await withMockFetch(async (url) => {
+      const parsed = new URL(url);
+      assert.equal(parsed.pathname, `/social-media-posting/${TEST_LOCATION}/categories`);
+      assert.equal(parsed.searchParams.get("searchText"), "Khuyến mãi");
+      return new Response(JSON.stringify({ success: true, results: { categories: [
+        { _id: "cat-1", name: "Khuyến mãi", primaryColor: "#fff", locationId: TEST_LOCATION }
+      ] } }), { status: 200 });
+    }, async () => {
+      const result = await listSocialCategories({ locationId: TEST_LOCATION, search: "Khuyến mãi" });
+      assert.deepEqual(result, { count: 1, categories: [{ id: "cat-1", name: "Khuyến mãi" }] });
+    });
+  });
+});
+
+test("list_social_tags resolves names to the real HighLevel ids", async () => {
+  await withProcessEnv(tenantEnv(), async () => {
+    await withMockFetch(async (url) => {
+      const parsed = new URL(url);
+      assert.equal(parsed.pathname, `/social-media-posting/${TEST_LOCATION}/tags`);
+      return new Response(JSON.stringify({ success: true, results: { tags: [{ _id: "tag-1", name: "gym" }] } }), { status: 200 });
+    }, async () => {
+      const result = await listSocialTags({ locationId: TEST_LOCATION });
+      assert.deepEqual(result, { count: 1, tags: [{ id: "tag-1", name: "gym" }] });
     });
   });
 });
