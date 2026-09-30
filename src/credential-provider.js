@@ -43,12 +43,12 @@ export class CompositeCredentialProvider {
     const match = /^env:\/\/([A-Z][A-Z0-9_]*)$/.exec(connection.secret_ref || "");
     if (!match) throw new Error("Invalid environment credential reference.");
     const accessToken = this.env[match[1]];
-    if (!accessToken) throw new Error(`HighLevel credential is not configured for connection ${connection.connection_id}.`);
+    if (!accessToken) throw new Error(`Credential is not configured for connection ${connection.connection_id}.`);
     return { accessToken, locationId: connection.location_id, scopes: connection.scopes || [], expiresAt: connection.expires_at || null };
   }
 
   async #encryptedAccess(connection) {
-    if (!connection.encrypted_payload) throw new Error(`Encrypted HighLevel credential is not configured for connection ${connection.connection_id}.`);
+    if (!connection.encrypted_payload) throw new Error(`Encrypted credential is not configured for connection ${connection.connection_id}.`);
     let credential = decryptCredential(connection.encrypted_payload, this.env);
     const expiresAt = credential.expires_at ? new Date(credential.expires_at) : null;
     if (expiresAt && expiresAt.getTime() <= Date.now() + 60_000) {
@@ -65,7 +65,7 @@ export class CompositeCredentialProvider {
 
   async #refreshHighLevel(connection, credential) {
     if (credential.auth_mode === "company") return this.#refreshCompanyLocation(connection, credential);
-    if (!credential.refresh_token) throw new Error("HighLevel OAuth refresh token is unavailable.");
+    if (!credential.refresh_token) throw new Error("OAuth refresh token is unavailable.");
     const response = await this.fetch("https://services.leadconnectorhq.com/oauth/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded", Version: "v3" },
@@ -78,7 +78,7 @@ export class CompositeCredentialProvider {
       })
     });
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(`HighLevel OAuth refresh failed (${response.status}).`);
+    if (!response.ok) throw new Error(`OAuth refresh failed (${response.status}).`);
     const next = {
       ...credential,
       access_token: body.access_token,
@@ -97,7 +97,7 @@ export class CompositeCredentialProvider {
   // location-scoped access token from it. There is no location-level
   // refresh_token to rotate -- the location token is always re-derived.
   async #refreshCompanyLocation(connection, credential) {
-    if (!credential.company_refresh_token) throw new Error("HighLevel OAuth refresh token is unavailable.");
+    if (!credential.company_refresh_token) throw new Error("OAuth refresh token is unavailable.");
     const response = await this.fetch("https://services.leadconnectorhq.com/oauth/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded", Version: "v3" },
@@ -110,7 +110,7 @@ export class CompositeCredentialProvider {
       })
     });
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(`HighLevel OAuth company refresh failed (${response.status}).`);
+    if (!response.ok) throw new Error(`OAuth company refresh failed (${response.status}).`);
     const minted = await mintLocationToken({
       companyAccessToken: body.access_token,
       companyId: credential.company_id,

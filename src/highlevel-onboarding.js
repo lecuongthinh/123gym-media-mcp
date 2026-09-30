@@ -31,10 +31,10 @@ export async function exchangeHighLevelCode({ env = process.env, code, fetchImpl
     })
   });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(`HighLevel OAuth token exchange failed (${response.status}).`);
+  if (!response.ok) throw new Error(`Uplifting OAuth token exchange failed (${response.status}).`);
   if (!body.access_token || !body.refresh_token) {
     console.error("[highlevel-onboarding] Incomplete OAuth token response. Keys present:", Object.keys(body));
-    throw new Error("HighLevel OAuth response is incomplete.");
+    throw new Error("Uplifting OAuth response is incomplete.");
   }
   return body;
 }
@@ -44,15 +44,15 @@ export function createHighLevelOnboarding({ env = process.env, repository, fetch
 
   async function start(principal, { locationId } = {}) {
     requireOwner(principal);
-    if (!env.HIGHLEVEL_INSTALL_URL || !callbackUrl) throw new Error("HighLevel OAuth onboarding is not configured.");
+    if (!env.HIGHLEVEL_INSTALL_URL || !callbackUrl) throw new Error("Uplifting OAuth onboarding is not configured.");
     // A tenant created from an invite that names a sub-account may connect
     // only that one; otherwise the caller must say which one.
     const invitedLocationId = await repository.findInvitedLocationId?.(principal.tenantId);
     if (invitedLocationId && locationId && locationId !== invitedLocationId) {
-      throw new Error("This account is assigned to a different HighLevel sub-account than the one requested.");
+      throw new Error("This account is assigned to a different sub-account than the one requested.");
     }
     locationId = locationId || invitedLocationId;
-    if (!locationId) throw new Error("connect_highlevel requires locationId: the HighLevel sub-account to connect.");
+    if (!locationId) throw new Error("connect_highlevel requires locationId: the sub-account to connect.");
     const state = randomBytes(32).toString("base64url");
     await repository.createOAuthState({
       stateHash: sha256(state),
@@ -67,9 +67,9 @@ export function createHighLevelOnboarding({ env = process.env, repository, fetch
   }
 
   async function callback({ code, state }) {
-    if (!code || !state) throw new Error("HighLevel OAuth callback requires code and state.");
+    if (!code || !state) throw new Error("Uplifting OAuth callback requires code and state.");
     const authorization = await repository.consumeOAuthState(sha256(state));
-    if (!authorization) throw new Error("HighLevel OAuth state is invalid, expired, or already used.");
+    if (!authorization) throw new Error("Uplifting OAuth state is invalid, expired, or already used.");
     const body = await exchangeHighLevelCode({ env, code, fetchImpl });
 
     const intendedLocationId = authorization.intended_location_id;
@@ -82,7 +82,7 @@ export function createHighLevelOnboarding({ env = process.env, repository, fetch
       // only for non-agency users; our own agency admins always land in the
       // company branch below, even after picking one sub-account.
       if (intendedLocationId && body.locationId !== intendedLocationId) {
-        throw new Error(`HighLevel granted sub-account ${body.locationId}, not the requested ${intendedLocationId}. Reconnect and pick the intended one.`);
+        throw new Error(`Granted sub-account ${body.locationId}, not the requested ${intendedLocationId}. Reconnect and pick the intended one.`);
       }
       locationId = body.locationId;
       secret = {
@@ -98,8 +98,8 @@ export function createHighLevelOnboarding({ env = process.env, repository, fetch
       // here even when the authorizing user picked exactly one sub-account
       // during consent -- confirmed against the real API 2026-09-28. Mint a
       // location-scoped token for the sub-account the caller asked for.
-      if (!body.companyId) throw new Error("HighLevel OAuth response is incomplete.");
-      if (!intendedLocationId) throw new Error("This HighLevel install granted company-wide access; connect_highlevel must be called with locationId.");
+      if (!body.companyId) throw new Error("Uplifting OAuth response is incomplete.");
+      if (!intendedLocationId) throw new Error("This install granted company-wide access; connect_highlevel must be called with locationId.");
       const minted = await mintLocationToken({ companyAccessToken: body.access_token, companyId: body.companyId, locationId: intendedLocationId, fetchImpl });
       locationId = intendedLocationId;
       secret = {

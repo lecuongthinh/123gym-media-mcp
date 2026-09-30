@@ -607,7 +607,7 @@ function buildSocialPostBody(args, { partial = false } = {}) {
     throw new Error("accountIds must be a non-empty array. Call list_social_accounts first.");
   }
   if (!partial && (typeof body.userId !== "string" || !body.userId.trim())) {
-    throw new Error("userId is required to create a Social Planner post (HighLevel rejects drafts without it too). Pass userId explicitly or configure a tenant default_user_id.");
+    throw new Error("userId is required to create a Social Planner post (drafts are rejected without it too). Pass userId explicitly or configure a tenant default_user_id.");
   }
   if (status === "in_review" && !body.postApprovalDetails?.approver) {
     throw new Error("postApprovalDetails.approver is required for in_review posts.");
@@ -707,7 +707,7 @@ const mediaItemSchema = {
 };
 
 const socialPostProperties = {
-  locationId: { type: "string", description: "Optional. Leave this out in almost every call -- the server already knows which tenant/location you are authorized for and uses it automatically. Only pass this if the user explicitly names a different HighLevel location ID than the one you are currently connected to; passing your own tenant's location ID, or guessing one, will be rejected as cross-tenant access." },
+  locationId: { type: "string", description: "Optional. Leave this out in almost every call -- the server already knows which tenant/location you are authorized for and uses it automatically. Only pass this if the user explicitly names a different sub-account location ID than the one you are currently connected to; passing your own tenant's location ID, or guessing one, will be rejected as cross-tenant access." },
   accountIds: { type: "array", items: { type: "string" }, description: "Connected account IDs from list_social_accounts." },
   summary: { type: "string", description: "Post caption/content." },
   media: { type: "array", items: mediaItemSchema },
@@ -720,8 +720,8 @@ const socialPostProperties = {
   type: { type: "string", enum: ["post", "story", "reel", "short"] },
   postApprovalDetails: { type: "object", additionalProperties: true },
   scheduleTimeUpdated: { type: "boolean" },
-  tags: { type: "array", items: { type: "string" }, description: "Tag IDs, not names. Call list_social_tags first to resolve a tag's name to its id; an unrecognized value is silently dropped by HighLevel." },
-  categoryId: { type: "string", description: "A category's id, not its name. Call list_social_categories first to resolve the name the user gave you to its id; an unrecognized value is silently dropped by HighLevel." },
+  tags: { type: "array", items: { type: "string" }, description: "Tag IDs, not names. Call list_social_tags first to resolve a tag's name to its id; an unrecognized value is silently dropped." },
+  categoryId: { type: "string", description: "A category's id, not its name. Call list_social_categories first to resolve the name the user gave you to its id; an unrecognized value is silently dropped." },
   applyWatermark: { type: "boolean" },
   tiktokPostDetails: { type: "object", additionalProperties: true },
   gmbPostDetails: { type: "object", additionalProperties: true },
@@ -766,20 +766,20 @@ const tools = [
   },
   {
     name: "connect_highlevel",
-    title: "Connect a HighLevel sub-account",
-    description: "Start HighLevel Marketplace OAuth for the caller's own tenant, for one specific HighLevel sub-account (locationId). Returns a URL for the user to open in a browser and approve; the callback stores the connection automatically. Only tenant_owner/tenant_admin/uplifting_admin may call this. Use this first for a brand-new tenant that has no HighLevel connection yet -- every other tool needs one. If the call fails saying locationId is required, ask the user for the HighLevel sub-account ID to connect.",
-    inputSchema: { type: "object", properties: { locationId: { type: "string", description: "The HighLevel sub-account (location) ID to connect. Optional when Uplifting already assigned one to this account; required otherwise." } }, additionalProperties: false },
+    title: "Connect a sub-account",
+    description: "Start Uplifting OAuth for the caller's own tenant, for one specific sub-account (locationId). Returns a URL for the user to open in a browser and approve; the callback stores the connection automatically. Only tenant_owner/tenant_admin/uplifting_admin may call this. Use this first for a brand-new tenant that has no connection yet -- every other tool needs one. If the call fails saying locationId is required, ask the user for the sub-account ID to connect.",
+    inputSchema: { type: "object", properties: { locationId: { type: "string", description: "The sub-account (location) ID to connect. Optional when Uplifting already assigned one to this account; required otherwise." } }, additionalProperties: false },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true }
   },
   {
     name: "invite_team_member",
     title: "Invite a teammate to this tenant",
-    description: "Invite someone by email to use Uplifting Social AI for this tenant, without them needing to be a HighLevel Admin (HighLevel only lets Admins approve the app themselves). They get an email with a link that adds them; they then add the connector in ChatGPT and choose \"Email me a sign-in link\" using this same address. Only tenant_owner/tenant_admin/uplifting_admin may call this.",
+    description: "Invite someone by email to use Uplifting Social AI for this tenant, without them needing to be an Admin (only an Admin can approve the connection themselves). They get an email with a link that adds them; they then add the connector in ChatGPT and choose \"Email me a sign-in link\" using this same address. Only tenant_owner/tenant_admin/uplifting_admin may call this.",
     inputSchema: {
       type: "object",
       properties: {
         email: { type: "string", description: "The teammate's email address." },
-        role: { type: "string", enum: ["tenant_admin", "editor", "viewer"], description: "What they can do. editor can create/schedule posts; viewer is read-only; tenant_admin can also invite others and manage the HighLevel connection." }
+        role: { type: "string", enum: ["tenant_admin", "editor", "viewer"], description: "What they can do. editor can create/schedule posts; viewer is read-only; tenant_admin can also invite others and manage the sub-account connection." }
       },
       required: ["email", "role"],
       additionalProperties: false
@@ -788,8 +788,8 @@ const tools = [
   },
   {
     name: "list_location_users",
-    title: "List HighLevel users for this location",
-    description: "List staff/users of the allowlisted tenant's HighLevel sub-account. Use to find a userId for create_social_post (userId is required by HighLevel for every post status) or for postApprovalDetails.approver.",
+    title: "List users for this location",
+    description: "List staff/users of the allowlisted tenant's sub-account. Use to find a userId for create_social_post (userId is required for every post status) or for postApprovalDetails.approver.",
     inputSchema: { type: "object", properties: { locationId: socialPostProperties.locationId } },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
   },
@@ -1009,7 +1009,7 @@ app.post("/mcp", async (req, res) => {
           jsonrpc: "2.0",
           id,
           result: {
-            content: [{ type: "text", text: `Mở link này để kết nối HighLevel: ${onboardingResult.authorizationUrl}` }],
+            content: [{ type: "text", text: `Mở link này để kết nối: ${onboardingResult.authorizationUrl}` }],
             structuredContent: onboardingResult
           }
         });

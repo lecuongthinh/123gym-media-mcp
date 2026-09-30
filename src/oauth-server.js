@@ -62,7 +62,7 @@ function chooseLoginMethodPage(s) {
   return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in to Uplifting Social AI</title>` +
     `<body style="font-family:system-ui,sans-serif;max-width:26rem;margin:12vh auto;padding:0 1rem">` +
     `<h1 style="font-size:1.25rem">Sign in to Uplifting Social AI</h1>` +
-    `<p><a href="/oauth/authorize/highlevel?s=${encodeURIComponent(s)}" style="display:block;text-align:center;padding:0.75rem;background:#111;color:#fff;border-radius:0.5rem;text-decoration:none;margin-bottom:1rem">Continue with HighLevel</a></p>` +
+    `<p><a href="/oauth/authorize/highlevel?s=${encodeURIComponent(s)}" style="display:block;text-align:center;padding:0.75rem;background:#111;color:#fff;border-radius:0.5rem;text-decoration:none;margin-bottom:1rem">Continue with Uplifting</a></p>` +
     `<p style="color:#666;text-align:center;margin:1rem 0">or, if a teammate invited you</p>` +
     `<form method="post" action="/oauth/authorize/email">` +
     `<input type="hidden" name="s" value="${state}">` +
@@ -188,13 +188,13 @@ export async function completeHighLevelLogin({ query, repository, env = process.
   if (!request) return null;
 
   if (query.error) {
-    return { redirectUrl: redirectWith(request.redirect_uri, { error: "access_denied", error_description: "HighLevel authorization was declined.", state: request.client_state }) };
+    return { redirectUrl: redirectWith(request.redirect_uri, { error: "access_denied", error_description: "Uplifting authorization was declined.", state: request.client_state }) };
   }
   try {
-    if (typeof query.code !== "string" || !query.code) throw new LoginError("HighLevel did not return an authorization code.");
+    if (typeof query.code !== "string" || !query.code) throw new LoginError("Uplifting did not return an authorization code.");
     const body = await exchangeHighLevelCode({ env, code: query.code, fetchImpl });
     if (!body.locationId) {
-      throw new LoginError("This install granted agency-wide access. Open the install link while signed in to the customer's HighLevel sub-account (not the agency view) and try again.");
+      throw new LoginError("This install granted agency-wide access. Open the install link while signed in to the customer's sub-account (not the agency view) and try again.");
     }
     const locationId = body.locationId;
     let users = [];
@@ -220,7 +220,7 @@ export async function completeHighLevelLogin({ query, repository, env = process.
       displayName: me?.name || null,
       locationId,
       newMemberRole: "tenant_admin",
-      tenantName: locationName || `HighLevel ${locationId}`,
+      tenantName: locationName || `Uplifting ${locationId}`,
       allowCreateTenant: env.ENABLE_SELF_SERVE_SIGNUP === "true",
       encryptedPayload: encryptCredential({
         auth_mode: "location",

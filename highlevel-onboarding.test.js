@@ -226,6 +226,6 @@ test("HighLevel onboarding refuses a different sub-account than the invitation a
   });
   await assert.rejects(
     () => onboarding.start({ tenantId: TENANT_ID, userId: USER_ID, role: "tenant_owner" }, { locationId: "some-other-location" }),
-    /assigned to a different HighLevel sub-account/
+    /assigned to a different sub-account/
   );
 });

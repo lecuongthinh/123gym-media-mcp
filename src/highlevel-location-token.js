@@ -21,7 +21,7 @@ export async function mintLocationToken({ companyAccessToken, companyId, locatio
   let body;
   try { body = JSON.parse(text); } catch { body = {}; }
   if (!response.ok || !body.access_token) {
-    const error = new Error(`HighLevel location token exchange failed (${response.status}).`);
+    const error = new Error(`Location token exchange failed (${response.status}).`);
     error.status = response.status;
     throw error;
   }
