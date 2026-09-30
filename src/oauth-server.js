@@ -198,8 +198,20 @@ export async function completeHighLevelLogin({ query, repository, env = process.
     }
     const locationId = body.locationId;
     let users = [];
-    try { users = await fetchHighLevelUsers({ accessToken: body.access_token, locationId, fetchImpl }); } catch { users = []; }
+    let usersFetchError = null;
+    try { users = await fetchHighLevelUsers({ accessToken: body.access_token, locationId, fetchImpl }); } catch (error) { users = []; usersFetchError = error; }
     const me = body.userId ? users.find((user) => user.id === body.userId) : null;
+    oauthLog("oauth_admin_detection_probe", {
+      hasBodyUserId: Boolean(body.userId),
+      usersFetchError: usersFetchError ? (usersFetchError.status || usersFetchError.message) : null,
+      usersCount: users.length,
+      userIdsPresent: users.map((user) => Boolean(user.id)),
+      meFound: Boolean(me),
+      meRole: me ? me.role : null,
+      meType: me ? me.type : null,
+      meIsAdminCandidate: me ? me.isDefaultUserIdCandidate : null,
+      allRoles: users.map((user) => ({ role: user.role, type: user.type, isCandidate: user.isDefaultUserIdCandidate }))
+    });
     const locationName = await fetchHighLevelLocationName({ accessToken: body.access_token, locationId, fetchImpl }).catch(() => null);
     const expiresAt = new Date(Date.now() + Number(body.expires_in || 86400) * 1000).toISOString();
 
