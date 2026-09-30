@@ -5,7 +5,7 @@ import express from "express";
 
 import { app as mcpApp } from "./server.js";
 import { protectedResourceMetadata } from "./src/auth.js";
-import { authenticateIssuedToken, completeHighLevelLogin, createOAuthRouter, highLevelAuthorizeUrl } from "./src/oauth-server.js";
+import { authenticateIssuedToken, completeHighLevelLogin, createOAuthRouter, highLevelAuthorizeUrl, inviteTeamMember } from "./src/oauth-server.js";
 
 const LOCATION_ID = "UwsfBVLmz7XSKJbhuOTS";
 const CHATGPT_REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect";
@@ -21,6 +21,7 @@ function env(overrides = {}) {
     HIGHLEVEL_CLIENT_SECRET: "client-secret-not-for-logs",
     TENANT_CREDENTIAL_ENCRYPTION_KEY: randomBytes(32).toString("base64"),
     ENABLE_SELF_SERVE_SIGNUP: "true",
+    HIGHLEVEL_INVITE_WEBHOOK_URL: WEBHOOK_URL,
     ...overrides
   };
 }
@@ -94,12 +95,49 @@ class FakeRepository {
     if (!user || !membership) return null;
     return { id: user.id, auth_subject: user.auth_subject, email: user.email, membership_id: membership.id, role: membership.role, tenant_id: tenantId, tenant_name: this.tenants.get(tenantId).display_name };
   }
+
+  teamInvites = new Map();
+  emailLoginTokens = new Map();
+
+  async createTeamInvite(v) { this.teamInvites.set(v.tokenHash, { ...v, tenant_id: v.tenantId, status: "pending" }); }
+  async acceptTeamInvite(hash) {
+    const invite = this.teamInvites.get(hash);
+    if (!invite || invite.status !== "pending" || invite.expiresAt < new Date()) return null;
+    invite.status = "accepted";
+    let user = [...this.users.values()].find((u) => u.email?.toLowerCase() === invite.email.toLowerCase());
+    if (!user) { user = { id: randomUUID(), auth_subject: `email:${invite.email.toLowerCase()}`, email: invite.email }; this.users.set(user.auth_subject, user); }
+    if (!this.memberships.some((m) => m.user_id === user.id && m.tenant_id === invite.tenant_id)) {
+      this.memberships.push({ id: randomUUID(), user_id: user.id, tenant_id: invite.tenant_id, role: invite.role });
+    }
+    return { userId: user.id, tenantId: invite.tenant_id, tenantName: this.tenants.get(invite.tenant_id)?.display_name, role: invite.role };
+  }
+  async findSoleMembershipByEmail(email) {
+    const user = [...this.users.values()].find((u) => u.email?.toLowerCase() === email.toLowerCase());
+    if (!user) return null;
+    const matches = this.memberships.filter((m) => m.user_id === user.id);
+    if (matches.length !== 1) return null;
+    return { user_id: user.id, tenant_id: matches[0].tenant_id, role: matches[0].role, tenant_name: this.tenants.get(matches[0].tenant_id)?.display_name };
+  }
+  async createEmailLoginToken(v) { this.emailLoginTokens.set(v.tokenHash, { ...v, client_id: v.clientId, redirect_uri: v.redirectUri, code_challenge: v.codeChallenge, client_state: v.clientState, user_id: v.userId, tenant_id: v.tenantId, used: false }); }
+  async consumeEmailLoginToken(hash) {
+    const row = this.emailLoginTokens.get(hash);
+    if (!row || row.used || row.expiresAt < new Date()) return null;
+    row.used = true;
+    return row;
+  }
 }
 
+const WEBHOOK_URL = "https://services.leadconnectorhq.com/hooks/test-location/webhook-trigger/test-hook";
+
 function highLevelFetch({ grant = {}, users, fail = false } = {}) {
-  return async (url, options = {}) => {
-    const parsed = new URL(String(url));
+  const webhookCalls = [];
+  const fetchImpl = async (url, options = {}) => {
     const json = (body, status = 200) => new Response(JSON.stringify(body), { status });
+    if (String(url) === WEBHOOK_URL) {
+      webhookCalls.push(JSON.parse(options.body));
+      return json({ status: "Success: test request received" });
+    }
+    const parsed = new URL(String(url));
     if (parsed.pathname === "/oauth/token") {
       if (fail) return json({}, 400);
       return json({ access_token: "hl-access", refresh_token: "hl-refresh", locationId: LOCATION_ID, userId: "hl-user-1", expires_in: 86400, scope: "socialplanner/post.write", ...grant });
@@ -108,12 +146,14 @@ function highLevelFetch({ grant = {}, users, fail = false } = {}) {
     if (parsed.pathname.startsWith("/locations/")) return json({ location: { name: "Acme Gym" } });
     return json({}, 404);
   };
+  fetchImpl.webhookCalls = webhookCalls;
+  return fetchImpl;
 }
 
 async function withOAuthApp(configuration, { fetchImpl = highLevelFetch(), repository = new FakeRepository() } = {}, fn) {
   const app = express();
   app.use(express.json());
-  app.use(createOAuthRouter({ env: configuration, getRepository: () => repository }));
+  app.use(createOAuthRouter({ env: configuration, getRepository: () => repository, fetchImpl }));
   app.get("/oauth/callback/social-crm", async (req, res) => {
     const login = await completeHighLevelLogin({ query: req.query, repository, env: configuration, fetchImpl });
     if (!login) return res.status(204).end();
@@ -139,12 +179,23 @@ function pkce() {
   return { verifier, challenge: createHash("sha256").update(verifier).digest("base64url") };
 }
 
+// /oauth/authorize now shows a "HighLevel or email" choice page (200) rather
+// than redirecting straight to HighLevel; this helper clicks "Continue with
+// HighLevel" for tests, so every existing caller still gets back a response
+// whose Location has the highLevelState in `state`. A caller expecting the
+// route's own error redirect/rejection (bad PKCE, unknown client) still sees
+// that directly, since those return before the choice page ever renders.
 async function beginLogin(base, clientId, challenge, extra = {}) {
   const params = new URLSearchParams({
     response_type: "code", client_id: clientId, redirect_uri: CHATGPT_REDIRECT,
     code_challenge: challenge, code_challenge_method: "S256", state: "chatgpt-state", ...extra
   });
-  return fetch(`${base}/oauth/authorize?${params}`, { redirect: "manual" });
+  const choice = await fetch(`${base}/oauth/authorize?${params}`, { redirect: "manual" });
+  if (choice.status !== 200) return choice;
+  const html = await choice.text();
+  const s = /\/oauth\/authorize\/highlevel\?s=([^"&]+)/.exec(html)?.[1];
+  assert.ok(s, "choice page must link to /oauth/authorize/highlevel with the login state");
+  return fetch(`${base}/oauth/authorize/highlevel?s=${s}`, { redirect: "manual" });
 }
 
 // Runs authorize -> HighLevel callback and returns the code ChatGPT would receive.
@@ -394,6 +445,43 @@ test("the MCP endpoint accepts a built-in access token and rejects a forged one"
   }
 });
 
+test("the invite_team_member tool is wired into /mcp and is gated to owners/admins", async () => {
+  const repository = new FakeRepository();
+  const previous = {};
+  const values = env({ AUTH0_ISSUER_BASE_URL: undefined, AUTH0_AUDIENCE: undefined, HIGHLEVEL_INVITE_WEBHOOK_URL: undefined });
+  for (const [key, value] of Object.entries(values)) { previous[key] = process.env[key]; if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+  mcpApp.locals.tenantServices = { repository, credentialProvider: {} };
+  const server = mcpApp.listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const { body: client } = await register(base);
+    const tenantId = randomUUID();
+    repository.tenants.set(tenantId, { id: tenantId, display_name: "Acme Gym" });
+    const asRole = async (role, args) => {
+      const userId = randomUUID();
+      repository.users.set(`u-${userId}`, { id: userId, auth_subject: `u-${userId}`, email: null });
+      repository.memberships.push({ id: randomUUID(), user_id: userId, tenant_id: tenantId, role });
+      const token = `uat_${role}`;
+      await repository.insertOAuthToken({ tokenHash: sha(token), kind: "access", familyId: randomUUID(), clientId: client.client_id, userId, tenantId, expiresAt: new Date(Date.now() + 60_000) });
+      return fetch(`${base}/mcp`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` }, body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "invite_team_member", arguments: args } }) });
+    };
+    const denied = await asRole("editor", { email: "teammate@example.com", role: "viewer" });
+    const deniedBody = await denied.json();
+    assert.ok(deniedBody.error, "an editor must not be able to invite teammates");
+    assert.equal(repository.teamInvites.size, 0);
+
+    const ok = await asRole("tenant_owner", { email: "teammate@example.com", role: "editor" });
+    const okBody = await ok.json();
+    assert.equal(okBody.result.structuredContent.invited, true);
+    assert.equal(repository.teamInvites.size, 1);
+  } finally {
+    delete mcpApp.locals.tenantServices;
+    for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("the HighLevel consent URL is the standard OAuth URL, taking version_id from the Marketplace install link", () => {
   const url = new URL(highLevelAuthorizeUrl(env({ HIGHLEVEL_INSTALL_URL: "https://app.gohighlevel.com/integration/abc123/versions/def456" }), "s1"));
   assert.equal(url.origin + url.pathname, "https://marketplace.gohighlevel.com/oauth/chooselocation");
@@ -433,4 +521,121 @@ test("tool discovery works without a token but every tool call still requires on
     for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+function inviteLinkToken(payload) {
+  return new URL(payload.inviteLink).searchParams.get("token");
+}
+
+test("the sign-in choice page offers both HighLevel and email, without redirecting on its own", async () => {
+  await withOAuthApp(env(), {}, async (base) => {
+    const { body: client } = await register(base);
+    const params = new URLSearchParams({ response_type: "code", client_id: client.client_id, redirect_uri: CHATGPT_REDIRECT, code_challenge: pkce().challenge, code_challenge_method: "S256", state: "s" });
+    const choice = await fetch(`${base}/oauth/authorize?${params}`, { redirect: "manual" });
+    assert.equal(choice.status, 200);
+    const html = await choice.text();
+    assert.match(html, /oauth\/authorize\/highlevel\?s=/);
+    assert.match(html, /action="\/oauth\/authorize\/email"/);
+  });
+});
+
+test("invite_team_member sends an email and the recipient becomes a member of the right tenant on accept", async () => {
+  const fetchImpl = highLevelFetch();
+  await withOAuthApp(env(), { fetchImpl }, async (base, repository) => {
+    const { body: client } = await register(base);
+    const { verifier, challenge } = pkce();
+    const code = await loginForCode(base, { challenge, clientId: client.client_id });
+    const tokens = await (await tokenRequest(base, { grant_type: "authorization_code", code, redirect_uri: CHATGPT_REDIRECT, client_id: client.client_id, code_verifier: verifier })).json();
+    const owner = await authenticateIssuedToken({ token: tokens.access_token, repository });
+    assert.equal(owner.role, "tenant_owner");
+    const { tenantId, tenantName } = owner;
+
+    await inviteTeamMember({ repository, env: env(), fetchImpl, tenantId, tenantName, invitedByUserId: owner.userId, inviterName: "Ada", email: "teammate@example.com", role: "editor" });
+
+    assert.equal(fetchImpl.webhookCalls.length, 1);
+    const invite = fetchImpl.webhookCalls[0];
+    assert.equal(invite.email, "teammate@example.com");
+    assert.equal(invite.tenantName, tenantName);
+    assert.equal(invite.inviterName, "Ada");
+    assert.match(invite.inviteLink, /\/invite\/accept\?token=/);
+
+    const accept = await fetch(`${base}${new URL(invite.inviteLink).pathname}${new URL(invite.inviteLink).search}`, { redirect: "manual" });
+    assert.equal(accept.status, 200);
+    assert.match(await accept.text(), /You&#39;re in/);
+
+    const membership = repository.memberships.find((m) => m.tenant_id === tenantId && m.user_id !== owner.userId);
+    assert.ok(membership, "a membership row for the invited teammate must exist");
+    assert.equal(membership.role, "editor");
+  });
+});
+
+test("an invite link is single-use and rejects once expired or already accepted", async () => {
+  const fetchImpl = highLevelFetch();
+  await withOAuthApp(env(), { fetchImpl }, async (base, repository) => {
+    const { body: client } = await register(base);
+    await loginForCode(base, { challenge: pkce().challenge, clientId: client.client_id });
+    const tenantId = [...repository.tenants.keys()][0];
+    await inviteTeamMember({ repository, env: env(), fetchImpl, tenantId, tenantName: "Acme Gym", invitedByUserId: null, email: "again@example.com", role: "viewer" });
+    const token = inviteLinkToken(fetchImpl.webhookCalls[0]);
+    const first = await fetch(`${base}/invite/accept?token=${token}`, { redirect: "manual" });
+    assert.equal(first.status, 200);
+    const replay = await fetch(`${base}/invite/accept?token=${token}`, { redirect: "manual" });
+    assert.equal(replay.status, 400);
+    assert.match(await replay.text(), /expired/);
+    assert.equal((await fetch(`${base}/invite/accept?token=does-not-exist`)).status, 400);
+  });
+});
+
+test("an invited teammate signs into a fresh ChatGPT connection by email, with no HighLevel step at all", async () => {
+  const fetchImpl = highLevelFetch();
+  await withOAuthApp(env(), { fetchImpl }, async (base, repository) => {
+    const { body: ownerClient } = await register(base);
+    await loginForCode(base, { challenge: pkce().challenge, clientId: ownerClient.client_id });
+    const tenantId = [...repository.tenants.keys()][0];
+    await inviteTeamMember({ repository, env: env(), fetchImpl, tenantId, tenantName: "Acme Gym", invitedByUserId: null, email: "teammate@example.com", role: "editor" });
+    await fetch(`${base}/invite/accept?token=${inviteLinkToken(fetchImpl.webhookCalls[0])}`);
+    fetchImpl.webhookCalls.length = 0;
+
+    // The teammate's own connector: a separate client registration from the owner's.
+    const { body: memberClient } = await register(base);
+    const { verifier, challenge } = pkce();
+    const params = new URLSearchParams({ response_type: "code", client_id: memberClient.client_id, redirect_uri: CHATGPT_REDIRECT, code_challenge: challenge, code_challenge_method: "S256", state: "member-state" });
+    const choice = await fetch(`${base}/oauth/authorize?${params}`, { redirect: "manual" });
+    const s = /\/oauth\/authorize\/highlevel\?s=([^"&]+)/.exec(await choice.text())[1];
+
+    const emailStep = await fetch(`${base}/oauth/authorize/email`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ s, email: "teammate@example.com" }) });
+    assert.equal(emailStep.status, 200);
+    assert.equal(fetchImpl.webhookCalls.length, 1);
+    const signInLink = fetchImpl.webhookCalls[0].inviteLink;
+    assert.match(signInLink, /\/oauth\/email-login\/verify\?token=/);
+
+    const verify = await fetch(signInLink.replace("https://staging.example.com", base), { redirect: "manual" });
+    assert.equal(verify.status, 302);
+    const redirect = new URL(verify.headers.get("location"));
+    assert.equal(redirect.origin + redirect.pathname, CHATGPT_REDIRECT);
+    assert.equal(redirect.searchParams.get("state"), "member-state");
+
+    const tokens = await (await tokenRequest(base, { grant_type: "authorization_code", code: redirect.searchParams.get("code"), redirect_uri: CHATGPT_REDIRECT, client_id: memberClient.client_id, code_verifier: verifier })).json();
+    const member = await authenticateIssuedToken({ token: tokens.access_token, repository });
+    assert.equal(member.role, "editor");
+    assert.equal(member.tenantId, tenantId);
+    assert.equal(member.subject, "email:teammate@example.com");
+
+    // Replaying the same sign-in link, or guessing at an unrecognized email, both fail quietly.
+    assert.equal((await fetch(signInLink.replace("https://staging.example.com", base))).status, 400);
+  });
+});
+
+test("an unrecognized email at the sign-in screen gets the same generic reply and no email is sent (no account enumeration)", async () => {
+  const fetchImpl = highLevelFetch();
+  await withOAuthApp(env(), { fetchImpl }, async (base) => {
+    const { body: client } = await register(base);
+    const params = new URLSearchParams({ response_type: "code", client_id: client.client_id, redirect_uri: CHATGPT_REDIRECT, code_challenge: pkce().challenge, code_challenge_method: "S256", state: "s" });
+    const choice = await fetch(`${base}/oauth/authorize?${params}`, { redirect: "manual" });
+    const s = /\/oauth\/authorize\/highlevel\?s=([^"&]+)/.exec(await choice.text())[1];
+    const response = await fetch(`${base}/oauth/authorize/email`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ s, email: "nobody@example.com" }) });
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /Check your email/);
+    assert.equal(fetchImpl.webhookCalls.length, 0, "no email is actually sent for an unrecognized address");
+  });
 });

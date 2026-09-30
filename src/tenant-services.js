@@ -449,6 +449,97 @@ export class PostgresConnectionRepository {
     await this.pool.query(`DELETE FROM oauth_tokens WHERE expires_at < now() - interval '1 day'`);
     await this.pool.query(`DELETE FROM oauth_auth_codes WHERE expires_at < now() - interval '1 day'`);
     await this.pool.query(`DELETE FROM oauth_login_requests WHERE expires_at < now() - interval '1 day'`);
+    await this.pool.query(`DELETE FROM team_invites WHERE expires_at < now() - interval '7 day' AND status <> 'accepted'`);
+    await this.pool.query(`DELETE FROM email_login_tokens WHERE expires_at < now() - interval '1 day'`);
+  }
+
+  // ---- Team invites (email-based, no HighLevel Admin needed) ---------------
+
+  async createTeamInvite({ tokenHash, tenantId, email, role, invitedByUserId, expiresAt }) {
+    await this.pool.query(
+      `INSERT INTO team_invites (token_hash, tenant_id, email, role, invited_by_user_id, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [tokenHash, tenantId, email, role, invitedByUserId, expiresAt]
+    );
+  }
+
+  // One transaction: consume the invite, create (or find) the user by email,
+  // and grant membership. A person can hold at most one active membership
+  // per tenant; re-accepting an invite for the same tenant is a no-op on the
+  // membership row (COALESCE keeps whichever role was already granted).
+  async acceptTeamInvite(tokenHash) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const inviteResult = await client.query(
+        `UPDATE team_invites SET status = 'accepted', accepted_at = now()
+          WHERE token_hash = $1 AND status = 'pending' AND expires_at > now()
+        RETURNING id, tenant_id, email, role`,
+        [tokenHash]
+      );
+      const invite = inviteResult.rows[0];
+      if (!invite) { await client.query("ROLLBACK"); return null; }
+      const userResult = await client.query(
+        `INSERT INTO users (auth_subject, email, last_login_at)
+         VALUES ($1, $2, now())
+         ON CONFLICT (auth_subject) DO UPDATE SET email = EXCLUDED.email, updated_at = now()
+         RETURNING id, status`,
+        [`email:${invite.email.toLowerCase()}`, invite.email]
+      );
+      const user = userResult.rows[0];
+      if (user.status !== "active") throw new TenantAuthorizationError("User account is not active.", "USER_INACTIVE");
+      await client.query(
+        `INSERT INTO memberships (user_id, tenant_id, role) VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, tenant_id) DO NOTHING`,
+        [user.id, invite.tenant_id, invite.role]
+      );
+      const tenant = await client.query(`SELECT display_name FROM tenants WHERE id = $1`, [invite.tenant_id]);
+      await client.query(
+        `INSERT INTO audit_events (actor_user_id, tenant_id, action, result, metadata)
+         VALUES ($1, $2, 'team_invite.accepted', 'success', $3::jsonb)`,
+        [user.id, invite.tenant_id, JSON.stringify({ inviteId: invite.id, role: invite.role })]
+      );
+      await client.query("COMMIT");
+      return { userId: user.id, tenantId: invite.tenant_id, tenantName: tenant.rows[0]?.display_name || null, role: invite.role };
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  // Used only by the email-login path: an email is expected to resolve to
+  // exactly one active membership. Zero or more than one both report "not
+  // found" -- an ambiguous match is not safe to silently pick between.
+  async findSoleMembershipByEmail(email) {
+    const { rows } = await this.pool.query(
+      `SELECT u.id AS user_id, m.tenant_id, m.role, t.display_name AS tenant_name
+         FROM users u
+         JOIN memberships m ON m.user_id = u.id AND m.status = 'active'
+         JOIN tenants t ON t.id = m.tenant_id AND t.status = 'active'
+        WHERE lower(u.email) = lower($1) AND u.status = 'active'`,
+      [email]
+    );
+    return rows.length === 1 ? rows[0] : null;
+  }
+
+  async createEmailLoginToken({ tokenHash, clientId, redirectUri, codeChallenge, clientState, userId, tenantId, expiresAt }) {
+    await this.pool.query(
+      `INSERT INTO email_login_tokens (token_hash, client_id, redirect_uri, code_challenge, client_state, user_id, tenant_id, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [tokenHash, clientId, redirectUri, codeChallenge, clientState || null, userId, tenantId, expiresAt]
+    );
+  }
+
+  async consumeEmailLoginToken(tokenHash) {
+    const { rows } = await this.pool.query(
+      `UPDATE email_login_tokens SET used_at = now()
+        WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
+      RETURNING client_id, redirect_uri, code_challenge, client_state, user_id, tenant_id`,
+      [tokenHash]
+    );
+    return rows[0] || null;
   }
 
   async close() {

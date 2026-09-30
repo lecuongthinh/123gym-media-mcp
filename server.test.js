@@ -118,7 +118,7 @@ test("legacy admin key is opt-in, x-api-key only, and not accepted as OAuth Bear
       body: JSON.stringify({ jsonrpc: "2.0", id: 103, method: "initialize" })
     });
     assert.equal(accepted.status, 200);
-    assert.equal((await accepted.json()).result.serverInfo.version, "3.8.1");
+    assert.equal((await accepted.json()).result.serverInfo.version, "3.9.0");
 
     const rejected = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -135,7 +135,7 @@ test("health response contains no authentication or tenant secrets", async () =>
     const text = await response.text();
     assert.equal(response.status, 200);
     assert.doesNotMatch(text, /health-admin-secret|health-tenant-secret|LC_TENANTS_JSON|LC_PRIVATE_TOKEN/);
-    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.8.1" });
+    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.9.0" });
   }));
 });
 
@@ -194,7 +194,7 @@ test("MCP tools/list exposes the file-aware upload schema", async (t) => {
   assert.equal(payload.result.tools[0].name, "upload_leadconnector_media");
   assert.deepEqual(payload.result.tools[0]._meta["openai/fileParams"], ["file"]);
   assert.equal(payload.result.tools[0].inputSchema.properties.locationId.type, "string");
-  assert.equal(payload.result.tools.length, 14);
+  assert.equal(payload.result.tools.length, 15);
   assert.ok(payload.result.tools.some((tool) => tool.name === "create_social_post"));
   assert.ok(payload.result.tools.some((tool) => tool.name === "get_social_statistics"));
   assert.deepEqual(payload.result.tools.find((tool) => tool.name === "list_social_accounts").securitySchemes, [{ type: "oauth2", scopes: ["uplifting:read"] }]);

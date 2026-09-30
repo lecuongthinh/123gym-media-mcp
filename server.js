@@ -18,7 +18,7 @@ import {
   requireScopes
 } from "./src/auth.js";
 import { createHighLevelOnboarding } from "./src/highlevel-onboarding.js";
-import { authenticateIssuedToken, completeHighLevelLogin, createOAuthRouter } from "./src/oauth-server.js";
+import { authenticateIssuedToken, completeHighLevelLogin, createOAuthRouter, inviteTeamMember } from "./src/oauth-server.js";
 import { fetchHighLevelUsers } from "./src/highlevel-users.js";
 
 const app = express();
@@ -37,7 +37,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.8.1";
+const SERVICE_VERSION = "3.9.0";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -772,6 +772,21 @@ const tools = [
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true }
   },
   {
+    name: "invite_team_member",
+    title: "Invite a teammate to this tenant",
+    description: "Invite someone by email to use Uplifting Social AI for this tenant, without them needing to be a HighLevel Admin (HighLevel only lets Admins approve the app themselves). They get an email with a link that adds them; they then add the connector in ChatGPT and choose \"Email me a sign-in link\" using this same address. Only tenant_owner/tenant_admin/uplifting_admin may call this.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        email: { type: "string", description: "The teammate's email address." },
+        role: { type: "string", enum: ["tenant_admin", "editor", "viewer"], description: "What they can do. editor can create/schedule posts; viewer is read-only; tenant_admin can also invite others and manage the HighLevel connection." }
+      },
+      required: ["email", "role"],
+      additionalProperties: false
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false }
+  },
+  {
     name: "list_location_users",
     title: "List HighLevel users for this location",
     description: "List staff/users of the allowlisted tenant's HighLevel sub-account. Use to find a userId for create_social_post (userId is required by HighLevel for every post status) or for postApprovalDetails.approver.",
@@ -997,6 +1012,28 @@ app.post("/mcp", async (req, res) => {
             content: [{ type: "text", text: `Mở link này để kết nối HighLevel: ${onboardingResult.authorizationUrl}` }],
             structuredContent: onboardingResult
           }
+        });
+      }
+      if (toolName === "invite_team_member") {
+        if (req.principal.authType !== "oauth") throw new Error("invite_team_member requires an OAuth user.");
+        if (!["tenant_owner", "tenant_admin", "uplifting_admin"].includes(req.principal.role)) {
+          throw new Error("Tenant owner or administrator permission is required to invite a teammate.");
+        }
+        const invited = await inviteTeamMember({
+          repository: req.tenantServices.repository,
+          env: process.env,
+          tenantId: req.principal.tenantId,
+          tenantName: req.principal.tenantName,
+          invitedByUserId: req.principal.userId,
+          inviterName: req.principal.email || req.principal.subject,
+          email: args.email,
+          role: args.role
+        });
+        await auditTool(req, { tenantId: req.principal.tenantId, toolName, action: "tool.call", result: "success", metadata: { role: args.role } });
+        return res.json({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: `Đã gửi lời mời tới ${args.email}.` }], structuredContent: invited }
         });
       }
       const authorizedContext = await requestTenantContext(req, args.locationId);
