@@ -347,7 +347,13 @@ test("refresh tokens rotate, and replaying a used one revokes the whole token fa
   });
 });
 
-test("a second HighLevel user of the same sub-account joins the existing tenant without owner rights", async () => {
+test("a second HighLevel user of the same sub-account joins the existing tenant as tenant_admin, even absent from the location's Users list", async () => {
+  // HighLevel only lets a sub-account Admin reach this consent screen at
+  // all (this app is Sub-Account type), so completing it already proves
+  // Admin access -- regardless of whether the per-location Users API
+  // happens to list this person (it won't, for an agency-level Admin with
+  // inherited access; confirmed live 2026-09-30). The role must not depend
+  // on that lookup.
   const repository = new FakeRepository();
   await withOAuthApp(env(), { repository }, async (base) => {
     const { body: client } = await register(base);
@@ -355,7 +361,7 @@ test("a second HighLevel user of the same sub-account joins the existing tenant 
   });
   await withOAuthApp(env(), {
     repository,
-    fetchImpl: highLevelFetch({ grant: { userId: "hl-user-2" }, users: [{ id: "hl-user-2", firstName: "Bo", email: "bo@example.com", roles: { role: "user" } }] })
+    fetchImpl: highLevelFetch({ grant: { userId: "hl-user-2" }, users: [{ id: "hl-user-1", firstName: "Existing Owner", email: "owner@example.com", roles: { role: "admin" } }] })
   }, async (base) => {
     const { body: client } = await register(base);
     const { verifier, challenge } = pkce();
@@ -363,7 +369,7 @@ test("a second HighLevel user of the same sub-account joins the existing tenant 
     const tokens = await (await tokenRequest(base, { grant_type: "authorization_code", code, redirect_uri: CHATGPT_REDIRECT, client_id: client.client_id, code_verifier: verifier })).json();
     const principal = await authenticateIssuedToken({ token: tokens.access_token, repository });
     assert.equal(repository.tenants.size, 1);
-    assert.equal(principal.role, "editor");
+    assert.equal(principal.role, "tenant_admin");
   });
 });
 

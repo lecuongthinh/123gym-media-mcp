@@ -198,29 +198,28 @@ export async function completeHighLevelLogin({ query, repository, env = process.
     }
     const locationId = body.locationId;
     let users = [];
-    let usersFetchError = null;
-    try { users = await fetchHighLevelUsers({ accessToken: body.access_token, locationId, fetchImpl }); } catch (error) { users = []; usersFetchError = error; }
+    try { users = await fetchHighLevelUsers({ accessToken: body.access_token, locationId, fetchImpl }); } catch { users = []; }
     const me = body.userId ? users.find((user) => user.id === body.userId) : null;
-    oauthLog("oauth_admin_detection_probe", {
-      hasBodyUserId: Boolean(body.userId),
-      usersFetchError: usersFetchError ? (usersFetchError.status || usersFetchError.message) : null,
-      usersCount: users.length,
-      userIdsPresent: users.map((user) => Boolean(user.id)),
-      meFound: Boolean(me),
-      meRole: me ? me.role : null,
-      meType: me ? me.type : null,
-      meIsAdminCandidate: me ? me.isDefaultUserIdCandidate : null,
-      allRoles: users.map((user) => ({ role: user.role, type: user.type, isCandidate: user.isDefaultUserIdCandidate }))
-    });
+    oauthLog("oauth_admin_detection", { usersCount: users.length, meFoundInUsersList: Boolean(me) });
     const locationName = await fetchHighLevelLocationName({ accessToken: body.access_token, locationId, fetchImpl }).catch(() => null);
     const expiresAt = new Date(Date.now() + Number(body.expires_in || 86400) * 1000).toISOString();
 
+    // HighLevel's per-location Users list only names people explicitly added
+    // to that sub-account -- an agency-level Admin with inherited access to
+    // many sub-accounts (confirmed live 2026-09-30, thinh.seafarer@gmail.com
+    // on "123 GYM Central Office") completes this OAuth grant successfully
+    // but never appears in it, so `me` above is unreliable as an admin gate.
+    // The real gate is HighLevel itself: this Marketplace app is Sub-Account
+    // type, and HighLevel only lets a sub-account Admin reach this consent
+    // screen at all (confirmed earlier in this project) -- reaching this
+    // line with a per-location grant already proves Admin access, so anyone
+    // joining an existing tenant this way becomes tenant_admin, not editor.
     const provisioned = await repository.provisionHighLevelLogin({
       subject: body.userId ? `highlevel:${body.userId}` : `highlevel:location:${locationId}`,
       email: me?.email || null,
       displayName: me?.name || null,
       locationId,
-      newMemberRole: me && /admin|owner/i.test(me.role || "") ? "tenant_admin" : "editor",
+      newMemberRole: "tenant_admin",
       tenantName: locationName || `HighLevel ${locationId}`,
       allowCreateTenant: env.ENABLE_SELF_SERVE_SIGNUP === "true",
       encryptedPayload: encryptCredential({
