@@ -4,6 +4,8 @@ import {
   app,
   buildSocialPostBody,
   createSocialPost,
+  enforcePostLimit,
+  enforceUserLimit,
   getSocialStatistics,
   isEligible123GymAccount,
   listLocationUsers,
@@ -120,7 +122,7 @@ test("legacy admin key is opt-in, x-api-key only, and not accepted as OAuth Bear
       body: JSON.stringify({ jsonrpc: "2.0", id: 103, method: "initialize" })
     });
     assert.equal(accepted.status, 200);
-    assert.equal((await accepted.json()).result.serverInfo.version, "3.12.1");
+    assert.equal((await accepted.json()).result.serverInfo.version, "3.13.0");
 
     const rejected = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -155,7 +157,7 @@ test("health response contains no authentication or tenant secrets", async () =>
     const text = await response.text();
     assert.equal(response.status, 200);
     assert.doesNotMatch(text, /health-admin-secret|health-tenant-secret|LC_TENANTS_JSON|LC_PRIVATE_TOKEN/);
-    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.12.1" });
+    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.13.0" });
   }));
 });
 
@@ -588,5 +590,94 @@ test("tools/call rate-limits a tenant after too many requests in one minute, ind
     for (const result of results.slice(0, 3)) assert.notEqual(result.error?.code, -32029);
     assert.equal(results[3].error.code, -32029);
     assert.match(results[3].error.message, /Too many requests/);
+  }));
+});
+
+function reqWithRepository(repository, overrides = {}) {
+  return { principal: { authType: "oauth", tenantId: "tenant-1", plan: "trial", ...overrides }, tenantServices: { repository } };
+}
+
+test("enforceUserLimit is a no-op for non-oauth callers, and when the repository/plan has no limit", async () => {
+  await enforceUserLimit({ principal: { authType: "legacy_admin" } });
+  await enforceUserLimit(reqWithRepository({}));
+  await enforceUserLimit(reqWithRepository({ async getPlanLimits() { return {}; }, async countActiveMemberships() { return 999; } }));
+});
+
+test("enforceUserLimit rejects inviting past the plan's max_users, and allows it under the limit", async () => {
+  const repository = {
+    async getPlanLimits() { return { trial: { maxUsers: 3, maxPostsPerMonth: null } }; },
+    async countActiveMemberships() { return 3; }
+  };
+  await assert.rejects(() => enforceUserLimit(reqWithRepository(repository)), /up to 3 team members/);
+  repository.countActiveMemberships = async () => 2;
+  await enforceUserLimit(reqWithRepository(repository));
+});
+
+test("enforcePostLimit is a no-op for non-oauth callers, and when the repository/plan has no limit", async () => {
+  await enforcePostLimit({ principal: { authType: "legacy_admin" } });
+  await enforcePostLimit(reqWithRepository({}));
+  await enforcePostLimit(reqWithRepository({ async getPlanLimits() { return {}; }, async getUsage() { return 999; } }));
+});
+
+test("enforcePostLimit rejects creating posts past the plan's max_posts_per_month, and allows it under the limit", async () => {
+  const repository = {
+    async getPlanLimits() { return { trial: { maxUsers: null, maxPostsPerMonth: 10 } }; },
+    async getUsage() { return 10; }
+  };
+  await assert.rejects(() => enforcePostLimit(reqWithRepository(repository)), /up to 10 AI-created posts per month/);
+  repository.getUsage = async () => 9;
+  await enforcePostLimit(reqWithRepository(repository));
+});
+
+function adminRepositoryFor(overrides = {}) {
+  return {
+    tenants: [{ id: "tenant-1", display_name: "Acme", plan: "standard", status: "active" }],
+    planLimits: { trial: { maxUsers: 3, maxPostsPerMonth: 10 }, standard: { maxUsers: 10, maxPostsPerMonth: 100 }, pro: { maxUsers: null, maxPostsPerMonth: null } },
+    async listTenantsForAdmin() { return this.tenants.map((t) => ({ id: t.id, displayName: t.display_name, plan: t.plan, status: t.status, memberCount: 2, postsThisPeriod: 5 })); },
+    async getPlanLimits() { return this.planLimits; },
+    async setTenantPlan(tenantId, plan) { const t = this.tenants.find((x) => x.id === tenantId); if (t) t.plan = plan; },
+    async setPlanLimit({ plan, maxUsers, maxPostsPerMonth }) { this.planLimits[plan] = { maxUsers, maxPostsPerMonth }; },
+    ...overrides
+  };
+}
+
+test("admin panel is disabled (404) unless ADMIN_PANEL_KEY is configured", async () => {
+  await withProcessEnv({ ADMIN_PANEL_KEY: undefined }, () => withTestServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/admin?key=anything`);
+    assert.equal(response.status, 404);
+  }));
+});
+
+test("admin panel rejects a missing or wrong key, and accepts the right one", async () => {
+  await withProcessEnv({ ADMIN_PANEL_KEY: "the-real-key" }, () => withTestServer(async (baseUrl) => {
+    app.locals.tenantServices = createTenantServices(process.env, { repository: adminRepositoryFor() });
+    const noKey = await fetch(`${baseUrl}/admin`);
+    assert.equal(noKey.status, 403);
+    const wrongKey = await fetch(`${baseUrl}/admin?key=nope`);
+    assert.equal(wrongKey.status, 403);
+    const rightKey = await fetch(`${baseUrl}/admin?key=the-real-key`);
+    assert.equal(rightKey.status, 200);
+    const text = await rightKey.text();
+    assert.match(text, /Acme/);
+    assert.match(text, /Uplifting Social AI -- Admin/);
+  }));
+});
+
+test("admin panel can change a tenant's plan and a plan's limits, both take effect immediately", async () => {
+  await withProcessEnv({ ADMIN_PANEL_KEY: "the-real-key" }, () => withTestServer(async (baseUrl) => {
+    const repository = adminRepositoryFor();
+    app.locals.tenantServices = createTenantServices(process.env, { repository });
+
+    const planResponse = await fetch(`${baseUrl}/admin/tenants/tenant-1/plan?key=the-real-key`, {
+      method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "plan=pro", redirect: "manual"
+    });
+    assert.equal(planResponse.status, 302);
+    assert.equal(repository.tenants[0].plan, "pro");
+
+    const limitResponse = await fetch(`${baseUrl}/admin/plan-limits/standard?key=the-real-key`, {
+      method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: "maxUsers=20&maxPostsPerMonth=", redirect: "manual"
+    });
+    assert.equal(limitResponse.status, 302);
+    assert.deepEqual(repository.planLimits.standard, { maxUsers: 20, maxPostsPerMonth: null });
   }));
 });

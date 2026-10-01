@@ -468,6 +468,53 @@ export class PostgresConnectionRepository {
     return rows[0]?.count ?? 0;
   }
 
+  async countActiveMemberships(tenantId) {
+    const { rows } = await this.pool.query(
+      `SELECT count(*)::int AS n FROM memberships WHERE tenant_id = $1 AND status = 'active'`,
+      [tenantId]
+    );
+    return rows[0]?.n ?? 0;
+  }
+
+  // ---- Plan limits (admin panel) --------------------------------------------
+
+  async getPlanLimits() {
+    const { rows } = await this.pool.query(`SELECT plan, max_users, max_posts_per_month FROM plan_limits`);
+    const byPlan = {};
+    for (const row of rows) byPlan[row.plan] = { maxUsers: row.max_users, maxPostsPerMonth: row.max_posts_per_month };
+    return byPlan;
+  }
+
+  async setPlanLimit({ plan, maxUsers, maxPostsPerMonth }) {
+    await this.pool.query(
+      `INSERT INTO plan_limits (plan, max_users, max_posts_per_month)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (plan) DO UPDATE SET max_users = EXCLUDED.max_users, max_posts_per_month = EXCLUDED.max_posts_per_month, updated_at = now()`,
+      [plan, maxUsers, maxPostsPerMonth]
+    );
+  }
+
+  async setTenantPlan(tenantId, plan) {
+    await this.pool.query(`UPDATE tenants SET plan = $1, updated_at = now() WHERE id = $2`, [plan, tenantId]);
+  }
+
+  // Admin panel's tenant listing -- one row per tenant with its plan and this
+  // month's usage, so an admin can see who is near a limit without guessing.
+  async listTenantsForAdmin(period) {
+    const { rows } = await this.pool.query(
+      `SELECT t.id, t.display_name, t.plan, t.status,
+              (SELECT count(*)::int FROM memberships m WHERE m.tenant_id = t.id AND m.status = 'active') AS member_count,
+              COALESCE((SELECT count FROM tenant_usage_counters u WHERE u.tenant_id = t.id AND u.metric = 'posts_created' AND u.period = $1), 0) AS posts_this_period
+         FROM tenants t
+        ORDER BY t.created_at DESC`,
+      [period]
+    );
+    return rows.map((row) => ({
+      id: row.id, displayName: row.display_name, plan: row.plan, status: row.status,
+      memberCount: row.member_count, postsThisPeriod: row.posts_this_period
+    }));
+  }
+
   async deleteExpiredOAuthArtifacts() {
     await this.pool.query(`DELETE FROM oauth_tokens WHERE expires_at < now() - interval '1 day'`);
     await this.pool.query(`DELETE FROM oauth_auth_codes WHERE expires_at < now() - interval '1 day'`);

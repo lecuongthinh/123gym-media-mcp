@@ -20,6 +20,7 @@ import {
 import { createHighLevelOnboarding } from "./src/highlevel-onboarding.js";
 import { authenticateIssuedToken, completeHighLevelLogin, createOAuthRouter, inviteTeamMember } from "./src/oauth-server.js";
 import { fetchHighLevelUsers } from "./src/highlevel-users.js";
+import { createAdminPanelRouter } from "./src/admin-panel.js";
 
 const app = express();
 app.use((req, res, next) => {
@@ -37,7 +38,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.12.1";
+const SERVICE_VERSION = "3.13.0";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -58,6 +59,7 @@ app.get("/docs", (req, res) => res.json({
 }));
 
 app.use(createOAuthRouter({ env: process.env, getRepository: (req) => requestServices(req).repository }));
+app.use(createAdminPanelRouter({ env: process.env, getRepository: (req) => requestServices(req).repository }));
 
 // 'YYYY-MM' in UTC -- the period key tenant_usage_counters rows are keyed by.
 function currentUsagePeriod() {
@@ -73,6 +75,36 @@ function recordUsage(req, { tenantId, metric, by }) {
   if (typeof repository?.incrementUsage !== "function") return;
   repository.incrementUsage({ tenantId, metric, period: currentUsagePeriod(), by })
     .catch((error) => console.error("[usage] failed to record", { metric, tenantId, errorMessage: error?.message || "Error" }));
+}
+
+// Plan limits (admin panel, migration 010) are enforced only for real OAuth
+// tenants -- legacy_admin has no plan concept and is exempt, same as the
+// role checks in authorizeTool. Limits are read fresh every call (not
+// cached) so an admin's edit in the panel takes effect immediately.
+class PlanLimitError extends Error {
+  constructor(message) { super(message); this.code = "PLAN_LIMIT_EXCEEDED"; }
+}
+
+async function enforceUserLimit(req) {
+  if (req.principal.authType !== "oauth") return;
+  const repository = req.tenantServices?.repository;
+  if (typeof repository?.getPlanLimits !== "function") return;
+  const limits = await repository.getPlanLimits();
+  const maxUsers = limits[req.principal.plan]?.maxUsers;
+  if (maxUsers == null) return;
+  const count = await repository.countActiveMemberships(req.principal.tenantId);
+  if (count >= maxUsers) throw new PlanLimitError(`This plan allows up to ${maxUsers} team members. Remove someone or upgrade the plan to invite another.`);
+}
+
+async function enforcePostLimit(req) {
+  if (req.principal.authType !== "oauth") return;
+  const repository = req.tenantServices?.repository;
+  if (typeof repository?.getPlanLimits !== "function") return;
+  const limits = await repository.getPlanLimits();
+  const maxPosts = limits[req.principal.plan]?.maxPostsPerMonth;
+  if (maxPosts == null) return;
+  const used = await repository.getUsage({ tenantId: req.principal.tenantId, metric: "posts_created", period: currentUsagePeriod() });
+  if (used >= maxPosts) throw new PlanLimitError(`This plan allows up to ${maxPosts} AI-created posts per month, and ${used} have already been made this month. Upgrade the plan to create more.`);
 }
 
 // Fixed-window per-tenant abuse guard on tools/call, independent of the
@@ -1102,6 +1134,7 @@ app.post("/mcp", async (req, res) => {
         if (!["tenant_owner", "tenant_admin", "uplifting_admin"].includes(req.principal.role)) {
           throw new Error("Tenant owner or administrator permission is required to invite a teammate.");
         }
+        await enforceUserLimit(req);
         const invited = await inviteTeamMember({
           repository: req.tenantServices.repository,
           env: process.env,
@@ -1154,6 +1187,7 @@ app.post("/mcp", async (req, res) => {
         get_social_statistics: getSocialStatistics
       };
       if (socialHandlers[toolName]) {
+        if (toolName === "create_social_post") await enforcePostLimit(req);
         result = await socialHandlers[toolName](args, authorizedContext);
         if (toolName === "create_social_post") {
           const createdCount = (result.results || []).filter((entry) => entry.action === "created").length;
@@ -1196,6 +1230,8 @@ export {
   buildSocialPostBody,
   createSocialPost,
   downloadChatGPTFile,
+  enforcePostLimit,
+  enforceUserLimit,
   getSocialStatistics,
   isEligible123GymAccount,
   listLocationUsers,
