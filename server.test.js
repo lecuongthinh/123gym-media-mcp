@@ -120,7 +120,7 @@ test("legacy admin key is opt-in, x-api-key only, and not accepted as OAuth Bear
       body: JSON.stringify({ jsonrpc: "2.0", id: 103, method: "initialize" })
     });
     assert.equal(accepted.status, 200);
-    assert.equal((await accepted.json()).result.serverInfo.version, "3.11.1");
+    assert.equal((await accepted.json()).result.serverInfo.version, "3.12.0");
 
     const rejected = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -155,7 +155,7 @@ test("health response contains no authentication or tenant secrets", async () =>
     const text = await response.text();
     assert.equal(response.status, 200);
     assert.doesNotMatch(text, /health-admin-secret|health-tenant-secret|LC_TENANTS_JSON|LC_PRIVATE_TOKEN/);
-    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.11.1" });
+    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.12.0" });
   }));
 });
 
@@ -311,6 +311,36 @@ test("media listing binds altId and Authorization to the same tenant", async () 
     }, async () => {
       const result = await listMedia({ locationId: TEST_LOCATION });
       assert.equal(result.count, 0);
+    });
+  });
+});
+
+test("media listing passes folderId and search through to the upstream API as parentId/query, and reports each file's folderId", async () => {
+  await withProcessEnv(tenantEnv(), async () => {
+    await withMockFetch(async (url) => {
+      const parsed = new URL(url);
+      assert.equal(parsed.searchParams.get("parentId"), "folder-123");
+      assert.equal(parsed.searchParams.get("query"), "logo");
+      return new Response(JSON.stringify({ files: [
+        { _id: "file-1", name: "logo.png", contentType: "image/png", parentId: "folder-123" }
+      ] }), { status: 200 });
+    }, async () => {
+      const result = await listMedia({ locationId: TEST_LOCATION, folderId: "folder-123", search: "logo" });
+      assert.equal(result.count, 1);
+      assert.equal(result.files[0].folderId, "folder-123");
+    });
+  });
+});
+
+test("media listing can list folders themselves by passing type: folder", async () => {
+  await withProcessEnv(tenantEnv(), async () => {
+    await withMockFetch(async (url) => {
+      const parsed = new URL(url);
+      assert.equal(parsed.searchParams.get("type"), "folder");
+      return new Response(JSON.stringify({ files: [{ _id: "folder-123", name: "Tháng 10" }] }), { status: 200 });
+    }, async () => {
+      const result = await listMedia({ locationId: TEST_LOCATION, type: "folder", search: "Tháng 10" });
+      assert.equal(result.files[0].id, "folder-123");
     });
   });
 });

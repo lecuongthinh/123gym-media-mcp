@@ -37,7 +37,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.11.1";
+const SERVICE_VERSION = "3.12.0";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -454,9 +454,11 @@ async function uploadMedia(args, authorizedContext) {
 }
 
 async function listMedia(args = {}, authorizedContext) {
-  const { locationId = DEFAULT_LOCATION_ID, search = "", mediaType = "all", limit = 50, offset = 0 } = args;
+  const { locationId = DEFAULT_LOCATION_ID, search = "", mediaType = "all", type = "file", folderId, limit = 50, offset = 0 } = args;
   const tenant = tenantAccess(locationId, authorizedContext);
-  const params = new URLSearchParams({ altId: locationId, altType: "location", sortBy: "createdAt", sortOrder: "desc", type: "file", limit: String(Math.min(Number(limit) || 50, 100)), offset: String(Number(offset) || 0) });
+  const params = new URLSearchParams({ altId: locationId, altType: "location", sortBy: "createdAt", sortOrder: "desc", type, limit: String(Math.min(Number(limit) || 50, 100)), offset: String(Number(offset) || 0) });
+  if (search) params.set("query", search);
+  if (folderId) params.set("parentId", folderId);
   const path = `/medias/files?${params}`;
   validateLocationBinding(path, tenant.locationId);
   const data = await parseResponse(await fetch(`${LC_BASE_URL}${path}`, { method: "GET", headers: lcHeaders(tenant.token) }));
@@ -467,7 +469,7 @@ async function listMedia(args = {}, authorizedContext) {
   }
   if (mediaType === "image") files = files.filter((file) => file.contentType?.startsWith("image/"));
   if (mediaType === "video") files = files.filter((file) => file.contentType?.startsWith("video/"));
-  return { count: files.length, files: files.map((file) => ({ id: file._id, name: file.name, contentType: file.contentType, url: file.url, width: file.width, height: file.height, size: file.size, createdAt: file.createdAt, thumbnailUrl: file.thumbnail?.url || null, previewUrl: file.preview?.url || null, category: file.category || null, subCategory: file.subCategory || null })) };
+  return { count: files.length, files: files.map((file) => ({ id: file._id, name: file.name, contentType: file.contentType, url: file.url, width: file.width, height: file.height, size: file.size, createdAt: file.createdAt, thumbnailUrl: file.thumbnail?.url || null, previewUrl: file.preview?.url || null, category: file.category || null, subCategory: file.subCategory || null, folderId: file.parentId || null })) };
 }
 
 async function inspectMedia(args, authorizedContext) {
@@ -784,7 +786,7 @@ const MCP_INSTRUCTIONS = `This connects to the customer's own social media / CRM
 
 First-time setup: if a tool fails saying no connection exists, call connect_social_account first (owner/admin only) -- every other tool needs a connection.
 
-Media library rule: "my media library", "our gallery", "photos we already have", or anything the user says is already in their account means their CONNECTED account's media library -- call search_media_library. Never answer this from ChatGPT's own uploaded files, generated images, or ChatGPT's Media Library; those are a completely different, unrelated place. Use upload_media only to add something new to their account.
+Media library rule: "my media library", "our gallery", "photos we already have", or anything the user says is already in their account means their CONNECTED account's media library -- call search_media_library. Never answer this from ChatGPT's own uploaded files, generated images, or ChatGPT's Media Library; those are a completely different, unrelated place. Use upload_media only to add something new to their account. If the user names a specific folder, resolve its id first (search_media_library with type "folder") before filtering by folderId -- don't just search by name across the whole library and call it done.
 
 Posts: default to draft unless the user explicitly says to schedule or publish. category/tag fields need real ids, not names typed by the user -- call list_social_categories / list_social_tags first to resolve them. Call list_social_accounts before create_social_post if you don't already know the target account.
 
@@ -813,8 +815,16 @@ const tools = [
   {
     name: "search_media_library",
     title: "Search the account's media library",
-    description: "Search and list media already stored in the customer's own connected account -- this is NOT ChatGPT's own uploaded files, generated images, or ChatGPT's Media Library. Always call this tool (never answer from ChatGPT's own file/image history) whenever the user refers to their media library, gallery, existing photos/videos, or asks to find/reuse something already in their account.",
-    inputSchema: { type: "object", properties: { search: { type: "string" }, mediaType: { type: "string", enum: ["all", "image", "video"] }, limit: { type: "integer", minimum: 1, maximum: 100 }, offset: { type: "integer", minimum: 0 }, locationId: socialPostProperties.locationId } },
+    description: "Search and list media already stored in the customer's own connected account -- this is NOT ChatGPT's own uploaded files, generated images, or ChatGPT's Media Library. Always call this tool (never answer from ChatGPT's own file/image history) whenever the user refers to their media library, gallery, existing photos/videos, or asks to find/reuse something already in their account. The library can be organized into folders: if the user names a folder (e.g. \"ảnh trong thư mục Tháng 10\"), first call with type \"folder\" and search set to the folder name to find its id, then call again with that id as folderId to list what's inside. Each returned file also reports its own folderId.",
+    inputSchema: { type: "object", properties: {
+      search: { type: "string", description: "Filter by name/filename. Matched both server-side and again locally." },
+      mediaType: { type: "string", enum: ["all", "image", "video"] },
+      type: { type: "string", enum: ["file", "folder"], description: "What kind of item to list. Defaults to file. Use folder to find a folder's id by name before browsing it with folderId." },
+      folderId: { type: "string", description: "Only list items inside this specific folder. Omit to search the whole library regardless of folder. Get this id from a prior call with type \"folder\"." },
+      limit: { type: "integer", minimum: 1, maximum: 100 },
+      offset: { type: "integer", minimum: 0 },
+      locationId: socialPostProperties.locationId
+    } },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
   },
   {
