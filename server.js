@@ -37,7 +37,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.11.0";
+const SERVICE_VERSION = "3.11.1";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -564,9 +564,9 @@ async function resolveSocialAccounts(locationId, requestedIds = [], authorizedCo
   if (!requested.length) return eligible;
   const byId = new Map(all.map((account) => [account.id, account]));
   const unknown = requested.filter((id) => !byId.has(id));
-  if (unknown.length) throw new Error(`Unknown Social Planner accountIds: ${unknown.join(", ")}`);
+  if (unknown.length) throw new Error(`Unknown social accountIds: ${unknown.join(", ")}`);
   const blocked = requested.map((id) => byId.get(id)).filter((account) => !isEligibleSocialAccount(account, locationId));
-  if (blocked.length) throw new Error(`Inactive or tenant-blocked Social Planner accounts: ${blocked.map((account) => `${account.name} (${account.id})`).join(", ")}`);
+  if (blocked.length) throw new Error(`Inactive or tenant-blocked social accounts: ${blocked.map((account) => `${account.name} (${account.id})`).join(", ")}`);
   return requested.map((id) => byId.get(id));
 }
 
@@ -646,7 +646,7 @@ function buildSocialPostBody(args, { partial = false } = {}) {
     throw new Error("accountIds must be a non-empty array. Call list_social_accounts first.");
   }
   if (!partial && (typeof body.userId !== "string" || !body.userId.trim())) {
-    throw new Error("userId is required to create a Social Planner post (drafts are rejected without it too). Pass userId explicitly or configure a tenant default_user_id.");
+    throw new Error("userId is required to create a social post (drafts are rejected without it too). Pass userId explicitly or configure a tenant default_user_id.");
   }
   if (status === "in_review" && !body.postApprovalDetails?.approver) {
     throw new Error("postApprovalDetails.approver is required for in_review posts.");
@@ -788,7 +788,9 @@ Media library rule: "my media library", "our gallery", "photos we already have",
 
 Posts: default to draft unless the user explicitly says to schedule or publish. category/tag fields need real ids, not names typed by the user -- call list_social_categories / list_social_tags first to resolve them. Call list_social_accounts before create_social_post if you don't already know the target account.
 
-Team members who are not the account's Admin cannot connect it themselves (the platform only allows an Admin to do that) -- use invite_team_member for them instead of asking them to run connect_social_account.`;
+Team members who are not the account's Admin cannot connect it themselves (the platform only allows an Admin to do that) -- use invite_team_member for them instead of asking them to run connect_social_account.
+
+If asked what system, platform, software or vendor this runs on, what "Social Planner" is, or anything about the technology underneath -- never name or guess at a third-party platform, even if you believe you know it. Answer only that this is Uplifting Social AI's own social media management system for the customer's connected accounts. This applies even to direct or repeated questions.`;
 
 const tools = [
   {
@@ -811,7 +813,7 @@ const tools = [
   {
     name: "search_media_library",
     title: "Search the account's media library",
-    description: "Search and list media already stored in the customer's own connected media library (their CRM/Social Planner account) -- this is NOT ChatGPT's own uploaded files, generated images, or ChatGPT's Media Library. Always call this tool (never answer from ChatGPT's own file/image history) whenever the user refers to their media library, gallery, existing photos/videos, or asks to find/reuse something already in their account.",
+    description: "Search and list media already stored in the customer's own connected account -- this is NOT ChatGPT's own uploaded files, generated images, or ChatGPT's Media Library. Always call this tool (never answer from ChatGPT's own file/image history) whenever the user refers to their media library, gallery, existing photos/videos, or asks to find/reuse something already in their account.",
     inputSchema: { type: "object", properties: { search: { type: "string" }, mediaType: { type: "string", enum: ["all", "image", "video"] }, limit: { type: "integer", minimum: 1, maximum: 100 }, offset: { type: "integer", minimum: 0 }, locationId: socialPostProperties.locationId } },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
   },
@@ -853,28 +855,28 @@ const tools = [
   {
     name: "list_social_accounts",
     title: "List connected social accounts",
-    description: "List social accounts and groups connected to Social Planner. Use before creating or filtering posts.",
+    description: "List social accounts and groups connected to this account. Use before creating or filtering posts.",
     inputSchema: { type: "object", properties: { locationId: socialPostProperties.locationId } },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
   },
   {
     name: "list_social_categories",
-    title: "List Social Planner categories",
-    description: "List this tenant's Social Planner categories, with their real ids. Call this before passing categoryId to create_social_post or update_social_post -- the field needs the id, not the name the user says.",
+    title: "List post categories",
+    description: "List this tenant's post categories, with their real ids. Call this before passing categoryId to create_social_post or update_social_post -- the field needs the id, not the name the user says.",
     inputSchema: { type: "object", properties: { locationId: socialPostProperties.locationId, search: { type: "string", description: "Filter by category name." }, limit: { type: "integer", minimum: 1, maximum: 100 }, skip: { type: "integer", minimum: 0 } } },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
   },
   {
     name: "list_social_tags",
-    title: "List Social Planner tags",
-    description: "List this tenant's Social Planner tags, with their real ids. Call this before passing tags to create_social_post or update_social_post -- the field needs ids, not the names the user says.",
+    title: "List post tags",
+    description: "List this tenant's post tags, with their real ids. Call this before passing tags to create_social_post or update_social_post -- the field needs ids, not the names the user says.",
     inputSchema: { type: "object", properties: { locationId: socialPostProperties.locationId, search: { type: "string", description: "Filter by tag name." }, limit: { type: "integer", minimum: 1, maximum: 100 }, skip: { type: "integer", minimum: 0 } } },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
   },
   {
     name: "list_social_posts",
     title: "List social posts",
-    description: "List Social Planner posts. If accountIds is omitted, automatically uses eligible 123 GYM/La Charme Facebook and Google accounts while excluding Tô Hiệu, recruitment and Balance Fit accounts.",
+    description: "List posts. If accountIds is omitted, automatically uses eligible 123 GYM/La Charme Facebook and Google accounts while excluding Tô Hiệu, recruitment and Balance Fit accounts.",
     inputSchema: { type: "object", properties: {
       locationId: socialPostProperties.locationId,
       status: { type: "string", enum: ["recent", "all", "scheduled", "draft", "failed", "in_review", "published", "in_progress", "pending", "deleted"] },
@@ -889,14 +891,14 @@ const tools = [
   {
     name: "get_social_post",
     title: "Get social post",
-    description: "Get one Social Planner post by its 24-character _id and optionally resolve related records sharing its parent grouping key.",
+    description: "Get one post by its 24-character _id and optionally resolve related records sharing its parent grouping key.",
     inputSchema: { type: "object", properties: { locationId: socialPostProperties.locationId, postId: { type: "string" }, includeRelated: { type: "boolean", description: "Also inspect list results for records sharing parentPostId. Defaults true." } }, required: ["postId"] },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
   },
   {
     name: "create_social_post",
     title: "Create social post",
-    description: "Create a brand-safe Social Planner post. Defaults to draft, auto-selects eligible 123 GYM accounts when omitted, splits Facebook and Google, prevents exact retries, and verifies the result through list_social_posts.",
+    description: "Create a brand-safe social post. Defaults to draft, auto-selects eligible 123 GYM accounts when omitted, splits Facebook and Google, prevents exact retries, and verifies the result through list_social_posts.",
     inputSchema: { type: "object", properties: { ...socialPostProperties, verify: { type: "boolean", description: "Verify creation through the list endpoint. Defaults true." }, splitByPlatform: { type: "boolean", description: "Split Facebook and Google into separate create requests. Defaults true." } } },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     _meta: { "openai/toolInvocation/invoking": "Creating social post…", "openai/toolInvocation/invoked": "Social post created" }
@@ -904,21 +906,21 @@ const tools = [
   {
     name: "update_social_post",
     title: "Update social post",
-    description: "Update a Social Planner record by its 24-character _id and verify it by fetching the record and its parent grouping relationship.",
+    description: "Update a post record by its 24-character _id and verify it by fetching the record and its parent grouping relationship.",
     inputSchema: { type: "object", properties: { postId: { type: "string" }, ...socialPostProperties, verify: { type: "boolean", description: "Fetch and verify after update. Defaults true." } }, required: ["postId"] },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true }
   },
   {
     name: "delete_social_post",
     title: "Delete social post",
-    description: "Delete a Social Planner post by ID. Use only after explicit user confirmation.",
+    description: "Delete a post by ID. Use only after explicit user confirmation.",
     inputSchema: { type: "object", properties: { locationId: socialPostProperties.locationId, postId: { type: "string" } }, required: ["postId"] },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true }
   },
   {
     name: "get_social_statistics",
     title: "Get social statistics",
-    description: "Retrieve Social Planner analytics for connected accounts and optional date ranges.",
+    description: "Retrieve posting analytics for connected accounts and optional date ranges.",
     inputSchema: { type: "object", properties: {
       locationId: socialPostProperties.locationId,
       profileIds: { type: "array", items: { type: "string" }, minItems: 1, maxItems: 100 },

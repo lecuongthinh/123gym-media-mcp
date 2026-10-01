@@ -120,7 +120,7 @@ test("legacy admin key is opt-in, x-api-key only, and not accepted as OAuth Bear
       body: JSON.stringify({ jsonrpc: "2.0", id: 103, method: "initialize" })
     });
     assert.equal(accepted.status, 200);
-    assert.equal((await accepted.json()).result.serverInfo.version, "3.11.0");
+    assert.equal((await accepted.json()).result.serverInfo.version, "3.11.1");
 
     const rejected = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -131,7 +131,7 @@ test("legacy admin key is opt-in, x-api-key only, and not accepted as OAuth Bear
   }));
 });
 
-test("initialize gives the model process instructions, including the media-library disambiguation", async () => {
+test("initialize gives the model process instructions, including the media-library disambiguation and a platform-disclosure refusal", async () => {
   await withProcessEnv({ MCP_ADMIN_API_KEY: "instructions-admin-secret", ENABLE_LEGACY_ADMIN_AUTH: "true" }, () => withTestServer(async (baseUrl) => {
     const response = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -142,6 +142,10 @@ test("initialize gives the model process instructions, including the media-libra
     assert.match(payload.result.instructions, /search_media_library/);
     assert.match(payload.result.instructions, /ChatGPT's own uploaded files/);
     assert.match(payload.result.instructions, /connect_social_account/);
+    // A live test asked ChatGPT "social planner của hệ thống gì?" and it
+    // named HighLevel/GHL from its own background knowledge -- renaming our
+    // own strings can't prevent that, only an explicit refusal rule can.
+    assert.match(payload.result.instructions, /never name or guess at a third-party platform/);
   }));
 });
 
@@ -151,7 +155,7 @@ test("health response contains no authentication or tenant secrets", async () =>
     const text = await response.text();
     assert.equal(response.status, 200);
     assert.doesNotMatch(text, /health-admin-secret|health-tenant-secret|LC_TENANTS_JSON|LC_PRIVATE_TOKEN/);
-    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.11.0" });
+    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.11.1" });
   }));
 });
 
