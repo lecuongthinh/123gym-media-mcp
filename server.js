@@ -37,7 +37,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.12.0";
+const SERVICE_VERSION = "3.12.1";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -603,7 +603,7 @@ async function listSocialPosts(args = {}, authorizedContext) {
     postType
   } = args;
   const accounts = await resolveSocialAccounts(locationId, accountIds, authorizedContext);
-  if (!accounts.length) throw new Error("No eligible 123 GYM Facebook or Google accounts are connected.");
+  if (!accounts.length) throw new Error("No eligible Facebook or Google accounts are connected.");
   const data = await requestSocialPostList({ locationId, status, accountIds: accounts.map((account) => account.id), skip, limit, fromDate, toDate, includeUsers, postType }, authorizedContext);
   return { ...data, resolvedAccounts: accounts.map(({ id, name, platform, type }) => ({ id, name, platform, type })) };
 }
@@ -886,7 +886,7 @@ const tools = [
   {
     name: "list_social_posts",
     title: "List social posts",
-    description: "List posts. If accountIds is omitted, automatically uses eligible 123 GYM/La Charme Facebook and Google accounts while excluding Tô Hiệu, recruitment and Balance Fit accounts.",
+    description: "List posts. If accountIds is omitted, automatically uses all eligible Facebook and Google accounts connected for this tenant.",
     inputSchema: { type: "object", properties: {
       locationId: socialPostProperties.locationId,
       status: { type: "string", enum: ["recent", "all", "scheduled", "draft", "failed", "in_review", "published", "in_progress", "pending", "deleted"] },
@@ -908,7 +908,7 @@ const tools = [
   {
     name: "create_social_post",
     title: "Create social post",
-    description: "Create a brand-safe social post. Defaults to draft, auto-selects eligible 123 GYM accounts when omitted, splits Facebook and Google, prevents exact retries, and verifies the result through list_social_posts.",
+    description: "Create a brand-safe social post. Defaults to draft, auto-selects all eligible connected accounts when omitted, splits Facebook and Google, prevents exact retries, and verifies the result through list_social_posts.",
     inputSchema: { type: "object", properties: { ...socialPostProperties, verify: { type: "boolean", description: "Verify creation through the list endpoint. Defaults true." }, splitByPlatform: { type: "boolean", description: "Split Facebook and Google into separate create requests. Defaults true." } } },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     _meta: { "openai/toolInvocation/invoking": "Creating social post…", "openai/toolInvocation/invoked": "Social post created" }
