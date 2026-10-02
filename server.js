@@ -38,7 +38,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.13.2";
+const SERVICE_VERSION = "3.14.0";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -573,39 +573,27 @@ async function listSocialTags({ locationId = DEFAULT_LOCATION_ID, search, limit,
   return { count: tags.length, tags: tags.map((tag) => ({ id: tag._id || tag.id, name: tag.name })) };
 }
 
-const BLOCKED_ACCOUNT_PATTERN = /t[oô] hi[eệ]u|56\s*t[oô]\s*hi[eệ]u|tuy[eể]n\s*d[uụ]ng|balance\s*fit/i;
-// Platforms auto-selected when a caller names no accounts, vs. platforms a
-// caller may post to by naming the account explicitly (TikTok/YouTube are
-// never picked automatically, only when asked for).
-const ALLOWED_SOCIAL_PLATFORMS = new Set(["facebook", "google"]);
-const EXPLICIT_SOCIAL_PLATFORMS = new Set([...ALLOWED_SOCIAL_PLATFORMS, "tiktok", "youtube"]);
-
 function accountList(data) {
   return data?.results?.accounts || data?.accounts || [];
 }
 
-function isEligible123GymAccount(account, { explicit = false } = {}) {
-  const platforms = explicit ? EXPLICIT_SOCIAL_PLATFORMS : ALLOWED_SOCIAL_PLATFORMS;
-  const identity = [account?.name, account?.meta?.storeCode, ...(account?.meta?.storefrontAddress?.addressLines || [])].filter(Boolean).join(" ");
-  return Boolean(account?.id && account.active !== false && !account.isExpired && !account.deleted && platforms.has(account.platform) && !BLOCKED_ACCOUNT_PATTERN.test(identity));
-}
-
-function isEligibleSocialAccount(account, locationId, options) {
-  const active = Boolean(account?.id && account.active !== false && !account.isExpired && !account.deleted);
-  return locationId === LEGACY_123_GYM_LOCATION_ID ? isEligible123GymAccount(account, options) : active;
+// Only "is this connection still usable" -- no per-tenant or per-platform
+// blocking. Which accounts a post goes to is the caller's explicit choice.
+function isEligibleSocialAccount(account) {
+  return Boolean(account?.id && account.active !== false && !account.isExpired && !account.deleted);
 }
 
 async function resolveSocialAccounts(locationId, requestedIds = [], authorizedContext) {
   const accountsData = await listSocialAccounts({ locationId }, authorizedContext);
   const all = accountList(accountsData);
-  const eligible = all.filter((account) => isEligibleSocialAccount(account, locationId));
+  const eligible = all.filter(isEligibleSocialAccount);
   const requested = Array.isArray(requestedIds) ? requestedIds.filter(Boolean) : [];
   if (!requested.length) return eligible;
   const byId = new Map(all.map((account) => [account.id, account]));
   const unknown = requested.filter((id) => !byId.has(id));
   if (unknown.length) throw new Error(`Unknown social accountIds: ${unknown.join(", ")}`);
-  const blocked = requested.map((id) => byId.get(id)).filter((account) => !isEligibleSocialAccount(account, locationId, { explicit: true }));
-  if (blocked.length) throw new Error(`Inactive or tenant-blocked social accounts: ${blocked.map((account) => `${account.name} (${account.id})`).join(", ")}`);
+  const blocked = requested.map((id) => byId.get(id)).filter((account) => !isEligibleSocialAccount(account));
+  if (blocked.length) throw new Error(`Inactive or expired social accounts: ${blocked.map((account) => `${account.name} (${account.id})`).join(", ")}`);
   return requested.map((id) => byId.get(id));
 }
 
@@ -698,6 +686,10 @@ async function createSocialPost(args = {}, authorizedContext) {
   const { locationId = DEFAULT_LOCATION_ID, verify = true, splitByPlatform = true } = args;
   const tenant = tenantAccess(locationId, authorizedContext);
   const accounts = await resolveSocialAccounts(locationId, args.accountIds || [], authorizedContext);
+  if (!(Array.isArray(args.accountIds) && args.accountIds.some(Boolean))) {
+    const choices = accounts.map((account) => `${account.name} (${account.platform}, id ${account.id})`).join("; ") || "none connected";
+    throw new Error(`The user has not said which social accounts this post should go to. Do not guess or pick for them -- ask which account(s) they want, then call again with accountIds. Available: ${choices}`);
+  }
   const userId = args.userId ?? tenant.defaultUserId ?? undefined;
   const body = buildSocialPostBody({ ...args, userId, accountIds: accounts.map((account) => account.id) });
   const grouped = new Map();
@@ -825,7 +817,7 @@ First-time setup: if a tool fails saying no connection exists, call connect_soci
 
 Media library rule: "my media library", "our gallery", "photos we already have", or anything the user says is already in their account means their CONNECTED account's media library -- call search_media_library. Never answer this from ChatGPT's own uploaded files, generated images, or ChatGPT's Media Library; those are a completely different, unrelated place. Use upload_media only to add something new to their account. If the user names a specific folder, resolve its id first (search_media_library with type "folder") before filtering by folderId -- don't just search by name across the whole library and call it done.
 
-Posts: default to draft unless the user explicitly says to schedule or publish. category/tag fields need real ids, not names typed by the user -- call list_social_categories / list_social_tags first to resolve them. Call list_social_accounts before create_social_post if you don't already know the target account.
+Posts: default to draft unless the user explicitly says to schedule or publish. category/tag fields need real ids, not names typed by the user -- call list_social_categories / list_social_tags first to resolve them. Never choose posting accounts for the user: if they haven't said which account(s) a post goes to, call list_social_accounts and ask them, then pass accountIds explicitly.
 
 Team members who are not the account's Admin cannot connect it themselves (the platform only allows an Admin to do that) -- use invite_team_member for them instead of asking them to run connect_social_account.
 
@@ -923,7 +915,7 @@ const tools = [
   {
     name: "list_social_posts",
     title: "List social posts",
-    description: "List posts. If accountIds is omitted, automatically uses all eligible Facebook and Google accounts connected for this tenant.",
+    description: "List posts. If accountIds is omitted, lists across all active connected accounts.",
     inputSchema: { type: "object", properties: {
       locationId: socialPostProperties.locationId,
       status: { type: "string", enum: ["recent", "all", "scheduled", "draft", "failed", "in_review", "published", "in_progress", "pending", "deleted"] },
@@ -945,7 +937,7 @@ const tools = [
   {
     name: "create_social_post",
     title: "Create social post",
-    description: "Create a brand-safe social post. Defaults to draft, auto-selects all eligible connected accounts when omitted, splits Facebook and Google, prevents exact retries, and verifies the result through list_social_posts.",
+    description: "Create a brand-safe social post. Defaults to draft. accountIds is required: if the user has not said which accounts to post to, ASK them (use list_social_accounts) -- never choose for them. Splits platforms into separate requests, prevents exact retries, and verifies the result through list_social_posts.",
     inputSchema: { type: "object", properties: { ...socialPostProperties, verify: { type: "boolean", description: "Verify creation through the list endpoint. Defaults true." }, splitByPlatform: { type: "boolean", description: "Split Facebook and Google into separate create requests. Defaults true." } } },
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     _meta: { "openai/toolInvocation/invoking": "Creating social post…", "openai/toolInvocation/invoked": "Social post created" }
@@ -1238,7 +1230,7 @@ export {
   enforcePostLimit,
   enforceUserLimit,
   getSocialStatistics,
-  isEligible123GymAccount,
+  isEligibleSocialAccount,
   listLocationUsers,
   listMedia,
   listSocialAccounts,

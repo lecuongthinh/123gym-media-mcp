@@ -7,7 +7,7 @@ import {
   enforcePostLimit,
   enforceUserLimit,
   getSocialStatistics,
-  isEligible123GymAccount,
+  isEligibleSocialAccount,
   listLocationUsers,
   listMedia,
   listSocialAccounts,
@@ -122,7 +122,7 @@ test("legacy admin key is opt-in, x-api-key only, and not accepted as OAuth Bear
       body: JSON.stringify({ jsonrpc: "2.0", id: 103, method: "initialize" })
     });
     assert.equal(accepted.status, 200);
-    assert.equal((await accepted.json()).result.serverInfo.version, "3.13.2");
+    assert.equal((await accepted.json()).result.serverInfo.version, "3.14.0");
 
     const rejected = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -157,7 +157,7 @@ test("health response contains no authentication or tenant secrets", async () =>
     const text = await response.text();
     assert.equal(response.status, 200);
     assert.doesNotMatch(text, /health-admin-secret|health-tenant-secret|LC_TENANTS_JSON|LC_PRIVATE_TOKEN/);
-    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.13.2" });
+    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.14.0" });
   }));
 });
 
@@ -225,22 +225,13 @@ test("MCP tools/list exposes the file-aware upload schema", async (t) => {
   assert.equal(create.inputSchema.properties.splitByPlatform.type, "boolean");
 });
 
-test("brand account rules keep only eligible 123 GYM Facebook and Google accounts", () => {
-  const base = { id: "x", active: true, isExpired: false, deleted: false, platform: "facebook", name: "123 GYM Fitness & Yoga Center" };
-  assert.equal(isEligible123GymAccount(base), true);
-  assert.equal(isEligible123GymAccount({ ...base, platform: "google", name: "123 GYM 97 Bạch Đằng" }), true);
-  assert.equal(isEligible123GymAccount({ ...base, name: "123 GYM 56 Tô Hiệu" }), false);
-  assert.equal(isEligible123GymAccount({ ...base, name: "123 Gym Tuyển dụng" }), false);
-  assert.equal(isEligible123GymAccount({ ...base, name: "Balance Fit" }), false);
-  assert.equal(isEligible123GymAccount({ ...base, name: "La Charme Health Club" }), true);
-  assert.equal(isEligible123GymAccount({ ...base, platform: "instagram" }), false);
-  // TikTok/YouTube are never auto-selected, but may be posted to when named explicitly.
-  for (const platform of ["tiktok", "youtube"]) {
-    assert.equal(isEligible123GymAccount({ ...base, platform }), false);
-    assert.equal(isEligible123GymAccount({ ...base, platform }, { explicit: true }), true);
-    assert.equal(isEligible123GymAccount({ ...base, platform, name: "Balance Fit" }, { explicit: true }), false);
-  }
-  assert.equal(isEligible123GymAccount({ ...base, platform: "instagram" }, { explicit: true }), false);
+test("account eligibility only checks the connection is usable -- no platform or brand blocking", () => {
+  const base = { id: "x", active: true, isExpired: false, deleted: false, platform: "facebook", name: "Anything" };
+  for (const platform of ["facebook", "instagram", "tiktok", "youtube", "linkedin", "google"]) assert.equal(isEligibleSocialAccount({ ...base, platform }), true);
+  assert.equal(isEligibleSocialAccount({ ...base, name: "123 GYM 56 Tô Hiệu" }), true);
+  assert.equal(isEligibleSocialAccount({ ...base, active: false }), false);
+  assert.equal(isEligibleSocialAccount({ ...base, isExpired: true }), false);
+  assert.equal(isEligibleSocialAccount({ ...base, deleted: true }), false);
 });
 
 test("social posts default to a safe draft", () => {
@@ -446,13 +437,13 @@ test("createSocialPost auto-fills userId from the tenant's default_user_id when 
     }
     throw new Error(`Unexpected request: ${url}`);
   }, async () => {
-    const result = await createSocialPost({ locationId: TEST_LOCATION, summary: "Hello auto-userid" }, authorizedContext);
+    const result = await createSocialPost({ locationId: TEST_LOCATION, summary: "Hello auto-userid", accountIds: [TEST_ACCOUNT_ID] }, authorizedContext);
     assert.equal(result.results[0].action, "created");
     assert.equal(result.results[0].verified, true);
   });
 });
 
-test("123 GYM can post to a TikTok account it names explicitly, but TikTok is never auto-selected", async () => {
+test("a post can go to any named platform, and with no account named the agent is told to ask instead of auto-selecting", async () => {
   const authorizedContext = { locationId: GYM_LOCATION, tenantName: "123 GYM", accessToken: "gym-secret-token", tenantId: "gym-tenant", connectionId: "gym-connection", defaultUserId: "gym-user" };
   const accounts = [
     { id: "fb-1", platform: "facebook", name: "123 GYM", active: true },
@@ -474,8 +465,9 @@ test("123 GYM can post to a TikTok account it names explicitly, but TikTok is ne
     assert.equal(result.results[0].action, "created");
     assert.deepEqual(created[0], ["tt-1"]);
     created.length = 0;
-    await createSocialPost({ locationId: GYM_LOCATION, summary: "hello" }, authorizedContext);
-    assert.deepEqual(created.flat(), ["fb-1"], "with no accounts named, only Facebook/Google are auto-selected");
+    created.length = 0;
+    await assert.rejects(() => createSocialPost({ locationId: GYM_LOCATION, summary: "hello" }, authorizedContext), /ask which account.*123Gym & LaCharme Fitness \(tiktok/s);
+    assert.equal(created.length, 0, "nothing is posted when the user hasn't chosen an account");
   });
 });
 
@@ -498,7 +490,7 @@ test("createSocialPost still requires userId when the tenant has no default conf
     throw new Error(`Unexpected request: ${url}`);
   }, async () => {
     await assert.rejects(
-      () => createSocialPost({ locationId: TEST_LOCATION, summary: "Hello" }, authorizedContext),
+      () => createSocialPost({ locationId: TEST_LOCATION, summary: "Hello", accountIds: [TEST_ACCOUNT_ID] }, authorizedContext),
       /userId is required/
     );
   });
@@ -591,7 +583,7 @@ test("create_social_post via /mcp records how many posts were actually created, 
         const response = await realFetch(`${baseUrl}/mcp`, {
           method: "POST",
           headers: { "content-type": "application/json", "x-api-key": "usage-admin-secret" },
-          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "create_social_post", arguments: { locationId: TEST_LOCATION, summary: "Hello usage counter" } } })
+          body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "create_social_post", arguments: { locationId: TEST_LOCATION, summary: "Hello usage counter", accountIds: [TEST_ACCOUNT_ID] } } })
         });
         const payload = await response.json();
         assert.equal(payload.result.structuredContent.results[0].action, "created");
