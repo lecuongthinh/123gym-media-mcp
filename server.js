@@ -38,7 +38,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.14.2";
+const SERVICE_VERSION = "3.14.3";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -742,6 +742,16 @@ async function createSocialPost(args = {}, authorizedContext) {
   return { success: true, message: "Create request completed with duplicate protection and list verification.", results: report };
 }
 
+function stripRejectedProperties(body, message) {
+  let removed = false;
+  for (const match of message.matchAll(/(?:([\w.]+)\.)?property (\w+) should not exist/g)) {
+    let target = body;
+    for (const key of match[1] ? match[1].split(".") : []) target = target?.[key];
+    if (target && typeof target === "object" && match[2] in target) { delete target[match[2]]; removed = true; }
+  }
+  return removed;
+}
+
 // HighLevel's edit endpoint is not a partial update: sending only the
 // changed field is rejected with 422 ("accountIds must be an array ... should
 // not be empty ... media must be an array"). So load the post as it is now,
@@ -756,6 +766,7 @@ async function updateSocialPost(args = {}, authorizedContext) {
   if (changes.media && !Array.isArray(changes.media)) throw new Error("media must be an array.");
   if (changes.accountIds) await resolveSocialAccounts(locationId, changes.accountIds, authorizedContext);
 
+  const tenant = tenantAccess(locationId, authorizedContext);
   const current = (await getSocialPost({ locationId, postId, includeRelated: false }, authorizedContext))?.results?.post;
   if (!current) throw new Error("Could not load the post to update it. Check the postId with list_social_posts.");
   const body = {};
@@ -764,13 +775,33 @@ async function updateSocialPost(args = {}, authorizedContext) {
     if (current[field] !== undefined && current[field] !== null) body[field] = current[field];
   }
   body.media = (Array.isArray(body.media) ? body.media : []).map((item) => ({ url: item.url, type: item.type, ...(item.caption ? { caption: item.caption } : {}) }));
+  // GET returns read-only extras (e.g. postApprovalDetails.approverUser) the edit endpoint rejects; keep only the writable key.
+  if (body.postApprovalDetails) {
+    const approver = body.postApprovalDetails.approver || body.postApprovalDetails.approverUser?.id;
+    if (approver) body.postApprovalDetails = { approver }; else delete body.postApprovalDetails;
+  }
   Object.assign(body, changes);
+  if (body.status !== "in_review" && !changes.postApprovalDetails) delete body.postApprovalDetails;
+  // The edit endpoint requires userId even when the stored post doesn't hand one back.
+  if (!body.userId) body.userId = current.userId || current.createdBy || tenant.defaultUserId || undefined;
   if (changes.scheduleDate) body.scheduleTimeUpdated = true;
   if (!Array.isArray(body.accountIds) || body.accountIds.length === 0) throw new Error("This post has no accountIds to keep; pass accountIds (from list_social_accounts).");
   if (["scheduled", "in_review"].includes(body.status) && !body.scheduleDate) throw new Error(`scheduleDate is required when status is ${body.status}.`);
   if (body.status === "in_review" && !body.postApprovalDetails?.approver) throw new Error("postApprovalDetails.approver is required for in_review posts.");
+  if (!body.userId) throw new Error("userId is required to update a post. Pass userId explicitly or configure a tenant default_user_id.");
 
-  const updated = await socialRequest(locationId, `/posts/${encodeURIComponent(postId)}`, { method: "PUT", body, authorizedContext });
+  // Anything else HighLevel returns but won't accept back is named in its 422
+  // ("... property X should not exist"); drop it and retry rather than fail.
+  let updated;
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      updated = await socialRequest(locationId, `/posts/${encodeURIComponent(postId)}`, { method: "PUT", body, authorizedContext });
+      break;
+    } catch (error) {
+      const stripped = attempt < 4 && stripRejectedProperties(body, String(error.message));
+      if (!stripped) throw error;
+    }
+  }
   if (!verify) return updated;
   const fetched = await getSocialPost({ locationId, postId, includeRelated: true }, authorizedContext);
   return { ...updated, verification: fetched };

@@ -124,7 +124,7 @@ test("legacy admin key is opt-in, x-api-key only, and not accepted as OAuth Bear
       body: JSON.stringify({ jsonrpc: "2.0", id: 103, method: "initialize" })
     });
     assert.equal(accepted.status, 200);
-    assert.equal((await accepted.json()).result.serverInfo.version, "3.14.2");
+    assert.equal((await accepted.json()).result.serverInfo.version, "3.14.3");
 
     const rejected = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -159,7 +159,7 @@ test("health response contains no authentication or tenant secrets", async () =>
     const text = await response.text();
     assert.equal(response.status, 200);
     assert.doesNotMatch(text, /health-admin-secret|health-tenant-secret|LC_TENANTS_JSON|LC_PRIVATE_TOKEN/);
-    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.14.2" });
+    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.14.3" });
   }));
 });
 
@@ -508,6 +508,33 @@ test("update_social_post sends HighLevel the complete post, not just the changed
   assert.deepEqual(putBody.tags, ["t1"]);
   assert.equal(putBody.status, "draft");
   assert.equal(putBody.createdBy, undefined);
+});
+
+test("update_social_post drops read-only fields HighLevel returns but rejects (approverUser), supplies userId, and retries when told a property should not exist", async () => {
+  const existing = { _id: "dddddddddddddddddddddddd", summary: "Old", accountIds: [TEST_ACCOUNT_ID], status: "draft", type: "post",
+    postApprovalDetails: { approverUser: { id: "x", name: "N" } }, facebookPostDetails: { type: "post", junk: 1 } };
+  const bodies = [];
+  await withMockFetch(async (url, options) => {
+    const parsed = new URL(String(url));
+    if (parsed.pathname.endsWith("/posts/dddddddddddddddddddddddd") && options.method === "PUT") {
+      const b = JSON.parse(options.body);
+      bodies.push(b);
+      const problems = [];
+      if (b.postApprovalDetails && "approverUser" in b.postApprovalDetails) problems.push("postApprovalDetails.property approverUser should not exist");
+      if (!b.userId) problems.push("userId must be a string", "userId should not be empty");
+      if (b.facebookPostDetails && "junk" in b.facebookPostDetails) problems.push("facebookPostDetails.property junk should not exist");
+      return problems.length ? new Response(JSON.stringify({ message: problems }), { status: 422 }) : new Response(JSON.stringify({ success: true }), { status: 200 });
+    }
+    if (parsed.pathname.endsWith("/posts/dddddddddddddddddddddddd")) return new Response(JSON.stringify({ results: { post: existing } }), { status: 200 });
+    throw new Error(`Unexpected request: ${url}`);
+  }, async () => {
+    await updateSocialPost({ locationId: TEST_LOCATION, postId: "dddddddddddddddddddddddd", summary: "New", verify: false }, dupTestContext());
+  });
+  const last = bodies.at(-1);
+  assert.equal(last.userId, "u", "falls back to the tenant default userId");
+  assert.equal(last.postApprovalDetails, undefined);
+  assert.equal("junk" in last.facebookPostDetails, false, "a property HighLevel says should not exist is removed and the call retried");
+  assert.equal(bodies.length, 2, "one retry, after the first send already dropped approverUser and added userId");
 });
 
 test("a retried post is recognised as a duplicate even though HighLevel returns it with extra media fields and normalized text/dates", async () => {

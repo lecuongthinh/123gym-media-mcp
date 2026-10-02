@@ -48,6 +48,8 @@ Version **3.14.1** fixes duplicate posts and failed deletes. Duplicates: the ret
 
 Version **3.14.2** fixes `update_social_post` failing roughly half the time (24 of 45 audited calls). Reproduced live through ChatGPT against a test draft: HighLevel's edit endpoint is not a partial update -- sending only the changed field returns `422: accountIds must be an array with Account IDs; accountIds should not be empty; ... media must be an array`. `updateSocialPost` now loads the post as it is, overlays the requested changes, and PUTs the complete body (media normalized to `url`/`type`/`caption`, read-only `createdBy`/`scheduleTimeUpdated` dropped, `scheduleTimeUpdated: true` when the schedule changes), so the agent can still change one field at a time.
 
+Version **3.14.3** finishes the `update_social_post` fix after a live retry of 3.14.2 got further and hit a second 422: `postApprovalDetails.property approverUser should not exist; userId must be a string; userId should not be empty`. The post HighLevel returns carries read-only extras it will not accept back and no `userId`. Updates now keep only the writable `approver` inside `postApprovalDetails` (and only for `in_review` posts), fall back to the post's own / the tenant's default `userId`, and -- because other read-only fields may exist -- parse any `... property X should not exist` 422, drop that property and retry (up to 4 times). The same live run also showed the 3.14.1 duplicate guard working: `create_social_post` returned `skipped_duplicate` for an already-created draft.
+
 
 There are two independent OAuth relationships:
 
