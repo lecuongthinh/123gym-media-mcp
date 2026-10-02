@@ -5,6 +5,7 @@ import {
   buildSocialPostBody,
   createSocialPost,
   deleteSocialPost,
+  updateSocialPost,
   enforcePostLimit,
   enforceUserLimit,
   getSocialStatistics,
@@ -123,7 +124,7 @@ test("legacy admin key is opt-in, x-api-key only, and not accepted as OAuth Bear
       body: JSON.stringify({ jsonrpc: "2.0", id: 103, method: "initialize" })
     });
     assert.equal(accepted.status, 200);
-    assert.equal((await accepted.json()).result.serverInfo.version, "3.14.1");
+    assert.equal((await accepted.json()).result.serverInfo.version, "3.14.2");
 
     const rejected = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -158,7 +159,7 @@ test("health response contains no authentication or tenant secrets", async () =>
     const text = await response.text();
     assert.equal(response.status, 200);
     assert.doesNotMatch(text, /health-admin-secret|health-tenant-secret|LC_TENANTS_JSON|LC_PRIVATE_TOKEN/);
-    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.14.1" });
+    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.14.2" });
   }));
 });
 
@@ -484,6 +485,30 @@ function dupTestFetch({ listed, creates }) {
     throw new Error(`Unexpected request: ${url}`);
   };
 }
+
+test("update_social_post sends HighLevel the complete post, not just the changed field (partial PUTs are rejected with 422)", async () => {
+  const existing = { _id: "cccccccccccccccccccccccc", summary: "Old", accountIds: [TEST_ACCOUNT_ID], status: "draft", type: "post", userId: "u1",
+    media: [{ url: "https://cdn.example.com/a.png", type: "image/png", _id: "m1", thumbnail: "t" }], tags: ["t1"], createdBy: "x" };
+  let putBody = null;
+  await withMockFetch(async (url, options) => {
+    const parsed = new URL(String(url));
+    if (parsed.pathname === `/social-media-posting/${TEST_LOCATION}/posts/cccccccccccccccccccccccc` && options.method === "PUT") {
+      putBody = JSON.parse(options.body);
+      if (!Array.isArray(putBody.accountIds) || putBody.accountIds.length === 0 || !Array.isArray(putBody.media)) return new Response("{}", { status: 422 });
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    }
+    if (parsed.pathname === `/social-media-posting/${TEST_LOCATION}/posts/cccccccccccccccccccccccc`) return new Response(JSON.stringify({ results: { post: existing } }), { status: 200 });
+    throw new Error(`Unexpected request: ${url}`);
+  }, async () => {
+    await updateSocialPost({ locationId: TEST_LOCATION, postId: "cccccccccccccccccccccccc", summary: "New text", verify: false }, dupTestContext());
+  });
+  assert.equal(putBody.summary, "New text");
+  assert.deepEqual(putBody.accountIds, [TEST_ACCOUNT_ID]);
+  assert.deepEqual(putBody.media, [{ url: "https://cdn.example.com/a.png", type: "image/png" }]);
+  assert.deepEqual(putBody.tags, ["t1"]);
+  assert.equal(putBody.status, "draft");
+  assert.equal(putBody.createdBy, undefined);
+});
 
 test("a retried post is recognised as a duplicate even though HighLevel returns it with extra media fields and normalized text/dates", async () => {
   const creates = [];

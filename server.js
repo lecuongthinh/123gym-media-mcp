@@ -38,7 +38,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.14.1";
+const SERVICE_VERSION = "3.14.2";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -742,13 +742,34 @@ async function createSocialPost(args = {}, authorizedContext) {
   return { success: true, message: "Create request completed with duplicate protection and list verification.", results: report };
 }
 
+// HighLevel's edit endpoint is not a partial update: sending only the
+// changed field is rejected with 422 ("accountIds must be an array ... should
+// not be empty ... media must be an array"). So load the post as it is now,
+// lay the requested changes over it, and send the complete body back.
 async function updateSocialPost(args = {}, authorizedContext) {
   const { locationId = DEFAULT_LOCATION_ID, postId, verify = true } = args;
   if (!postId) throw new Error("postId is required.");
   if (!/^[a-f0-9]{24}$/i.test(postId)) throw new Error("postId must be the 24-character _id, not parentPostId.");
-  const body = buildSocialPostBody(args, { partial: true });
-  if (Object.keys(body).length === 0) throw new Error("At least one post field must be provided.");
-  if (body.accountIds) await resolveSocialAccounts(locationId, body.accountIds, authorizedContext);
+  const changes = {};
+  for (const field of SOCIAL_POST_FIELDS) if (args[field] !== undefined) changes[field] = args[field];
+  if (Object.keys(changes).length === 0) throw new Error("At least one post field must be provided.");
+  if (changes.media && !Array.isArray(changes.media)) throw new Error("media must be an array.");
+  if (changes.accountIds) await resolveSocialAccounts(locationId, changes.accountIds, authorizedContext);
+
+  const current = (await getSocialPost({ locationId, postId, includeRelated: false }, authorizedContext))?.results?.post;
+  if (!current) throw new Error("Could not load the post to update it. Check the postId with list_social_posts.");
+  const body = {};
+  for (const field of SOCIAL_POST_FIELDS) {
+    if (["scheduleTimeUpdated", "createdBy"].includes(field)) continue;
+    if (current[field] !== undefined && current[field] !== null) body[field] = current[field];
+  }
+  body.media = (Array.isArray(body.media) ? body.media : []).map((item) => ({ url: item.url, type: item.type, ...(item.caption ? { caption: item.caption } : {}) }));
+  Object.assign(body, changes);
+  if (changes.scheduleDate) body.scheduleTimeUpdated = true;
+  if (!Array.isArray(body.accountIds) || body.accountIds.length === 0) throw new Error("This post has no accountIds to keep; pass accountIds (from list_social_accounts).");
+  if (["scheduled", "in_review"].includes(body.status) && !body.scheduleDate) throw new Error(`scheduleDate is required when status is ${body.status}.`);
+  if (body.status === "in_review" && !body.postApprovalDetails?.approver) throw new Error("postApprovalDetails.approver is required for in_review posts.");
+
   const updated = await socialRequest(locationId, `/posts/${encodeURIComponent(postId)}`, { method: "PUT", body, authorizedContext });
   if (!verify) return updated;
   const fetched = await getSocialPost({ locationId, postId, includeRelated: true }, authorizedContext);
@@ -1247,6 +1268,7 @@ if (isMainModule) {
 
 export {
   app,
+  updateSocialPost,
   deleteSocialPost,
   authenticateMcpRequest,
   buildSocialPostBody,
