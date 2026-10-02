@@ -4,6 +4,7 @@ import {
   app,
   buildSocialPostBody,
   createSocialPost,
+  deleteSocialPost,
   enforcePostLimit,
   enforceUserLimit,
   getSocialStatistics,
@@ -122,7 +123,7 @@ test("legacy admin key is opt-in, x-api-key only, and not accepted as OAuth Bear
       body: JSON.stringify({ jsonrpc: "2.0", id: 103, method: "initialize" })
     });
     assert.equal(accepted.status, 200);
-    assert.equal((await accepted.json()).result.serverInfo.version, "3.14.0");
+    assert.equal((await accepted.json()).result.serverInfo.version, "3.14.1");
 
     const rejected = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -157,7 +158,7 @@ test("health response contains no authentication or tenant secrets", async () =>
     const text = await response.text();
     assert.equal(response.status, 200);
     assert.doesNotMatch(text, /health-admin-secret|health-tenant-secret|LC_TENANTS_JSON|LC_PRIVATE_TOKEN/);
-    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.14.0" });
+    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.14.1" });
   }));
 });
 
@@ -469,6 +470,52 @@ test("a post can go to any named platform, and with no account named the agent i
     await assert.rejects(() => createSocialPost({ locationId: GYM_LOCATION, summary: "hello" }, authorizedContext), /ask which account.*123Gym & LaCharme Fitness \(tiktok/s);
     assert.equal(created.length, 0, "nothing is posted when the user hasn't chosen an account");
   });
+});
+
+function dupTestContext() {
+  return { locationId: TEST_LOCATION, tenantName: "Testing Agency", accessToken: "testing-secret-token", tenantId: TEST_TENANT_ID, connectionId: "c", defaultUserId: "u" };
+}
+function dupTestFetch({ listed, creates }) {
+  return async (url) => {
+    const parsed = new URL(String(url));
+    if (parsed.pathname === `/social-media-posting/${TEST_LOCATION}/accounts`) return new Response(JSON.stringify({ results: { accounts: [{ id: TEST_ACCOUNT_ID, platform: "facebook", active: true }] } }), { status: 200 });
+    if (parsed.pathname === `/social-media-posting/${TEST_LOCATION}/posts/list`) return new Response(JSON.stringify({ results: { posts: listed() } }), { status: 200 });
+    if (parsed.pathname === `/social-media-posting/${TEST_LOCATION}/posts`) { creates.push(1); return new Response(JSON.stringify({ results: { post: { _id: "aaaaaaaaaaaaaaaaaaaaaaaa", status: "draft" } } }), { status: 200 }); }
+    throw new Error(`Unexpected request: ${url}`);
+  };
+}
+
+test("a retried post is recognised as a duplicate even though HighLevel returns it with extra media fields and normalized text/dates", async () => {
+  const creates = [];
+  const stored = { _id: "bbbbbbbbbbbbbbbbbbbbbbbb", summary: "Hello   world", accountIds: [TEST_ACCOUNT_ID], status: "draft", scheduleDate: "2026-10-03T01:00:00.000Z",
+    media: [{ url: "https://cdn.example.com/x/photo.png?v=2", type: "image/png", _id: "m1", thumbnail: "t", size: 5 }] };
+  await withMockFetch(dupTestFetch({ listed: () => [stored], creates }), async () => {
+    const result = await createSocialPost({ locationId: TEST_LOCATION, summary: "Hello world\n", accountIds: [TEST_ACCOUNT_ID], scheduleDate: "2026-10-03T01:00:00Z", status: "scheduled",
+      media: [{ url: "https://other-host.example.com/photo.png", type: "image/png" }] }, dupTestContext());
+    assert.equal(result.results[0].action, "skipped_duplicate");
+    assert.equal(creates.length, 0, "no second post is created");
+  });
+});
+
+test("a post HighLevel accepted but the list does not show yet is reported as created (unverified), not as a failure that invites a duplicate retry", async () => {
+  const creates = [];
+  await withMockFetch(dupTestFetch({ listed: () => [], creates }), async () => {
+    const result = await createSocialPost({ locationId: TEST_LOCATION, summary: "Fresh", accountIds: [TEST_ACCOUNT_ID] }, dupTestContext());
+    assert.equal(result.results[0].action, "created");
+    assert.equal(result.results[0].verified, false);
+    assert.match(result.results[0].warning, /Do NOT create it again/);
+    assert.equal(creates.length, 1);
+  });
+});
+
+test("delete_social_post rejects anything that is not a 24-character _id before calling upstream", async () => {
+  let called = 0;
+  await withMockFetch(async () => { called += 1; return new Response("{}", { status: 200 }); }, async () => {
+    for (const bad of ["not-an-id", "68c83389c2ef4245a387b54f_UwsfBVLmz7XSKJbhuOTS_112256467241215_page", "https://x/y"]) {
+      await assert.rejects(() => deleteSocialPost({ locationId: TEST_LOCATION, postId: bad }, dupTestContext()), /24-character _id/);
+    }
+  });
+  assert.equal(called, 0);
 });
 
 test("createSocialPost still requires userId when the tenant has no default configured", async () => {

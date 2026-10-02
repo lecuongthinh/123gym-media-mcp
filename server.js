@@ -38,7 +38,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.14.0";
+const SERVICE_VERSION = "3.14.1";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -601,6 +601,23 @@ function postArray(data) {
   return data?.results?.posts || data?.posts || [];
 }
 
+// HighLevel does not hand a post back byte-for-byte as it was created: media
+// objects gain extra fields, summaries get whitespace/newline normalized,
+// dates are re-serialized. Strict equality therefore never matched a retried
+// post that had media, so retries created duplicates. Compare what matters.
+const normalizeSummary = (text) => String(text || "").replace(/\r\n?/g, "\n").replace(/\s+/g, " ").trim();
+const mediaKey = (media) => (Array.isArray(media) ? media : [])
+  .map((item) => String(item?.url || "").split("?")[0].split("/").pop())
+  .filter(Boolean).sort().join("|");
+const sameInstant = (a, b) => (!a && !b) || (a && b && Math.abs(new Date(a).getTime() - new Date(b).getTime()) < 60_000);
+
+function isSamePost(post, body, groupIds) {
+  return normalizeSummary(post.summary) === normalizeSummary(body.summary)
+    && (!body.scheduleDate || sameInstant(post.scheduleDate, body.scheduleDate))
+    && groupIds.every((id) => post.accountIds?.includes(id))
+    && mediaKey(post.media) === mediaKey(body.media);
+}
+
 async function requestSocialPostList({ locationId, status, accountIds, skip, limit, fromDate, toDate, includeUsers, postType }, authorizedContext) {
   const body = {
     type: status,
@@ -704,7 +721,7 @@ async function createSocialPost(args = {}, authorizedContext) {
     const fromDate = new Date(target.getTime() - 12 * 60 * 60 * 1000).toISOString();
     const toDate = new Date(target.getTime() + 12 * 60 * 60 * 1000).toISOString();
     const existingData = await requestSocialPostList({ locationId, status: body.status || "all", accountIds: groupIds, skip: 0, limit: 100, fromDate, toDate, includeUsers: true, postType: body.type }, authorizedContext);
-    const existing = postArray(existingData).find((post) => post.summary === (body.summary || "") && (!body.scheduleDate || post.scheduleDate === body.scheduleDate) && groupIds.every((id) => post.accountIds?.includes(id)) && JSON.stringify(post.media || []) === JSON.stringify(body.media || []));
+    const existing = postArray(existingData).find((post) => isSamePost(post, body, groupIds));
     if (existing) {
       report.push({ action: "skipped_duplicate", fingerprint, platform, accountIds: groupIds, postId: existing._id, parentPostId: existing.parentPostId || null, status: existing.status, scheduleDate: existing.scheduleDate, media: existing.media || [], verified: true });
       continue;
@@ -714,10 +731,13 @@ async function createSocialPost(args = {}, authorizedContext) {
     let matched = null;
     if (verify) {
       const verifiedData = await requestSocialPostList({ locationId, status: body.status || "all", accountIds: groupIds, skip: 0, limit: 100, fromDate, toDate, includeUsers: true, postType: body.type }, authorizedContext);
-      matched = postArray(verifiedData).find((post) => post._id === created?._id || (post.summary === body.summary && (!body.scheduleDate || post.scheduleDate === body.scheduleDate) && groupIds.every((id) => post.accountIds?.includes(id))));
-      if (!matched) throw new Error(`Post creation returned success but verification failed for ${platform} accounts (${groupIds.join(",")}).`);
+      matched = postArray(verifiedData).find((post) => post._id === created?._id || isSamePost(post, body, groupIds));
+      // The post exists once HighLevel returned its id; the list can lag behind.
+      // Throwing here made the agent retry and create a duplicate, so only fail
+      // when there is no sign the post was created at all.
+      if (!matched && !created?._id) throw new Error(`Post creation returned no post id and could not be found in the list for ${platform} accounts (${groupIds.join(",")}). Check list_social_posts before trying again -- retrying blindly can create a duplicate.`);
     }
-    report.push({ action: "created", fingerprint, platform, accountIds: groupIds, postId: created?._id || matched?._id, parentPostId: created?.parentPostId || matched?.parentPostId || null, status: matched?.status || created?.status, scheduleDate: matched?.scheduleDate || created?.scheduleDate, media: matched?.media || created?.media || [], verified: Boolean(matched) });
+    report.push({ action: "created", fingerprint, platform, accountIds: groupIds, postId: created?._id || matched?._id, parentPostId: created?.parentPostId || matched?.parentPostId || null, status: matched?.status || created?.status, scheduleDate: matched?.scheduleDate || created?.scheduleDate, media: matched?.media || created?.media || [], verified: Boolean(matched), ...(matched ? {} : { warning: "Created, but the list did not show it yet. Do NOT create it again -- check with list_social_posts." }) });
   }
   return { success: true, message: "Create request completed with duplicate protection and list verification.", results: report };
 }
@@ -737,6 +757,10 @@ async function updateSocialPost(args = {}, authorizedContext) {
 
 async function deleteSocialPost({ locationId = DEFAULT_LOCATION_ID, postId }, authorizedContext) {
   if (!postId) throw new Error("postId is required.");
+  if (!/^[a-f0-9]{24}$/i.test(String(postId).trim())) {
+    throw new Error("postId must be a post's 24-character _id (from create_social_post's results[].postId or list_social_posts), not a parentPostId, account id or link. To remove a duplicate, find its _id with list_social_posts and delete each one by its own _id.");
+  }
+  postId = String(postId).trim();
   return await socialRequest(locationId, `/posts/${encodeURIComponent(postId)}`, { method: "DELETE", authorizedContext });
 }
 
@@ -817,7 +841,7 @@ First-time setup: if a tool fails saying no connection exists, call connect_soci
 
 Media library rule: "my media library", "our gallery", "photos we already have", or anything the user says is already in their account means their CONNECTED account's media library -- call search_media_library. Never answer this from ChatGPT's own uploaded files, generated images, or ChatGPT's Media Library; those are a completely different, unrelated place. Use upload_media only to add something new to their account. If the user names a specific folder, resolve its id first (search_media_library with type "folder") before filtering by folderId -- don't just search by name across the whole library and call it done.
 
-Posts: default to draft unless the user explicitly says to schedule or publish. category/tag fields need real ids, not names typed by the user -- call list_social_categories / list_social_tags first to resolve them. Never choose posting accounts for the user: if they haven't said which account(s) a post goes to, call list_social_accounts and ask them, then pass accountIds explicitly.
+Posts: default to draft unless the user explicitly says to schedule or publish. category/tag fields need real ids, not names typed by the user -- call list_social_categories / list_social_tags first to resolve them. If create_social_post errors or times out, check list_social_posts before trying again -- the post may already exist, and creating it a second time makes a duplicate. To remove a duplicate, delete it by its own 24-character _id (from list_social_posts), not a parentPostId.\n\nNever choose posting accounts for the user: if they haven't said which account(s) a post goes to, call list_social_accounts and ask them, then pass accountIds explicitly.
 
 Team members who are not the account's Admin cannot connect it themselves (the platform only allows an Admin to do that) -- use invite_team_member for them instead of asking them to run connect_social_account.
 
@@ -952,8 +976,8 @@ const tools = [
   {
     name: "delete_social_post",
     title: "Delete social post",
-    description: "Delete a post by ID. Use only after explicit user confirmation.",
-    inputSchema: { type: "object", properties: { locationId: socialPostProperties.locationId, postId: { type: "string" } }, required: ["postId"] },
+    description: "Delete one post by its 24-character _id (the postId in create_social_post results, or _id from list_social_posts) -- never a parentPostId or account id. Duplicates are separate posts: find each one with list_social_posts and delete them individually. Use only after explicit user confirmation.",
+    inputSchema: { type: "object", properties: { locationId: socialPostProperties.locationId, postId: { type: "string", description: "The post's 24-character _id." } }, required: ["postId"] },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true }
   },
   {
@@ -1223,6 +1247,7 @@ if (isMainModule) {
 
 export {
   app,
+  deleteSocialPost,
   authenticateMcpRequest,
   buildSocialPostBody,
   createSocialPost,
