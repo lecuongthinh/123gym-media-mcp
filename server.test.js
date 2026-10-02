@@ -122,7 +122,7 @@ test("legacy admin key is opt-in, x-api-key only, and not accepted as OAuth Bear
       body: JSON.stringify({ jsonrpc: "2.0", id: 103, method: "initialize" })
     });
     assert.equal(accepted.status, 200);
-    assert.equal((await accepted.json()).result.serverInfo.version, "3.13.1");
+    assert.equal((await accepted.json()).result.serverInfo.version, "3.13.2");
 
     const rejected = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -157,7 +157,7 @@ test("health response contains no authentication or tenant secrets", async () =>
     const text = await response.text();
     assert.equal(response.status, 200);
     assert.doesNotMatch(text, /health-admin-secret|health-tenant-secret|LC_TENANTS_JSON|LC_PRIVATE_TOKEN/);
-    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.13.1" });
+    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.13.2" });
   }));
 });
 
@@ -234,6 +234,13 @@ test("brand account rules keep only eligible 123 GYM Facebook and Google account
   assert.equal(isEligible123GymAccount({ ...base, name: "Balance Fit" }), false);
   assert.equal(isEligible123GymAccount({ ...base, name: "La Charme Health Club" }), true);
   assert.equal(isEligible123GymAccount({ ...base, platform: "instagram" }), false);
+  // TikTok/YouTube are never auto-selected, but may be posted to when named explicitly.
+  for (const platform of ["tiktok", "youtube"]) {
+    assert.equal(isEligible123GymAccount({ ...base, platform }), false);
+    assert.equal(isEligible123GymAccount({ ...base, platform }, { explicit: true }), true);
+    assert.equal(isEligible123GymAccount({ ...base, platform, name: "Balance Fit" }, { explicit: true }), false);
+  }
+  assert.equal(isEligible123GymAccount({ ...base, platform: "instagram" }, { explicit: true }), false);
 });
 
 test("social posts default to a safe draft", () => {
@@ -442,6 +449,33 @@ test("createSocialPost auto-fills userId from the tenant's default_user_id when 
     const result = await createSocialPost({ locationId: TEST_LOCATION, summary: "Hello auto-userid" }, authorizedContext);
     assert.equal(result.results[0].action, "created");
     assert.equal(result.results[0].verified, true);
+  });
+});
+
+test("123 GYM can post to a TikTok account it names explicitly, but TikTok is never auto-selected", async () => {
+  const authorizedContext = { locationId: GYM_LOCATION, tenantName: "123 GYM", accessToken: "gym-secret-token", tenantId: "gym-tenant", connectionId: "gym-connection", defaultUserId: "gym-user" };
+  const accounts = [
+    { id: "fb-1", platform: "facebook", name: "123 GYM", active: true },
+    { id: "tt-1", platform: "tiktok", name: "123Gym & LaCharme Fitness", active: true }
+  ];
+  const created = [];
+  let listCalls = 0;
+  await withMockFetch(async (url, options) => {
+    const parsed = new URL(String(url));
+    if (parsed.pathname === `/social-media-posting/${GYM_LOCATION}/accounts`) return new Response(JSON.stringify({ results: { accounts } }), { status: 200 });
+    if (parsed.pathname === `/social-media-posting/${GYM_LOCATION}/posts/list`) {
+      listCalls += 1;
+      return new Response(JSON.stringify({ results: { posts: listCalls % 2 === 1 ? [] : [{ _id: "p1", summary: "hi", accountIds: ["tt-1"], status: "draft" }] } }), { status: 200 });
+    }
+    if (parsed.pathname === `/social-media-posting/${GYM_LOCATION}/posts`) { created.push(JSON.parse(options.body).accountIds); return new Response(JSON.stringify({ results: { post: { _id: "p1", status: "draft" } } }), { status: 200 }); }
+    throw new Error(`Unexpected request: ${url}`);
+  }, async () => {
+    const result = await createSocialPost({ locationId: GYM_LOCATION, summary: "hi", accountIds: ["tt-1"] }, authorizedContext);
+    assert.equal(result.results[0].action, "created");
+    assert.deepEqual(created[0], ["tt-1"]);
+    created.length = 0;
+    await createSocialPost({ locationId: GYM_LOCATION, summary: "hello" }, authorizedContext);
+    assert.deepEqual(created.flat(), ["fb-1"], "with no accounts named, only Facebook/Google are auto-selected");
   });
 });
 

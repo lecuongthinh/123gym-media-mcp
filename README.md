@@ -40,7 +40,8 @@ Version **3.13.0** adds the first real enforcement on top of the Phase 1 pricing
 
 Version **3.13.1** fixes email sign-in failing in ChatGPT with "thiếu dữ liệu OAuth callback" (missing OAuth callback data). Render logs showed `/oauth/email-login/verify` returning 302 with a valid `code`+`state`, yet ChatGPT never called `/oauth/token`: the emailed link was opened in a different tab/browser/device than the window ChatGPT was waiting in, and ChatGPT's callback only works in that original window. The "check your email" page now carries a secret poll token and polls `GET /oauth/email-login/poll`; clicking the link (anywhere) now shows a "you're signed in" page and parks the finished redirect, which the original window collects exactly once and navigates to itself. The link page keeps a "continue here" fallback. An unrecognized email gets the same waiting page (poll never completes), so there is still no account enumeration. Needs migration `011_email_login_poll.sql` (`poll_hash`, `completed_redirect` on `email_login_tokens`).
 
-## Security model
+Version **3.13.2** lets the 123 GYM tenant post to TikTok and YouTube: its legacy account filter only allowed `facebook`/`google`, so naming a TikTok account failed with "Inactive or tenant-blocked social accounts" even though the connection was active. TikTok and YouTube are now accepted when an account is **named explicitly**; they are still never auto-selected when no `accountIds` are given, and Instagram plus the Tô Hiệu/tuyển dụng/Balance Fit exclusions are unchanged.
+
 
 There are two independent OAuth relationships:
 

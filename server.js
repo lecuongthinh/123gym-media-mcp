@@ -38,7 +38,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.13.1";
+const SERVICE_VERSION = "3.13.2";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -574,20 +574,25 @@ async function listSocialTags({ locationId = DEFAULT_LOCATION_ID, search, limit,
 }
 
 const BLOCKED_ACCOUNT_PATTERN = /t[oô] hi[eệ]u|56\s*t[oô]\s*hi[eệ]u|tuy[eể]n\s*d[uụ]ng|balance\s*fit/i;
+// Platforms auto-selected when a caller names no accounts, vs. platforms a
+// caller may post to by naming the account explicitly (TikTok/YouTube are
+// never picked automatically, only when asked for).
 const ALLOWED_SOCIAL_PLATFORMS = new Set(["facebook", "google"]);
+const EXPLICIT_SOCIAL_PLATFORMS = new Set([...ALLOWED_SOCIAL_PLATFORMS, "tiktok", "youtube"]);
 
 function accountList(data) {
   return data?.results?.accounts || data?.accounts || [];
 }
 
-function isEligible123GymAccount(account) {
+function isEligible123GymAccount(account, { explicit = false } = {}) {
+  const platforms = explicit ? EXPLICIT_SOCIAL_PLATFORMS : ALLOWED_SOCIAL_PLATFORMS;
   const identity = [account?.name, account?.meta?.storeCode, ...(account?.meta?.storefrontAddress?.addressLines || [])].filter(Boolean).join(" ");
-  return Boolean(account?.id && account.active !== false && !account.isExpired && !account.deleted && ALLOWED_SOCIAL_PLATFORMS.has(account.platform) && !BLOCKED_ACCOUNT_PATTERN.test(identity));
+  return Boolean(account?.id && account.active !== false && !account.isExpired && !account.deleted && platforms.has(account.platform) && !BLOCKED_ACCOUNT_PATTERN.test(identity));
 }
 
-function isEligibleSocialAccount(account, locationId) {
+function isEligibleSocialAccount(account, locationId, options) {
   const active = Boolean(account?.id && account.active !== false && !account.isExpired && !account.deleted);
-  return locationId === LEGACY_123_GYM_LOCATION_ID ? isEligible123GymAccount(account) : active;
+  return locationId === LEGACY_123_GYM_LOCATION_ID ? isEligible123GymAccount(account, options) : active;
 }
 
 async function resolveSocialAccounts(locationId, requestedIds = [], authorizedContext) {
@@ -599,7 +604,7 @@ async function resolveSocialAccounts(locationId, requestedIds = [], authorizedCo
   const byId = new Map(all.map((account) => [account.id, account]));
   const unknown = requested.filter((id) => !byId.has(id));
   if (unknown.length) throw new Error(`Unknown social accountIds: ${unknown.join(", ")}`);
-  const blocked = requested.map((id) => byId.get(id)).filter((account) => !isEligibleSocialAccount(account, locationId));
+  const blocked = requested.map((id) => byId.get(id)).filter((account) => !isEligibleSocialAccount(account, locationId, { explicit: true }));
   if (blocked.length) throw new Error(`Inactive or tenant-blocked social accounts: ${blocked.map((account) => `${account.name} (${account.id})`).join(", ")}`);
   return requested.map((id) => byId.get(id));
 }
