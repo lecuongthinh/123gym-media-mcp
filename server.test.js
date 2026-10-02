@@ -16,6 +16,7 @@ import {
   listSocialCategories,
   listSocialTags,
   resetRateLimitStateForTests,
+  resetRecentCreatesForTests,
   resolveTenant,
   safeFileName,
   tools,
@@ -124,7 +125,7 @@ test("legacy admin key is opt-in, x-api-key only, and not accepted as OAuth Bear
       body: JSON.stringify({ jsonrpc: "2.0", id: 103, method: "initialize" })
     });
     assert.equal(accepted.status, 200);
-    assert.equal((await accepted.json()).result.serverInfo.version, "3.14.4");
+    assert.equal((await accepted.json()).result.serverInfo.version, "3.14.5");
 
     const rejected = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -159,7 +160,7 @@ test("health response contains no authentication or tenant secrets", async () =>
     const text = await response.text();
     assert.equal(response.status, 200);
     assert.doesNotMatch(text, /health-admin-secret|health-tenant-secret|LC_TENANTS_JSON|LC_PRIVATE_TOKEN/);
-    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.14.4" });
+    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.14.5" });
   }));
 });
 
@@ -559,9 +560,30 @@ test("a post HighLevel accepted but the list does not show yet is reported as cr
     const result = await createSocialPost({ locationId: TEST_LOCATION, summary: "Fresh", accountIds: [TEST_ACCOUNT_ID] }, dupTestContext());
     assert.equal(result.results[0].action, "created");
     assert.equal(result.results[0].verified, false);
-    assert.match(result.results[0].warning, /Do NOT create it again/);
+    assert.match(result.results[0].warning, /do NOT create it again/);
     assert.equal(creates.length, 1);
   });
+});
+
+test("a LinkedIn-style post (accepted, no id returned, invisible in the list) is not recreated when the agent retries", async () => {
+  resetRecentCreatesForTests();
+  const creates = [];
+  const fetchMock = async (url, options) => {
+    const parsed = new URL(String(url));
+    if (parsed.pathname === `/social-media-posting/${TEST_LOCATION}/accounts`) return new Response(JSON.stringify({ results: { accounts: [{ id: TEST_ACCOUNT_ID, platform: "linkedin", active: true }] } }), { status: 200 });
+    if (parsed.pathname === `/social-media-posting/${TEST_LOCATION}/posts/list`) return new Response(JSON.stringify({ results: { posts: [] } }), { status: 200 });
+    if (parsed.pathname === `/social-media-posting/${TEST_LOCATION}/posts`) { creates.push(JSON.parse(options.body)); return new Response(JSON.stringify({ success: true, message: "Created Post" }), { status: 201 }); }
+    throw new Error(`Unexpected request: ${url}`);
+  };
+  await withMockFetch(fetchMock, async () => {
+    const first = await createSocialPost({ locationId: TEST_LOCATION, summary: "LinkedIn post", accountIds: [TEST_ACCOUNT_ID] }, dupTestContext());
+    assert.equal(first.results[0].action, "created", "an accepted post is never reported as a failure");
+    assert.equal(first.results[0].verified, false);
+    const retry = await createSocialPost({ locationId: TEST_LOCATION, summary: "LinkedIn post", accountIds: [TEST_ACCOUNT_ID] }, dupTestContext());
+    assert.equal(retry.results[0].action, "skipped_duplicate");
+    assert.equal(creates.length, 1, "the retry did not create a second post");
+  });
+  resetRecentCreatesForTests();
 });
 
 test("delete_social_post rejects anything that is not a 24-character _id before calling upstream", async () => {

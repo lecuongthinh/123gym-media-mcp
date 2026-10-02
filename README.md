@@ -52,6 +52,8 @@ Version **3.14.3** finishes the `update_social_post` fix after a live retry of 3
 
 Version **3.14.4**: the live run of 3.14.3 showed `update_social_post` working but the stored post's `platform` flipping from facebook to google. Cause: the update re-sent the empty detail objects the stored post carries for platforms it is not on (`gmbPostDetails`, `tiktokPostDetails`, `instagramPostDetails`), which HighLevel read as a Google post. Updates now keep only the `*PostDetails` belonging to the platforms of the post's own accounts (`PLATFORM_DETAIL_FIELDS`), plus whatever the caller explicitly passes.
 
+Version **3.14.5** fixes the remaining duplicate-post path, found from Render logs after 3.14.1 did not stop it: `Post creation returned no post id and could not be found in the list for linkedin accounts`. For LinkedIn, HighLevel accepts the post but returns no post id and the post list does not show it right away; the code threw, the agent retried, and the list-based duplicate check (blind to that post) allowed a second create. Now, once HighLevel has accepted a POST, `createSocialPost` never throws -- it reports `created` with `verified: false` and a do-not-recreate warning (and re-checks the list once after 1.5s). Each create is also remembered in memory per tenant for 10 minutes by content fingerprint, so an identical retry returns `skipped_duplicate` even when the list cannot see the post. In-memory only (single Render instance, lost on restart).
+
 
 There are two independent OAuth relationships:
 

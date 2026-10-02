@@ -38,7 +38,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.14.4";
+const SERVICE_VERSION = "3.14.5";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -605,6 +605,23 @@ function postArray(data) {
 // objects gain extra fields, summaries get whitespace/newline normalized,
 // dates are re-serialized. Strict equality therefore never matched a retried
 // post that had media, so retries created duplicates. Compare what matters.
+// Some platforms (LinkedIn seen live) accept a post but neither return its id
+// nor show it in the list right away, so the list-based duplicate check is
+// blind to them and every agent retry created another post. Remember what was
+// just created, per tenant, and treat the same content within a few minutes as
+// already done.
+const RECENT_CREATE_TTL_MS = 10 * 60_000;
+const recentCreates = new Map();
+function resetRecentCreatesForTests() { recentCreates.clear(); }
+function recentCreateFor(key) {
+  const hit = recentCreates.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > RECENT_CREATE_TTL_MS) { recentCreates.delete(key); return null; }
+  return hit;
+}
+const createdPostId = (data) => data?.results?.post?._id || data?.results?.post?.id || data?.post?._id || data?.results?._id || data?._id || null;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 const normalizeSummary = (text) => String(text || "").replace(/\r\n?/g, "\n").replace(/\s+/g, " ").trim();
 const mediaKey = (media) => (Array.isArray(media) ? media : [])
   .map((item) => String(item?.url || "").split("?")[0].split("/").pop())
@@ -717,6 +734,12 @@ async function createSocialPost(args = {}, authorizedContext) {
     const groupIds = group.map((account) => account.id);
     const platform = group[0]?.platform || "mixed";
     const fingerprint = createHash("sha256").update(JSON.stringify({ locationId, accountIds: [...groupIds].sort(), summary: body.summary || "", media: body.media || [], status: body.status, scheduleDate: body.scheduleDate || null, type: body.type })).digest("hex").slice(0, 20);
+    const recentKey = `${authorizedContext?.tenantId || locationId}:${fingerprint}`;
+    const recent = recentCreateFor(recentKey);
+    if (recent) {
+      report.push({ action: "skipped_duplicate", reason: "The same post was created moments ago; HighLevel may not list it yet.", fingerprint, platform, accountIds: groupIds, postId: recent.postId, parentPostId: null, status: body.status, scheduleDate: body.scheduleDate || null, media: [], verified: false });
+      continue;
+    }
     const target = new Date(body.scheduleDate || Date.now());
     const fromDate = new Date(target.getTime() - 12 * 60 * 60 * 1000).toISOString();
     const toDate = new Date(target.getTime() + 12 * 60 * 60 * 1000).toISOString();
@@ -728,16 +751,19 @@ async function createSocialPost(args = {}, authorizedContext) {
     }
     const createdData = await socialRequest(locationId, "/posts", { method: "POST", body: { ...body, accountIds: groupIds }, authorizedContext });
     const created = createdData?.results?.post;
+    const newId = createdPostId(createdData);
+    // From here on HighLevel has accepted the post: never throw, or the agent
+    // retries and creates a duplicate. Remember it before verifying.
+    recentCreates.set(recentKey, { postId: newId, at: Date.now() });
     let matched = null;
     if (verify) {
-      const verifiedData = await requestSocialPostList({ locationId, status: body.status || "all", accountIds: groupIds, skip: 0, limit: 100, fromDate, toDate, includeUsers: true, postType: body.type }, authorizedContext);
-      matched = postArray(verifiedData).find((post) => post._id === created?._id || isSamePost(post, body, groupIds));
-      // The post exists once HighLevel returned its id; the list can lag behind.
-      // Throwing here made the agent retry and create a duplicate, so only fail
-      // when there is no sign the post was created at all.
-      if (!matched && !created?._id) throw new Error(`Post creation returned no post id and could not be found in the list for ${platform} accounts (${groupIds.join(",")}). Check list_social_posts before trying again -- retrying blindly can create a duplicate.`);
+      for (let attempt = 0; attempt < 2 && !matched; attempt += 1) {
+        if (attempt > 0) await sleep(1500);
+        const verifiedData = await requestSocialPostList({ locationId, status: body.status || "all", accountIds: groupIds, skip: 0, limit: 100, fromDate, toDate, includeUsers: true, postType: body.type }, authorizedContext);
+        matched = postArray(verifiedData).find((post) => post._id === newId || isSamePost(post, body, groupIds));
+      }
     }
-    report.push({ action: "created", fingerprint, platform, accountIds: groupIds, postId: created?._id || matched?._id, parentPostId: created?.parentPostId || matched?.parentPostId || null, status: matched?.status || created?.status, scheduleDate: matched?.scheduleDate || created?.scheduleDate, media: matched?.media || created?.media || [], verified: Boolean(matched), ...(matched ? {} : { warning: "Created, but the list did not show it yet. Do NOT create it again -- check with list_social_posts." }) });
+    report.push({ action: "created", fingerprint, platform, accountIds: groupIds, postId: newId || matched?._id || null, parentPostId: created?.parentPostId || matched?.parentPostId || null, status: matched?.status || created?.status || body.status, scheduleDate: matched?.scheduleDate || created?.scheduleDate || body.scheduleDate || null, media: matched?.media || created?.media || [], verified: Boolean(matched), ...(matched ? {} : { warning: `HighLevel accepted this ${platform} post${newId ? "" : " but returned no post id"}, and the list does not show it yet. It was created: do NOT create it again -- check list_social_posts later.` }) });
   }
   return { success: true, message: "Create request completed with duplicate protection and list verification.", results: report };
 }
@@ -1329,6 +1355,7 @@ export {
   listSocialCategories,
   listSocialTags,
   resetRateLimitStateForTests,
+  resetRecentCreatesForTests,
   resolveTenant,
   safeFileName,
   tenantRegistry,
