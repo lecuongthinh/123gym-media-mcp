@@ -50,6 +50,8 @@ Version **3.14.2** fixes `update_social_post` failing roughly half the time (24 
 
 Version **3.14.3** finishes the `update_social_post` fix after a live retry of 3.14.2 got further and hit a second 422: `postApprovalDetails.property approverUser should not exist; userId must be a string; userId should not be empty`. The post HighLevel returns carries read-only extras it will not accept back and no `userId`. Updates now keep only the writable `approver` inside `postApprovalDetails` (and only for `in_review` posts), fall back to the post's own / the tenant's default `userId`, and -- because other read-only fields may exist -- parse any `... property X should not exist` 422, drop that property and retry (up to 4 times). The same live run also showed the 3.14.1 duplicate guard working: `create_social_post` returned `skipped_duplicate` for an already-created draft.
 
+Version **3.14.4**: the live run of 3.14.3 showed `update_social_post` working but the stored post's `platform` flipping from facebook to google. Cause: the update re-sent the empty detail objects the stored post carries for platforms it is not on (`gmbPostDetails`, `tiktokPostDetails`, `instagramPostDetails`), which HighLevel read as a Google post. Updates now keep only the `*PostDetails` belonging to the platforms of the post's own accounts (`PLATFORM_DETAIL_FIELDS`), plus whatever the caller explicitly passes.
+
 
 There are two independent OAuth relationships:
 

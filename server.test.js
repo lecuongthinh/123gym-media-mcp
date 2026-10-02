@@ -124,7 +124,7 @@ test("legacy admin key is opt-in, x-api-key only, and not accepted as OAuth Bear
       body: JSON.stringify({ jsonrpc: "2.0", id: 103, method: "initialize" })
     });
     assert.equal(accepted.status, 200);
-    assert.equal((await accepted.json()).result.serverInfo.version, "3.14.3");
+    assert.equal((await accepted.json()).result.serverInfo.version, "3.14.4");
 
     const rejected = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -159,7 +159,7 @@ test("health response contains no authentication or tenant secrets", async () =>
     const text = await response.text();
     assert.equal(response.status, 200);
     assert.doesNotMatch(text, /health-admin-secret|health-tenant-secret|LC_TENANTS_JSON|LC_PRIVATE_TOKEN/);
-    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.14.3" });
+    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.14.4" });
   }));
 });
 
@@ -488,10 +488,11 @@ function dupTestFetch({ listed, creates }) {
 
 test("update_social_post sends HighLevel the complete post, not just the changed field (partial PUTs are rejected with 422)", async () => {
   const existing = { _id: "cccccccccccccccccccccccc", summary: "Old", accountIds: [TEST_ACCOUNT_ID], status: "draft", type: "post", userId: "u1",
-    media: [{ url: "https://cdn.example.com/a.png", type: "image/png", _id: "m1", thumbnail: "t" }], tags: ["t1"], createdBy: "x" };
+    media: [{ url: "https://cdn.example.com/a.png", type: "image/png", _id: "m1", thumbnail: "t" }], tags: ["t1"], createdBy: "x", gmbPostDetails: { shortenedLinks: null }, tiktokPostDetails: { shortenedLinks: null }, instagramPostDetails: {}, facebookPostDetails: { type: "post" } };
   let putBody = null;
   await withMockFetch(async (url, options) => {
     const parsed = new URL(String(url));
+    if (parsed.pathname === `/social-media-posting/${TEST_LOCATION}/accounts`) return new Response(JSON.stringify({ results: { accounts: [{ id: TEST_ACCOUNT_ID, platform: "facebook", active: true }] } }), { status: 200 });
     if (parsed.pathname === `/social-media-posting/${TEST_LOCATION}/posts/cccccccccccccccccccccccc` && options.method === "PUT") {
       putBody = JSON.parse(options.body);
       if (!Array.isArray(putBody.accountIds) || putBody.accountIds.length === 0 || !Array.isArray(putBody.media)) return new Response("{}", { status: 422 });
@@ -508,6 +509,8 @@ test("update_social_post sends HighLevel the complete post, not just the changed
   assert.deepEqual(putBody.tags, ["t1"]);
   assert.equal(putBody.status, "draft");
   assert.equal(putBody.createdBy, undefined);
+  for (const key of ["gmbPostDetails", "tiktokPostDetails", "instagramPostDetails"]) assert.equal(putBody[key], undefined, `${key} belongs to a platform this post is not on and made HighLevel re-classify it`);
+  assert.deepEqual(putBody.facebookPostDetails, { type: "post" });
 });
 
 test("update_social_post drops read-only fields HighLevel returns but rejects (approverUser), supplies userId, and retries when told a property should not exist", async () => {
@@ -516,6 +519,7 @@ test("update_social_post drops read-only fields HighLevel returns but rejects (a
   const bodies = [];
   await withMockFetch(async (url, options) => {
     const parsed = new URL(String(url));
+    if (parsed.pathname === `/social-media-posting/${TEST_LOCATION}/accounts`) return new Response(JSON.stringify({ results: { accounts: [{ id: TEST_ACCOUNT_ID, platform: "facebook", active: true }] } }), { status: 200 });
     if (parsed.pathname.endsWith("/posts/dddddddddddddddddddddddd") && options.method === "PUT") {
       const b = JSON.parse(options.body);
       bodies.push(b);

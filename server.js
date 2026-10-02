@@ -38,7 +38,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.14.3";
+const SERVICE_VERSION = "3.14.4";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -742,6 +742,11 @@ async function createSocialPost(args = {}, authorizedContext) {
   return { success: true, message: "Create request completed with duplicate protection and list verification.", results: report };
 }
 
+const PLATFORM_DETAIL_FIELDS = {
+  tiktok: "tiktokPostDetails", google: "gmbPostDetails", instagram: "instagramPostDetails", facebook: "facebookPostDetails",
+  linkedin: "linkedinPostDetails", pinterest: "pinterestPostDetails", youtube: "youtubePostDetails", community: "communityPostDetails"
+};
+
 function stripRejectedProperties(body, message) {
   let removed = false;
   for (const match of message.matchAll(/(?:([\w.]+)\.)?property (\w+) should not exist/g)) {
@@ -767,6 +772,7 @@ async function updateSocialPost(args = {}, authorizedContext) {
   if (changes.accountIds) await resolveSocialAccounts(locationId, changes.accountIds, authorizedContext);
 
   const tenant = tenantAccess(locationId, authorizedContext);
+  const accountsForUpdate = await listSocialAccounts({ locationId }, authorizedContext);
   const current = (await getSocialPost({ locationId, postId, includeRelated: false }, authorizedContext))?.results?.post;
   if (!current) throw new Error("Could not load the post to update it. Check the postId with list_social_posts.");
   const body = {};
@@ -779,6 +785,14 @@ async function updateSocialPost(args = {}, authorizedContext) {
   if (body.postApprovalDetails) {
     const approver = body.postApprovalDetails.approver || body.postApprovalDetails.approverUser?.id;
     if (approver) body.postApprovalDetails = { approver }; else delete body.postApprovalDetails;
+  }
+  // The stored post carries empty detail objects for platforms it is NOT on
+  // (gmbPostDetails, tiktokPostDetails ...); sending them back made HighLevel
+  // re-classify a Facebook post as Google. Keep only the details belonging to
+  // the platforms of this post's own accounts.
+  const accountPlatforms = new Set((body.accountIds || []).map((id) => accountList(accountsForUpdate).find((account) => account.id === id)?.platform).filter(Boolean));
+  for (const [platform, key] of Object.entries(PLATFORM_DETAIL_FIELDS)) {
+    if (!accountPlatforms.has(platform)) delete body[key];
   }
   Object.assign(body, changes);
   if (body.status !== "in_review" && !changes.postApprovalDetails) delete body.postApprovalDetails;
