@@ -57,6 +57,18 @@ function infoPage(title, message) {
     `<p>${message}</p></body>`;
 }
 
+// Shown after the email is submitted. The emailed link may be opened in a
+// different tab/browser/device, but ChatGPT's callback only works in THIS
+// window, so this page polls and finishes the redirect itself once the link
+// has been clicked anywhere. The poll secret never leaves this page.
+function waitForEmailPage(pollSecret, message) {
+  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Check your email</title>` +
+    `<body style="font-family:system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem"><h1 style="font-size:1.25rem">Check your email</h1>` +
+    `<p>${message}</p><p id="status" style="color:#666">Waiting for you to open the link...</p>` +
+    `<script>(function(){var p=${JSON.stringify(pollSecret)},n=0;function tick(){n++;if(n>450){document.getElementById("status").textContent="This sign-in attempt expired. Go back to ChatGPT and try again.";return;}` +
+    `fetch("/oauth/email-login/poll?p="+encodeURIComponent(p),{cache:"no-store"}).then(function(r){return r.json()}).then(function(d){if(d&&d.redirect){document.getElementById("status").textContent="Signed in. Returning to ChatGPT...";location.replace(d.redirect);}else{setTimeout(tick,2000)}}).catch(function(){setTimeout(tick,4000)})}tick()})();</script></body>`;
+}
+
 function chooseLoginMethodPage(s) {
   const state = escapeHtml(s);
   return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in to Uplifting Social AI</title>` +
@@ -297,7 +309,7 @@ export function createOAuthRouter({ env = process.env, getRepository, fetchImpl 
 
   const ownPaths = [
     "/oauth/register", "/oauth/authorize", "/oauth/authorize/highlevel", "/oauth/authorize/email",
-    "/oauth/email-login/verify", "/oauth/token", "/invite/accept",
+    "/oauth/email-login/verify", "/oauth/email-login/poll", "/oauth/token", "/invite/accept",
     "/.well-known/oauth-authorization-server", "/.well-known/openid-configuration"
   ];
   router.use(ownPaths, (req, res, next) => (builtInOAuthEnabled(env) ? next() : res.status(404).end()));
@@ -392,13 +404,16 @@ export function createOAuthRouter({ env = process.env, getRepository, fetchImpl 
     const request = await repository.consumeLoginRequest(sha256(s));
     if (!request) return res.status(400).type("html").send(infoPage("Link expired", "This sign-in attempt expired. Go back to ChatGPT and try adding the connector again."));
     const membership = await repository.findSoleMembershipByEmail(email);
+    const pollSecret = secret("elp_");
+    const waitingMessage = "If that email has been invited to an Uplifting Social AI account, a sign-in link is on its way. Open it on any device -- this page continues by itself.";
     if (!membership) {
       oauthLog("email_login_requested", { result: "not_found" });
-      return res.type("html").send(infoPage("Check your email", "If that email has been invited to an Uplifting Social AI account, a sign-in link is on its way."));
+      return res.type("html").send(waitForEmailPage(pollSecret, waitingMessage));
     }
     const token = secret("elt_");
     await repository.createEmailLoginToken({
       tokenHash: sha256(token),
+      pollHash: sha256(pollSecret),
       clientId: request.client_id,
       redirectUri: request.redirect_uri,
       codeChallenge: request.code_challenge,
@@ -414,7 +429,7 @@ export function createOAuthRouter({ env = process.env, getRepository, fetchImpl 
       tenantName: membership.tenant_name
     });
     oauthLog("email_login_requested", { result: "sent" });
-    return res.type("html").send(infoPage("Check your email", "We sent a sign-in link to your email. Open it on this device to finish connecting ChatGPT."));
+    return res.type("html").send(waitForEmailPage(pollSecret, waitingMessage));
   });
 
   router.get("/oauth/email-login/verify", async (req, res) => {
@@ -437,7 +452,17 @@ export function createOAuthRouter({ env = process.env, getRepository, fetchImpl 
       expiresAt: new Date(Date.now() + CODE_TTL_MS)
     });
     oauthLog("email_login_verified", { role: principal.role });
-    return res.redirect(302, redirectWith(login.redirect_uri, { code, state: login.client_state }));
+    const redirectUrl = redirectWith(login.redirect_uri, { code, state: login.client_state });
+    await repository.storeEmailLoginCompletion(sha256(token), redirectUrl);
+    return res.type("html").send(infoPage("You're signed in", `Go back to the ChatGPT window you started from -- it will continue by itself. If it doesn't, <a href="${escapeHtml(redirectUrl)}">continue here</a>.`));
+  });
+
+  router.get("/oauth/email-login/poll", async (req, res) => {
+    res.set("Cache-Control", "no-store");
+    const pollSecret = req.query.p;
+    if (typeof pollSecret !== "string" || !pollSecret) return res.status(400).json({ error: "missing_poll" });
+    const redirect = await getRepository(req).takeEmailLoginCompletion(sha256(pollSecret));
+    return res.json(redirect ? { redirect } : { pending: true });
   });
 
   // A tenant_owner/tenant_admin inviting a teammate by email -- see server.js

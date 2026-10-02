@@ -594,19 +594,39 @@ export class PostgresConnectionRepository {
     return rows.length === 1 ? rows[0] : null;
   }
 
-  async createEmailLoginToken({ tokenHash, clientId, redirectUri, codeChallenge, clientState, userId, tenantId, expiresAt }) {
+  async createEmailLoginToken({ tokenHash, pollHash = null, clientId, redirectUri, codeChallenge, clientState, userId, tenantId, expiresAt }) {
     await this.pool.query(
-      `INSERT INTO email_login_tokens (token_hash, client_id, redirect_uri, code_challenge, client_state, user_id, tenant_id, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [tokenHash, clientId, redirectUri, codeChallenge, clientState || null, userId, tenantId, expiresAt]
+      `INSERT INTO email_login_tokens (token_hash, poll_hash, client_id, redirect_uri, code_challenge, client_state, user_id, tenant_id, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [tokenHash, pollHash, clientId, redirectUri, codeChallenge, clientState || null, userId, tenantId, expiresAt]
     );
+  }
+
+  async storeEmailLoginCompletion(tokenHash, redirectUrl) {
+    await this.pool.query(`UPDATE email_login_tokens SET completed_redirect = $2 WHERE token_hash = $1`, [tokenHash, redirectUrl]);
+  }
+
+  // Hands the finished redirect to whoever holds the poll secret, exactly once.
+  async takeEmailLoginCompletion(pollHash) {
+    const { rows } = await this.pool.query(
+      `WITH taken AS (
+         SELECT token_hash, completed_redirect FROM email_login_tokens
+          WHERE poll_hash = $1 AND completed_redirect IS NOT NULL FOR UPDATE
+       ), cleared AS (
+         UPDATE email_login_tokens SET completed_redirect = NULL
+          WHERE token_hash IN (SELECT token_hash FROM taken)
+       )
+       SELECT completed_redirect AS redirect FROM taken`,
+      [pollHash]
+    );
+    return rows[0]?.redirect || null;
   }
 
   async consumeEmailLoginToken(tokenHash) {
     const { rows } = await this.pool.query(
       `UPDATE email_login_tokens SET used_at = now()
         WHERE token_hash = $1 AND used_at IS NULL AND expires_at > now()
-      RETURNING client_id, redirect_uri, code_challenge, client_state, user_id, tenant_id`,
+      RETURNING client_id, redirect_uri, code_challenge, client_state, user_id, tenant_id, poll_hash`,
       [tokenHash]
     );
     return rows[0] || null;

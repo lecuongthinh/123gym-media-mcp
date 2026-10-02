@@ -123,7 +123,15 @@ class FakeRepository {
     const row = this.emailLoginTokens.get(hash);
     if (!row || row.used || row.expiresAt < new Date()) return null;
     row.used = true;
-    return row;
+    return { ...row, poll_hash: row.pollHash };
+  }
+  async storeEmailLoginCompletion(hash, redirectUrl) { this.emailLoginTokens.get(hash).completedRedirect = redirectUrl; }
+  async takeEmailLoginCompletion(pollHash) {
+    const row = [...this.emailLoginTokens.values()].find((r) => r.pollHash === pollHash && r.completedRedirect);
+    if (!row) return null;
+    const redirect = row.completedRedirect;
+    row.completedRedirect = null;
+    return redirect;
   }
 }
 
@@ -611,15 +619,24 @@ test("an invited teammate signs into a fresh ChatGPT connection by email, with n
 
     const emailStep = await fetch(`${base}/oauth/authorize/email`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ s, email: "teammate@example.com" }) });
     assert.equal(emailStep.status, 200);
+    const waitingPage = await emailStep.text();
+    const pollSecret = /var p=("[^"]+")/.exec(waitingPage) && JSON.parse(/var p=("[^"]+")/.exec(waitingPage)[1]);
+    assert.ok(pollSecret, "the waiting page must carry a poll secret so the original window can finish by itself");
     assert.equal(fetchImpl.webhookCalls.length, 1);
     const signInLink = fetchImpl.webhookCalls[0].inviteLink;
     assert.match(signInLink, /\/oauth\/email-login\/verify\?token=/);
 
+    // The link may be opened anywhere (another tab/device); until it is, polling stays pending.
+    assert.deepEqual(await (await fetch(`${base}/oauth/email-login/poll?p=${encodeURIComponent(pollSecret)}`)).json(), { pending: true });
     const verify = await fetch(signInLink.replace("https://staging.example.com", base), { redirect: "manual" });
-    assert.equal(verify.status, 302);
-    const redirect = new URL(verify.headers.get("location"));
+    assert.equal(verify.status, 200);
+    assert.match(await verify.text(), /signed in/i);
+    const poll = await (await fetch(`${base}/oauth/email-login/poll?p=${encodeURIComponent(pollSecret)}`)).json();
+    const redirect = new URL(poll.redirect);
     assert.equal(redirect.origin + redirect.pathname, CHATGPT_REDIRECT);
     assert.equal(redirect.searchParams.get("state"), "member-state");
+    assert.deepEqual(await (await fetch(`${base}/oauth/email-login/poll?p=${encodeURIComponent(pollSecret)}`)).json(), { pending: true }, "the finished redirect is handed out exactly once");
+    assert.deepEqual(await (await fetch(`${base}/oauth/email-login/poll?p=not-the-secret`)).json(), { pending: true });
 
     const tokens = await (await tokenRequest(base, { grant_type: "authorization_code", code: redirect.searchParams.get("code"), redirect_uri: CHATGPT_REDIRECT, client_id: memberClient.client_id, code_verifier: verifier })).json();
     const member = await authenticateIssuedToken({ token: tokens.access_token, repository });
@@ -641,7 +658,9 @@ test("an unrecognized email at the sign-in screen gets the same generic reply an
     const s = /\/oauth\/authorize\/highlevel\?s=([^"&]+)/.exec(await choice.text())[1];
     const response = await fetch(`${base}/oauth/authorize/email`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ s, email: "nobody@example.com" }) });
     assert.equal(response.status, 200);
-    assert.match(await response.text(), /Check your email/);
+    const page = await response.text();
+    assert.match(page, /Check your email/);
+    assert.match(page, /var p=/, "an unrecognized email gets the same waiting page, so it can't be told apart");
     assert.equal(fetchImpl.webhookCalls.length, 0, "no email is actually sent for an unrecognized address");
   });
 });
