@@ -122,7 +122,7 @@ test("legacy admin key is opt-in, x-api-key only, and not accepted as OAuth Bear
       body: JSON.stringify({ jsonrpc: "2.0", id: 103, method: "initialize" })
     });
     assert.equal(accepted.status, 200);
-    assert.equal((await accepted.json()).result.serverInfo.version, "3.13.0");
+    assert.equal((await accepted.json()).result.serverInfo.version, "3.13.1");
 
     const rejected = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -157,7 +157,7 @@ test("health response contains no authentication or tenant secrets", async () =>
     const text = await response.text();
     assert.equal(response.status, 200);
     assert.doesNotMatch(text, /health-admin-secret|health-tenant-secret|LC_TENANTS_JSON|LC_PRIVATE_TOKEN/);
-    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.13.0" });
+    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.13.1" });
   }));
 });
 
