@@ -5,6 +5,7 @@ import {
   buildSocialPostBody,
   createSocialPost,
   deleteSocialPost,
+  downloadChatGPTFile,
   updateSocialPost,
   enforcePostLimit,
   enforceUserLimit,
@@ -126,7 +127,7 @@ test("legacy admin key is opt-in, x-api-key only, and not accepted as OAuth Bear
       body: JSON.stringify({ jsonrpc: "2.0", id: 103, method: "initialize" })
     });
     assert.equal(accepted.status, 200);
-    assert.equal((await accepted.json()).result.serverInfo.version, "3.15.0");
+    assert.equal((await accepted.json()).result.serverInfo.version, "3.15.1");
 
     const rejected = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -161,7 +162,7 @@ test("health response contains no authentication or tenant secrets", async () =>
     const text = await response.text();
     assert.equal(response.status, 200);
     assert.doesNotMatch(text, /health-admin-secret|health-tenant-secret|LC_TENANTS_JSON|LC_PRIVATE_TOKEN/);
-    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.15.0" });
+    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.15.1" });
   }));
 });
 
@@ -610,6 +611,19 @@ test("agent post performance separates posts the agent created from manual ones,
     assert.equal(result.byPlatform.facebook.manual.posts, 1);
     assert.equal(result.byPlatform.tiktok.agent.posts, 0);
   });
+});
+
+test("a ChatGPT video over the size limit is refused before it is read into memory, with guidance", async () => {
+  const file = { download_url: "https://files.example.com/big.mp4", file_id: "f1", mime_type: "video/mp4", file_name: "big.mp4" };
+  let bodyRead = false;
+  await withMockFetch(async () => {
+    const response = new Response("x", { status: 200, headers: { "content-type": "video/mp4", "content-length": String(101 * 1024 * 1024) } });
+    response.arrayBuffer = async () => { bodyRead = true; return new ArrayBuffer(0); };
+    return response;
+  }, async () => {
+    await assert.rejects(() => downloadChatGPTFile(file), /Maximum is 100 MB.*upload this file directly/s);
+  });
+  assert.equal(bodyRead, false);
 });
 
 test("delete_social_post rejects anything that is not a 24-character _id before calling upstream", async () => {

@@ -36,9 +36,13 @@ const PORT = process.env.PORT || 10000;
 const LC_BASE_URL = "https://services.leadconnectorhq.com";
 const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LOCATION_ID;
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
-const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
+// A file from ChatGPT is read fully into memory (then wrapped in a Blob), and
+// the host has ~512 MB, so a large video could take the whole service down
+// for every tenant. upload_media is meant for media ChatGPT generated itself;
+// customers upload their own large files straight into the media library.
+const VIDEO_MAX_BYTES = (Number(process.env.VIDEO_MAX_MB) || 100) * 1024 * 1024;
 
-const SERVICE_VERSION = "3.15.0";
+const SERVICE_VERSION = "3.15.1";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -458,9 +462,10 @@ async function downloadChatGPTFile(file) {
   }
   const contentLength = Number(response.headers.get("content-length") || 0);
   const maxBytes = maxBytesFor(mimeType);
-  if (contentLength > maxBytes) throw new Error(`File is too large. Maximum is ${maxBytes / 1024 / 1024} MB for ${mimeType.startsWith("video/") ? "videos" : "images"}.`);
+  const tooLarge = () => new Error(`File is too large. Maximum is ${maxBytes / 1024 / 1024} MB for ${mimeType.startsWith("video/") ? "videos" : "images"}. Ask the user to upload this file directly into their media library instead.`);
+  if (contentLength > maxBytes) throw tooLarge();
   const bytes = await response.arrayBuffer();
-  if (bytes.byteLength > maxBytes) throw new Error(`File is too large. Maximum is ${maxBytes / 1024 / 1024} MB.`);
+  if (bytes.byteLength > maxBytes) throw tooLarge();
   return { bytes, mimeType, fileName: safeFileName(file.file_name, mimeType), fileId: file.file_id };
 }
 
@@ -979,7 +984,7 @@ const MCP_INSTRUCTIONS = `This connects to the customer's own social media / CRM
 
 First-time setup: if a tool fails saying no connection exists, call connect_social_account first (owner/admin only) -- every other tool needs a connection.
 
-Media library rule: "my media library", "our gallery", "photos we already have", or anything the user says is already in their account means their CONNECTED account's media library -- call search_media_library. Never answer this from ChatGPT's own uploaded files, generated images, or ChatGPT's Media Library; those are a completely different, unrelated place. Use upload_media only to add something new to their account. If the user names a specific folder, resolve its id first (search_media_library with type "folder") before filtering by folderId -- don't just search by name across the whole library and call it done.
+Media library rule: "my media library", "our gallery", "photos we already have", or anything the user says is already in their account means their CONNECTED account's media library -- call search_media_library. Never answer this from ChatGPT's own uploaded files, generated images, or ChatGPT's Media Library; those are a completely different, unrelated place. Use upload_media for images/videos you (ChatGPT) generated that should go into their library; for their own files, tell them to upload directly in their media library. If the user names a specific folder, resolve its id first (search_media_library with type "folder") before filtering by folderId -- don't just search by name across the whole library and call it done.
 
 Posts: default to draft unless the user explicitly says to schedule or publish. category/tag fields need real ids, not names typed by the user -- call list_social_categories / list_social_tags first to resolve them. If create_social_post errors or times out, check list_social_posts before trying again -- the post may already exist, and creating it a second time makes a duplicate. To remove a duplicate, delete it by its own 24-character _id (from list_social_posts), not a parentPostId.\n\nNever choose posting accounts for the user: if they haven't said which account(s) a post goes to, call list_social_accounts and ask them, then pass accountIds explicitly.
 
@@ -991,7 +996,7 @@ const tools = [
   {
     name: "upload_media",
     title: "Upload media to the account's media library",
-    description: "Upload an image or video -- from the current ChatGPT conversation, a ChatGPT-generated image, ChatGPT's own Media Library, or a public HTTPS URL -- into the customer's own connected media library (used for social posts). Prefer file for ChatGPT-generated and ChatGPT-Library media.",
+    description: "Put an image or video that ChatGPT itself generated (or a public HTTPS URL) into the customer's own connected media library so it can be used in social posts. Prefer file for ChatGPT-generated media. Images up to 25 MB, videos up to 100 MB. This is not for the customer's own existing files -- they upload those directly into their media library.",
     inputSchema: {
       type: "object",
       properties: {
