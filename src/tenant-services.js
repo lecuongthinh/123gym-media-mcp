@@ -468,6 +468,22 @@ export class PostgresConnectionRepository {
     return rows[0]?.count ?? 0;
   }
 
+  async recordAgentPosts(tenantId, posts) {
+    for (const post of posts) {
+      if (!post.postId) continue;
+      await this.pool.query(
+        `INSERT INTO agent_posts (tenant_id, post_id, platform) VALUES ($1, $2, $3) ON CONFLICT (tenant_id, post_id) DO NOTHING`,
+        [tenantId, post.postId, post.platform || null]
+      );
+    }
+  }
+
+  async findAgentPostIds(tenantId, postIds) {
+    if (!postIds.length) return new Set();
+    const { rows } = await this.pool.query(`SELECT post_id FROM agent_posts WHERE tenant_id = $1 AND post_id = ANY($2::text[])`, [tenantId, postIds]);
+    return new Set(rows.map((row) => row.post_id));
+  }
+
   async countActiveMemberships(tenantId) {
     const { rows } = await this.pool.query(
       `SELECT count(*)::int AS n FROM memberships WHERE tenant_id = $1 AND status = 'active'`,

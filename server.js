@@ -38,7 +38,7 @@ const DEFAULT_LOCATION_ID = process.env.DEFAULT_LOCATION_ID || LEGACY_123_GYM_LO
 const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 const VIDEO_MAX_BYTES = 500 * 1024 * 1024;
 
-const SERVICE_VERSION = "3.14.5";
+const SERVICE_VERSION = "3.15.0";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -75,6 +75,17 @@ function recordUsage(req, { tenantId, metric, by }) {
   if (typeof repository?.incrementUsage !== "function") return;
   repository.incrementUsage({ tenantId, metric, period: currentUsagePeriod(), by })
     .catch((error) => console.error("[usage] failed to record", { metric, tenantId, errorMessage: error?.message || "Error" }));
+}
+
+// Remember which posts the agent created so their results can be compared
+// with hand-made posts (migration 012). Best-effort: never blocks the call.
+function recordAgentPosts(req, tenantId, results) {
+  const repository = req.tenantServices?.repository;
+  if (typeof repository?.recordAgentPosts !== "function") return;
+  const posts = (results || []).filter((entry) => entry.action === "created" && entry.postId).map((entry) => ({ postId: entry.postId, platform: entry.platform }));
+  if (!posts.length) return;
+  repository.recordAgentPosts(tenantId, posts)
+    .catch((error) => console.error("[agent_posts] failed to record", { tenantId, errorMessage: error?.message || "Error" }));
 }
 
 // Plan limits (admin panel, migration 010) are enforced only for real OAuth
@@ -787,6 +798,43 @@ function stripRejectedProperties(body, message) {
 // changed field is rejected with 422 ("accountIds must be an array ... should
 // not be empty ... media must be an array"). So load the post as it is now,
 // lay the requested changes over it, and send the complete body back.
+// Agent vs hand-made posts, by engagement (like + share + comment) from the
+// post list's own `insights`. Posts not recorded in agent_posts count as manual.
+async function agentPostPerformance(args, authorizedContext, repository) {
+  const { locationId = DEFAULT_LOCATION_ID, fromDate, toDate } = args;
+  const to = toDate ? new Date(toDate) : new Date();
+  const from = fromDate ? new Date(fromDate) : new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) throw new Error("fromDate and toDate must be ISO-8601 dates.");
+  const accounts = accountList(await listSocialAccounts({ locationId }, authorizedContext)).filter(isEligibleSocialAccount);
+  if (!accounts.length) throw new Error("No active social accounts are connected.");
+  const posts = [];
+  for (let skip = 0; skip < 500; skip += 100) {
+    const page = postArray(await requestSocialPostList({ locationId, status: "published", accountIds: accounts.map((a) => a.id), skip, limit: 100, fromDate: from.toISOString(), toDate: to.toISOString(), includeUsers: false }, authorizedContext));
+    posts.push(...page);
+    if (page.length < 100) break;
+  }
+  const agentIds = typeof repository?.findAgentPostIds === "function" ? await repository.findAgentPostIds(authorizedContext.tenantId, posts.map((post) => post._id)) : new Set();
+  const engagement = (post) => (post.insights?.like || 0) + (post.insights?.share || 0) + (post.insights?.comment || 0);
+  const summarize = (list) => ({
+    posts: list.length,
+    totalEngagement: list.reduce((sum, post) => sum + engagement(post), 0),
+    averageEngagementPerPost: list.length ? Math.round((list.reduce((sum, post) => sum + engagement(post), 0) / list.length) * 100) / 100 : 0,
+    top: [...list].sort((a, b) => engagement(b) - engagement(a)).slice(0, 3).map((post) => ({ postId: post._id, platform: post.platform, engagement: engagement(post), summary: String(post.summary || "").slice(0, 80) }))
+  });
+  const byPlatform = {};
+  for (const platform of new Set(posts.map((post) => post.platform))) {
+    const inPlatform = posts.filter((post) => post.platform === platform);
+    byPlatform[platform] = { agent: summarize(inPlatform.filter((p) => agentIds.has(p._id))), manual: summarize(inPlatform.filter((p) => !agentIds.has(p._id))) };
+  }
+  return {
+    range: { from: from.toISOString(), to: to.toISOString() },
+    note: "Only published posts. Posts created by the agent before tracking started (v3.15.0) count as manual. Engagement = likes + shares + comments from the post list; some platforms report these late.",
+    agent: summarize(posts.filter((p) => agentIds.has(p._id))),
+    manual: summarize(posts.filter((p) => !agentIds.has(p._id))),
+    byPlatform
+  };
+}
+
 async function updateSocialPost(args = {}, authorizedContext) {
   const { locationId = DEFAULT_LOCATION_ID, postId, verify = true } = args;
   if (!postId) throw new Error("postId is required.");
@@ -1029,6 +1077,13 @@ const tools = [
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
   },
   {
+    name: "get_agent_post_performance",
+    title: "Compare agent posts with manual posts",
+    description: "Measure how the posts created through Uplifting Social AI perform against posts made by hand in the same period and channels: post count, total and average engagement (likes + shares + comments), best posts, per platform. Only published posts; only posts the agent created after tracking began are counted as agent posts. Use when the user asks how well the agent's posts are doing or how they compare with manual posting.",
+    inputSchema: { type: "object", properties: { locationId: socialPostProperties.locationId, fromDate: { type: "string", description: "ISO-8601 start of the period. Defaults to 30 days before toDate." }, toDate: { type: "string", description: "ISO-8601 end of the period. Defaults to now." } } },
+    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false }
+  },
+  {
     name: "list_social_posts",
     title: "List social posts",
     description: "List posts. If accountIds is omitted, lists across all active connected accounts.",
@@ -1087,7 +1142,7 @@ const tools = [
 ];
 
 const READ_ONLY_TOOLS = new Set([
-  "search_media_library", "inspect_media", "list_location_users", "list_social_accounts", "list_social_posts",
+  "search_media_library", "inspect_media", "get_agent_post_performance", "list_location_users", "list_social_accounts", "list_social_posts",
   "list_social_categories", "list_social_tags", "get_social_post", "get_social_statistics"
 ]);
 const DELETE_TOOLS = new Set(["delete_social_post"]);
@@ -1282,6 +1337,11 @@ app.post("/mcp", async (req, res) => {
         await auditTool(req, { tenantId: authorizedContext.tenantId, toolName, action: "tool.call", result: "success", metadata: { locationId: authorizedContext.locationId } });
         return res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result } });
       }
+      if (toolName === "get_agent_post_performance") {
+        result = await agentPostPerformance(args, authorizedContext, req.tenantServices.repository);
+        await auditTool(req, { tenantId: authorizedContext.tenantId, toolName, action: "tool.call", result: "success", metadata: { locationId: authorizedContext.locationId } });
+        return res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result } });
+      }
       if (toolName === "inspect_media") {
         result = await inspectMedia(args, authorizedContext);
         await auditTool(req, { tenantId: authorizedContext.tenantId, toolName, action: "tool.call", result: "success", metadata: { locationId: authorizedContext.locationId } });
@@ -1305,6 +1365,7 @@ app.post("/mcp", async (req, res) => {
         if (toolName === "create_social_post") {
           const createdCount = (result.results || []).filter((entry) => entry.action === "created").length;
           recordUsage(req, { tenantId: authorizedContext.tenantId, metric: "posts_created", by: createdCount });
+          recordAgentPosts(req, authorizedContext.tenantId, result.results);
         }
         await auditTool(req, { tenantId: authorizedContext.tenantId, toolName, action: "tool.call", result: "success", metadata: { locationId: authorizedContext.locationId } });
         return res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result } });
@@ -1354,6 +1415,7 @@ export {
   listSocialAccounts,
   listSocialCategories,
   listSocialTags,
+  agentPostPerformance,
   resetRateLimitStateForTests,
   resetRecentCreatesForTests,
   resolveTenant,

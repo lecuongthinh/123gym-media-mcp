@@ -15,6 +15,7 @@ import {
   listSocialAccounts,
   listSocialCategories,
   listSocialTags,
+  agentPostPerformance,
   resetRateLimitStateForTests,
   resetRecentCreatesForTests,
   resolveTenant,
@@ -125,7 +126,7 @@ test("legacy admin key is opt-in, x-api-key only, and not accepted as OAuth Bear
       body: JSON.stringify({ jsonrpc: "2.0", id: 103, method: "initialize" })
     });
     assert.equal(accepted.status, 200);
-    assert.equal((await accepted.json()).result.serverInfo.version, "3.14.5");
+    assert.equal((await accepted.json()).result.serverInfo.version, "3.15.0");
 
     const rejected = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
@@ -160,7 +161,7 @@ test("health response contains no authentication or tenant secrets", async () =>
     const text = await response.text();
     assert.equal(response.status, 200);
     assert.doesNotMatch(text, /health-admin-secret|health-tenant-secret|LC_TENANTS_JSON|LC_PRIVATE_TOKEN/);
-    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.14.5" });
+    assert.deepEqual(JSON.parse(text), { status: "healthy", version: "3.15.0" });
   }));
 });
 
@@ -219,7 +220,7 @@ test("MCP tools/list exposes the file-aware upload schema", async (t) => {
   assert.equal(payload.result.tools[0].name, "upload_media");
   assert.deepEqual(payload.result.tools[0]._meta["openai/fileParams"], ["file"]);
   assert.equal(payload.result.tools[0].inputSchema.properties.locationId.type, "string");
-  assert.equal(payload.result.tools.length, 15);
+  assert.equal(payload.result.tools.length, 16);
   assert.ok(payload.result.tools.some((tool) => tool.name === "create_social_post"));
   assert.ok(payload.result.tools.some((tool) => tool.name === "get_social_statistics"));
   assert.deepEqual(payload.result.tools.find((tool) => tool.name === "list_social_accounts").securitySchemes, [{ type: "oauth2", scopes: ["uplifting:read"] }]);
@@ -586,6 +587,31 @@ test("a LinkedIn-style post (accepted, no id returned, invisible in the list) is
   resetRecentCreatesForTests();
 });
 
+test("agent post performance separates posts the agent created from manual ones, overall and per platform", async () => {
+  const posts = [
+    { _id: "a".repeat(24), platform: "facebook", summary: "agent 1", insights: { like: 10, share: 2, comment: 3 } },
+    { _id: "b".repeat(24), platform: "facebook", summary: "manual 1", insights: { like: 1, share: 0, comment: 1 } },
+    { _id: "c".repeat(24), platform: "tiktok", summary: "manual 2", insights: { like: 5, share: 0, comment: 0 } }
+  ];
+  const repository = { async findAgentPostIds(_tenant, ids) { return new Set(ids.filter((id) => id === "a".repeat(24))); } };
+  await withMockFetch(async (url) => {
+    const parsed = new URL(String(url));
+    if (parsed.pathname.endsWith("/accounts")) return new Response(JSON.stringify({ results: { accounts: [{ id: TEST_ACCOUNT_ID, platform: "facebook", active: true }] } }), { status: 200 });
+    if (parsed.pathname.endsWith("/posts/list")) return new Response(JSON.stringify({ results: { posts } }), { status: 200 });
+    throw new Error(`Unexpected request: ${url}`);
+  }, async () => {
+    const result = await agentPostPerformance({ locationId: TEST_LOCATION }, dupTestContext(), repository);
+    assert.equal(result.agent.posts, 1);
+    assert.equal(result.agent.totalEngagement, 15);
+    assert.equal(result.manual.posts, 2);
+    assert.equal(result.manual.totalEngagement, 7);
+    assert.equal(result.manual.averageEngagementPerPost, 3.5);
+    assert.equal(result.byPlatform.facebook.agent.posts, 1);
+    assert.equal(result.byPlatform.facebook.manual.posts, 1);
+    assert.equal(result.byPlatform.tiktok.agent.posts, 0);
+  });
+});
+
 test("delete_social_post rejects anything that is not a 24-character _id before calling upstream", async () => {
   let called = 0;
   await withMockFetch(async () => { called += 1; return new Response("{}", { status: 200 }); }, async () => {
@@ -675,6 +701,8 @@ test("create_social_post via /mcp records how many posts were actually created, 
   resetRateLimitStateForTests();
   const usageCalls = [];
   const repository = legacyRepositoryFor(TEST_LOCATION, TEST_TENANT_ID, "Testing Agency", "LC_PRIVATE_TOKEN_TESTING_AGENCY", async (call) => { usageCalls.push(call); });
+  const agentPostCalls = [];
+  repository.recordAgentPosts = async (tenantId, posts) => { agentPostCalls.push({ tenantId, posts }); };
   await withProcessEnv({ MCP_ADMIN_API_KEY: "usage-admin-secret", ENABLE_LEGACY_ADMIN_AUTH: "true", ...tenantEnv() }, async () => {
     app.locals.tenantServices = createTenantServices(process.env, { repository });
     let postsListCalls = 0;
@@ -716,6 +744,8 @@ test("create_social_post via /mcp records how many posts were actually created, 
         assert.equal(usageCalls[0].tenantId, TEST_TENANT_ID);
         assert.equal(usageCalls[0].metric, "posts_created");
         assert.equal(usageCalls[0].by, 1);
+        assert.equal(agentPostCalls.length, 1, "the created post's id is recorded as an agent post");
+        assert.equal(agentPostCalls[0].posts[0].postId, "new-post-id");
         assert.match(usageCalls[0].period, /^\d{4}-\d{2}$/);
       } finally {
         globalThis.fetch = realFetch;
