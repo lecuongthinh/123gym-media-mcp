@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import express from "express";
-import { AuthenticationError, builtInOAuthEnabled } from "./auth.js";
+import { AuthenticationError, BUILT_IN_SCOPES, builtInOAuthEnabled } from "./auth.js";
 import { encryptCredential } from "./credential-provider.js";
 import { exchangeHighLevelCode } from "./highlevel-onboarding.js";
 import { fetchHighLevelLocationName, fetchHighLevelUsers, pickDefaultUserId } from "./highlevel-users.js";
@@ -126,7 +126,8 @@ export function authorizationServerMetadata(env = process.env) {
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code", "refresh_token"],
     code_challenge_methods_supported: ["S256"],
-    token_endpoint_auth_methods_supported: ["none"]
+    token_endpoint_auth_methods_supported: ["none"],
+    scopes_supported: BUILT_IN_SCOPES
   };
 }
 
@@ -169,7 +170,7 @@ async function issueTokens(repository, { familyId, clientId, userId, tenantId })
     tokenHash: sha256(refreshToken), kind: "refresh", familyId, clientId, userId, tenantId,
     expiresAt: new Date(Date.now() + REFRESH_TTL_MS)
   });
-  return { access_token: accessToken, token_type: "Bearer", expires_in: ACCESS_TTL_SECONDS, refresh_token: refreshToken };
+  return { access_token: accessToken, token_type: "Bearer", expires_in: ACCESS_TTL_SECONDS, refresh_token: refreshToken, scope: BUILT_IN_SCOPES.join(" ") };
 }
 
 export async function authenticateIssuedToken({ token, repository }) {
@@ -187,7 +188,7 @@ export async function authenticateIssuedToken({ token, repository }) {
     plan: record.plan,
     membershipId: record.membership_id,
     role: record.role,
-    scopes: new Set()
+    scopes: new Set(BUILT_IN_SCOPES)
   });
 }
 

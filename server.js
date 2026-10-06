@@ -13,6 +13,7 @@ import {
   authConfiguration,
   bearerToken,
   createAuth0Verifier,
+  BUILT_IN_SCOPES,
   oauthChallenge,
   protectedResourceMetadata,
   requireScopes
@@ -42,7 +43,7 @@ const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 // customers upload their own large files straight into the media library.
 const VIDEO_MAX_BYTES = (Number(process.env.VIDEO_MAX_MB) || 100) * 1024 * 1024;
 
-const SERVICE_VERSION = "3.15.1";
+const SERVICE_VERSION = "3.15.2";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -304,7 +305,7 @@ async function authenticateMcpRequest(req, res, next) {
       errorClass: "AuthenticationError",
       errorMessage: "OAuth authentication required"
     });
-    const challenge = configuration.oauthReady ? oauthChallenge(process.env, { error: "invalid_token", description: "OAuth login is required." }) : null;
+    const challenge = configuration.oauthReady ? oauthChallenge(process.env, { error: "invalid_token", description: "OAuth login is required.", scope: BUILT_IN_SCOPES.join(" ") }) : null;
     if (challenge) res.set("WWW-Authenticate", challenge);
     return res.status(401).json({ jsonrpc: "2.0", id, error: { code: -32002, message: "OAuth authentication required." } });
   } catch (error) {

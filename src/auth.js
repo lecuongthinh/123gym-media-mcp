@@ -86,6 +86,7 @@ export function protectedResourceMetadata(env = process.env) {
     return {
       resource,
       authorization_servers: [resource],
+      scopes_supported: BUILT_IN_SCOPES,
       bearer_methods_supported: ["header"],
       resource_documentation: env.MCP_DOCUMENTATION_URL || `${resource}/docs`
     };
@@ -98,6 +99,12 @@ export function protectedResourceMetadata(env = process.env) {
     resource_documentation: env.MCP_DOCUMENTATION_URL || `${resource}/docs`
   };
 }
+
+// Every tool declares one of these in its securitySchemes. ChatGPT compares
+// them with the scope on the connection's token and shows "needs additional
+// access" when the token carries none, so the built-in server grants both and
+// says so. What a member may actually do is still decided by their role.
+export const BUILT_IN_SCOPES = ["uplifting:read", "uplifting:write"];
 
 export function oauthChallenge(env = process.env, { error, description, scope } = {}) {
   const resource = String(env.MCP_RESOURCE_URL || "").replace(/\/+$/, "");

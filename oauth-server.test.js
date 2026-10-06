@@ -226,6 +226,7 @@ function tokenRequest(base, params) {
 test("authorization server metadata is served only when the built-in server is enabled", async () => {
   await withOAuthApp(env(), {}, async (base) => {
     const metadata = await (await fetch(`${base}/.well-known/oauth-authorization-server`)).json();
+    assert.deepEqual(metadata.scopes_supported, ["uplifting:read", "uplifting:write"]);
     assert.equal(metadata.issuer, "https://staging.example.com");
     assert.equal(metadata.token_endpoint, "https://staging.example.com/oauth/token");
     assert.equal(metadata.registration_endpoint, "https://staging.example.com/oauth/register");
@@ -299,6 +300,11 @@ test("full login: HighLevel approval creates the tenant, then the code exchange 
     const tokens = await exchanged.json();
     assert.match(tokens.access_token, /^uat_/);
     assert.equal(tokens.token_type, "Bearer");
+    // ChatGPT compares each tool's required scope with the token's scope and shows
+    // "needs additional access" when none is granted (seen live on a new customer's first connect).
+    assert.equal(tokens.scope, "uplifting:read uplifting:write");
+    const scoped = await authenticateIssuedToken({ token: tokens.access_token, repository });
+    assert.ok(scoped.scopes.has("uplifting:read") && scoped.scopes.has("uplifting:write"));
 
     const principal = await authenticateIssuedToken({ token: tokens.access_token, repository });
     assert.equal(principal.authType, "oauth");
