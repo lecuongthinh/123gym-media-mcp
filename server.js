@@ -18,7 +18,7 @@ import {
   protectedResourceMetadata,
   requireScopes
 } from "./src/auth.js";
-import { createHighLevelOnboarding } from "./src/highlevel-onboarding.js";
+import { createHighLevelOnboarding, friendlyOnboardingError, onboardingResultPage } from "./src/highlevel-onboarding.js";
 import { authenticateIssuedToken, completeHighLevelLogin, createOAuthRouter, inviteTeamMember } from "./src/oauth-server.js";
 import { fetchHighLevelUsers } from "./src/highlevel-users.js";
 import { createAdminPanelRouter } from "./src/admin-panel.js";
@@ -43,7 +43,7 @@ const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 // customers upload their own large files straight into the media library.
 const VIDEO_MAX_BYTES = (Number(process.env.VIDEO_MAX_MB) || 100) * 1024 * 1024;
 
-const SERVICE_VERSION = "3.15.2";
+const SERVICE_VERSION = "3.15.3";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -1224,10 +1224,10 @@ app.get("/oauth/callback/social-crm", async (req, res) => {
     const login = await completeHighLevelLogin({ query: req.query, repository: services.repository, env: process.env });
     if (login?.redirectUrl) return res.redirect(302, login.redirectUrl);
     if (login) return res.status(login.status).type("html").send(login.html);
-    const result = await createHighLevelOnboarding({ env: process.env, repository: services.repository }).callback(req.query);
-    return res.json(result);
+    await createHighLevelOnboarding({ env: process.env, repository: services.repository }).callback(req.query);
+    return res.type("html").send(onboardingResultPage({ ok: true, message: "Sub-account đã được kết nối với tài khoản của anh/chị." }));
   } catch (error) {
-    return res.status(400).json({ error: redactSecrets(error.message) });
+    return res.status(error.status || 400).type("html").send(onboardingResultPage({ ok: false, message: friendlyOnboardingError(error, redactSecrets) }));
   }
 });
 

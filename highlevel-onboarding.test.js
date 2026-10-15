@@ -3,7 +3,7 @@ import { randomBytes } from "node:crypto";
 import test from "node:test";
 
 import { decryptCredential } from "./src/credential-provider.js";
-import { createHighLevelOnboarding } from "./src/highlevel-onboarding.js";
+import { ConnectionConflictError, createHighLevelOnboarding, friendlyOnboardingError, onboardingResultPage } from "./src/highlevel-onboarding.js";
 
 const TENANT_ID = "00000000-0000-4000-8000-000000000124";
 const USER_ID = "30000000-0000-4000-8000-000000000124";
@@ -228,4 +228,75 @@ test("HighLevel onboarding refuses a different sub-account than the invitation a
     () => onboarding.start({ tenantId: TENANT_ID, userId: USER_ID, role: "tenant_owner" }, { locationId: "some-other-location" }),
     /assigned to a different sub-account/
   );
+});
+
+test("HighLevel onboarding refuses to start a second sub-account for a tenant that already has one", async () => {
+  const onboarding = createHighLevelOnboarding({
+    env: env(),
+    repository: {
+      async findConnectedLocationId() { return "existing-location"; },
+      async createOAuthState() { throw new Error("must not be called"); }
+    }
+  });
+  await assert.rejects(
+    () => onboarding.start({ tenantId: TENANT_ID, userId: USER_ID, role: "tenant_owner" }, { locationId: LOCATION_ID }),
+    (error) => error instanceof ConnectionConflictError && /already connected to sub-account existing-location/.test(error.message)
+  );
+});
+
+test("HighLevel onboarding refuses a sub-account that belongs to another tenant", async () => {
+  const onboarding = createHighLevelOnboarding({
+    env: env(),
+    repository: {
+      async findConnectedLocationId() { return null; },
+      async findLocationOwnerTenantId() { return "99999999-0000-4000-8000-000000000000"; },
+      async createOAuthState() { throw new Error("must not be called"); }
+    }
+  });
+  await assert.rejects(
+    () => onboarding.start({ tenantId: TENANT_ID, userId: USER_ID, role: "tenant_owner" }, { locationId: LOCATION_ID }),
+    /already belongs to a different account/
+  );
+});
+
+test("HighLevel onboarding lets a tenant reconnect its own sub-account", async () => {
+  let stored;
+  const onboarding = createHighLevelOnboarding({
+    env: env(),
+    repository: {
+      async findConnectedLocationId() { return LOCATION_ID; },
+      async findLocationOwnerTenantId() { return TENANT_ID; },
+      async createOAuthState(value) { stored = value; }
+    }
+  });
+  await onboarding.start({ tenantId: TENANT_ID, userId: USER_ID, role: "tenant_owner" }, { locationId: LOCATION_ID });
+  assert.equal(stored.intendedLocationId, LOCATION_ID);
+});
+
+test("callback pages are readable and escape their message", () => {
+  assert.match(onboardingResultPage({ ok: true, message: "ok" }), /Kết nối thành công/);
+  const failed = onboardingResultPage({ ok: false, message: "<script>x</script>" });
+  assert.match(failed, /Chưa kết nối được/);
+  assert.ok(!failed.includes("<script>x"));
+  assert.match(friendlyOnboardingError(new Error('duplicate key value violates unique constraint "connections_provider_external_location_id_key"')), /đã thuộc một tài khoản khác/);
+  assert.match(friendlyOnboardingError(new Error("Uplifting OAuth state is invalid, expired, or already used.")), /hết hạn/);
+  assert.equal(friendlyOnboardingError(new Error("boom"), (t) => `r:${t}`), "r:boom");
+});
+
+test("HighLevel callback does not save when the sub-account was taken by another tenant after the link was issued", async () => {
+  let saved = false;
+  const repository = repositoryWithState({
+    async findLocationOwnerTenantId() { return "99999999-0000-4000-8000-000000000000"; },
+    async saveHighLevelOAuthConnection() { saved = true; }
+  });
+  const fetchImpl = async () => new Response(JSON.stringify({
+    access_token: "a", refresh_token: "r", locationId: LOCATION_ID, expires_in: 86400
+  }), { status: 200 });
+  const onboarding = createHighLevelOnboarding({ env: env(), repository: { ...repository, async findLocationOwnerTenantId() { return null; } }, fetchImpl });
+  const started = await onboarding.start({ tenantId: TENANT_ID, userId: USER_ID, role: "tenant_owner" }, { locationId: LOCATION_ID });
+  const state = new URL(started.authorizationUrl).searchParams.get("state");
+  repository.findLocationOwnerTenantId = async () => "99999999-0000-4000-8000-000000000000";
+  const racing = createHighLevelOnboarding({ env: env(), repository, fetchImpl });
+  await assert.rejects(() => racing.callback({ code: "c", state }), ConnectionConflictError);
+  assert.equal(saved, false);
 });

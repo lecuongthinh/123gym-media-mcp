@@ -174,6 +174,22 @@ export class PostgresConnectionRepository {
     return rows[0]?.default_location_id || null;
   }
 
+  async findConnectedLocationId(tenantId) {
+    const { rows } = await this.pool.query(
+      `SELECT external_location_id FROM connections WHERE tenant_id = $1 AND provider = 'highlevel' LIMIT 1`,
+      [tenantId]
+    );
+    return rows[0]?.external_location_id || null;
+  }
+
+  async findLocationOwnerTenantId(locationId) {
+    const { rows } = await this.pool.query(
+      `SELECT tenant_id FROM connections WHERE provider = 'highlevel' AND external_location_id = $1 LIMIT 1`,
+      [locationId]
+    );
+    return rows[0]?.tenant_id || null;
+  }
+
   async recordAuditEvent({ actorUserId = null, tenantId = null, toolName = null, action, result, requestId = null, metadata = {} }) {
     await this.pool.query(
       `INSERT INTO audit_events (actor_user_id, tenant_id, tool_name, action, result, request_id, metadata)

@@ -17,6 +17,50 @@ function requireOwner(principal) {
   }
 }
 
+export class ConnectionConflictError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "ConnectionConflictError";
+    this.status = 409;
+  }
+}
+
+// One tenant owns exactly one sub-account, and a sub-account belongs to exactly
+// one tenant. Refuse anything else up front instead of letting the database
+// constraint (or an upsert that silently swaps the connection) decide.
+async function assertConnectable(repository, tenantId, locationId) {
+  const current = await repository.findConnectedLocationId?.(tenantId);
+  if (current && current !== locationId) {
+    throw new ConnectionConflictError(
+      `This account is already connected to sub-account ${current}. Each account connects exactly one sub-account, so ${locationId} cannot be added. Sign in with the account that owns ${locationId} instead.`
+    );
+  }
+  const owner = await repository.findLocationOwnerTenantId?.(locationId);
+  if (owner && owner !== tenantId) {
+    throw new ConnectionConflictError(
+      `Sub-account ${locationId} already belongs to a different account, so it cannot be connected here. Sign in with the account that owns it instead.`
+    );
+  }
+}
+
+export function friendlyOnboardingError(error, redact = (text) => text) {
+  const message = String(error?.message || "");
+  if (error instanceof ConnectionConflictError || /connections_provider_external_location_id_key|connections_tenant_id_provider_key/.test(message)) {
+    return "Sub-account này đã thuộc một tài khoản khác, hoặc tài khoản của anh/chị đã kết nối một sub-account khác. Mỗi tài khoản chỉ kết nối một sub-account: hãy đăng nhập bằng tài khoản sở hữu sub-account đó.";
+  }
+  if (/state is invalid, expired, or already used/.test(message)) {
+    return "Link kết nối đã hết hạn (10 phút) hoặc đã được dùng rồi. Nếu đã kết nối xong thì không cần làm gì thêm; nếu chưa, hãy nhờ trợ lý tạo link mới và chỉ mở nó một lần.";
+  }
+  return redact(message);
+}
+
+export function onboardingResultPage({ ok, message }) {
+  const escape = (value) => String(value).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const title = ok ? "Kết nối thành công" : "Chưa kết nối được";
+  const hint = ok ? "Anh/chị có thể đóng tab này và quay lại ChatGPT." : "Quay lại ChatGPT và nhờ trợ lý tạo link mới nếu cần. Mỗi link chỉ dùng được một lần.";
+  return `<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title><style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1rem;line-height:1.5}h1{font-size:1.4rem}.d{color:#555}</style></head><body><h1>${ok ? "✅" : "⚠️"} ${title}</h1><p>${escape(message)}</p><p class="d">${hint}</p></body></html>`;
+}
+
 export async function exchangeHighLevelCode({ env = process.env, code, fetchImpl = globalThis.fetch }) {
   const response = await fetchImpl(HIGHLEVEL_TOKEN_URL, {
     method: "POST",
@@ -53,6 +97,7 @@ export function createHighLevelOnboarding({ env = process.env, repository, fetch
     }
     locationId = locationId || invitedLocationId;
     if (!locationId) throw new Error("connect_social_account requires locationId: the sub-account to connect.");
+    await assertConnectable(repository, principal.tenantId, locationId);
     const state = randomBytes(32).toString("base64url");
     await repository.createOAuthState({
       stateHash: sha256(state),
@@ -112,6 +157,8 @@ export function createHighLevelOnboarding({ env = process.env, repository, fetch
         expires_at: new Date(Date.now() + minted.expiresIn * 1000).toISOString()
       };
     }
+
+    await assertConnectable(repository, authorization.tenant_id, locationId);
 
     let defaultUserId = null;
     try {
