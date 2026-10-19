@@ -22,6 +22,7 @@ import { createHighLevelOnboarding, friendlyOnboardingError, onboardingResultPag
 import { authenticateIssuedToken, completeHighLevelLogin, createOAuthRouter, inviteTeamMember } from "./src/oauth-server.js";
 import { fetchHighLevelUsers } from "./src/highlevel-users.js";
 import { createAdminPanelRouter } from "./src/admin-panel.js";
+import { createReportRouter, reportStatus } from "./src/report/index.js";
 
 const app = express();
 app.use((req, res, next) => {
@@ -43,12 +44,12 @@ const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 // customers upload their own large files straight into the media library.
 const VIDEO_MAX_BYTES = (Number(process.env.VIDEO_MAX_MB) || 100) * 1024 * 1024;
 
-const SERVICE_VERSION = "3.15.3";
+const SERVICE_VERSION = "3.16.0";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
   const configured = configuration.oauthReady || configuration.legacyAdminReady;
-  res.status(configured ? 200 : 503).json({ status: configured ? "healthy" : "misconfigured", version: SERVICE_VERSION });
+  res.status(configured ? 200 : 503).json({ status: configured ? "healthy" : "misconfigured", version: SERVICE_VERSION, ...(reportStatus(process.env).enabled ? { report: "enabled" } : {}) });
 });
 
 app.get(["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"], (req, res) => {
@@ -63,6 +64,9 @@ app.get("/docs", (req, res) => res.json({
   version: SERVICE_VERSION
 }));
 
+// Mounted first: the posting OAuth router below claims /.well-known/oauth-authorization-server
+// as a path prefix, which would swallow the report module's /.well-known/.../report paths.
+app.use(createReportRouter({ env: process.env }));
 app.use(createOAuthRouter({ env: process.env, getRepository: (req) => requestServices(req).repository }));
 app.use(createAdminPanelRouter({ env: process.env, getRepository: (req) => requestServices(req).repository }));
 
@@ -1400,7 +1404,21 @@ if (isMainModule) {
     console.error("OAuth is not configured and legacy admin authentication is not explicitly enabled; refusing to start.");
     process.exitCode = 1;
   } else {
-    app.listen(PORT, "0.0.0.0", () => console.log(`Uplifting Social AI v${SERVICE_VERSION} listening on port ${PORT}`));
+    const server = app.listen(PORT, "0.0.0.0", () => console.log(`Uplifting Social AI v${SERVICE_VERSION} listening on port ${PORT}`));
+    // Render sends SIGTERM and waits ~30s on every deploy/restart. Stop taking new
+    // connections, let in-flight requests (posting, uploads, report calls) finish,
+    // then exit, so a deploy does not cut a request off half way.
+    let shuttingDown = false;
+    const shutdown = (signal) => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      console.info(JSON.stringify({ timestamp: new Date().toISOString(), event: "shutdown", signal }));
+      server.close(() => process.exit(0));
+      server.closeIdleConnections?.();
+      setTimeout(() => process.exit(0), 25_000).unref();
+    };
+    process.on("SIGTERM", () => shutdown("SIGTERM"));
+    process.on("SIGINT", () => shutdown("SIGINT"));
   }
 }
 

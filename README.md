@@ -63,6 +63,8 @@ Version **3.15.2** fixes ChatGPT showing "needs additional access … the curren
 Version **3.15.1** lowers the video limit for `upload_media` from 500 MB to **100 MB** (`VIDEO_MAX_MB` env var overrides; images stay 25 MB). A file supplied by ChatGPT is read fully into server memory and then copied into a `Blob`, and the host has roughly 512 MB, so one large video could crash the service for every tenant. The tool exists for media ChatGPT itself generates (customers upload their own files directly into the media library), so large files are not a real use case; an oversize file is refused from its `content-length` before the body is read, with a message telling the agent to ask the user to upload it directly. The tool description and `MCP_INSTRUCTIONS` now state this purpose. The `fileUrl` path was never affected (HighLevel fetches that URL itself).
 
 
+Version **3.16.0** adds the report gateway (`src/report/`, migration `013_report_gateway.sql`, `REPORT_GATEWAY.md`): a separate read-only MCP endpoint `/report/mcp` with its own Marketplace app, OAuth server and permission dashboard (`/report-admin`). Off unless `REPORT_ENABLED=true`; it does not change any posting behavior.
+
 There are two independent OAuth relationships:
 
 1. **ChatGPT → Uplifting MCP:** Auth0 Authorization Code + PKCE authenticates the human user. The MCP validates signature, issuer, audience and expiry. The Auth0 `sub` is resolved to `users` and an active `memberships` row. The selected tenant claim must match that membership. Tool-level authorization is enforced by that membership's `role`, not by OAuth scopes (see the 3.5.1 note above for why).

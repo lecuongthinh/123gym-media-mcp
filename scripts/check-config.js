@@ -10,5 +10,14 @@ const report = {
   highLevelOAuth: ["HIGHLEVEL_CLIENT_ID", "HIGHLEVEL_CLIENT_SECRET", "HIGHLEVEL_REDIRECT_URI", "HIGHLEVEL_INSTALL_URL", "TENANT_CREDENTIAL_ENCRYPTION_KEY"].every((name) => process.env[name]) ? "configured" : "not_configured"
 };
 
+// Report gateway (src/report). Names only, never values.
+const reportRequired = ["REPORT_GHL_CLIENT_ID", "REPORT_GHL_CLIENT_SECRET", "REPORT_GHL_REDIRECT_URI", "MCP_RESOURCE_URL", "TENANT_CREDENTIAL_ENCRYPTION_KEY", "DATABASE_URL"];
+report.reportGateway = {
+  enabled: process.env.REPORT_ENABLED === "true",
+  missing: process.env.REPORT_ENABLED === "true" ? reportRequired.filter((name) => !process.env[name]) : [],
+  dashboard: process.env.REPORT_ADMIN_EMAILS && String(process.env.REPORT_SESSION_SECRET || "").length >= 32 ? "configured" : "not_configured",
+  adminEmailWebhook: process.env.REPORT_ADMIN_WEBHOOK_URL || process.env.HIGHLEVEL_INVITE_WEBHOOK_URL ? "configured" : "not_configured"
+};
+
 console.log(JSON.stringify(report, null, 2));
-if (missingOAuth.length) process.exitCode = 1;
+if (missingOAuth.length || report.reportGateway.missing.length) process.exitCode = 1;
