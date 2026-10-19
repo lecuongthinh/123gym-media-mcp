@@ -207,6 +207,43 @@ export class PostgresConnectionRepository {
     );
   }
 
+  // Runs fn while holding a row lock on the credential, so concurrent Render
+  // instances never refresh with the same rotating refresh token. fn receives the
+  // latest stored payload and a save() that writes inside the same transaction.
+  async withCredentialLock(credentialId, fn) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("BEGIN");
+      const { rows } = await client.query(
+        `SELECT encrypted_payload FROM tenant_credentials WHERE id = $1 FOR UPDATE`,
+        [credentialId]
+      );
+      const save = async (encryptedPayload, expiresAt) => {
+        await client.query(
+          `UPDATE tenant_credentials
+              SET encrypted_payload = $2, encryption_version = 1, expires_at = $3, last_rotated_at = now(), updated_at = now()
+            WHERE id = $1`,
+          [credentialId, encryptedPayload, expiresAt]
+        );
+      };
+      const result = await fn({ encryptedPayload: rows[0]?.encrypted_payload || null, save });
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async markConnectionError(connectionId) {
+    await this.pool.query(
+      `UPDATE connections SET status = 'error', updated_at = now() WHERE id = $1 AND status = 'active'`,
+      [connectionId]
+    );
+  }
+
   async createOAuthState({ stateHash, tenantId, actorUserId, expiresAt, intendedLocationId = null }) {
     await this.pool.query(
       `INSERT INTO oauth_states (state_hash, tenant_id, actor_user_id, provider, expires_at, intended_location_id)

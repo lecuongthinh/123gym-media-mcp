@@ -18,6 +18,7 @@ import {
   protectedResourceMetadata,
   requireScopes
 } from "./src/auth.js";
+import { CREDENTIAL_REFRESH_FAILED, RECONNECT_MESSAGE } from "./src/credential-provider.js";
 import { createHighLevelOnboarding, friendlyOnboardingError, onboardingResultPage } from "./src/highlevel-onboarding.js";
 import { authenticateIssuedToken, completeHighLevelLogin, createOAuthRouter, inviteTeamMember } from "./src/oauth-server.js";
 import { fetchHighLevelUsers } from "./src/highlevel-users.js";
@@ -1392,6 +1393,12 @@ app.post("/mcp", async (req, res) => {
     if (error instanceof AuthenticationError && error.code === "insufficient_scope") {
       const challenge = oauthChallenge(process.env, { error: "insufficient_scope", description: error.message, scope: toolOAuthScopes(request.params?.name).join(" ") });
       return res.json({ jsonrpc: "2.0", id, result: { isError: true, content: [{ type: "text", text: error.message }], _meta: { "mcp/www_authenticate": [challenge] } } });
+    }
+    if (error?.code === CREDENTIAL_REFRESH_FAILED || error?.code === "CONNECTION_NOT_FOUND") {
+      const text = error.code === CREDENTIAL_REFRESH_FAILED
+        ? RECONNECT_MESSAGE
+        : "Chưa có kết nối HighLevel đang hoạt động cho tài khoản này (có thể đã hết hạn). Hãy chạy connect_social_account để kết nối lại, sau đó thử lại.";
+      return res.json({ jsonrpc: "2.0", id, result: { isError: true, content: [{ type: "text", text }] } });
     }
     return res.json({ jsonrpc: "2.0", id, error: { code: -32000, message: redactSecrets(error.message) } });
   }
