@@ -20,7 +20,9 @@ export function reportAppEnv(env = process.env) {
     clientSecret: env.REPORT_GHL_CLIENT_SECRET || "",
     redirectUri: env.REPORT_GHL_REDIRECT_URI || "",
     versionId: env.REPORT_GHL_VERSION_ID || "",
-    authorizeUrl: env.REPORT_GHL_AUTHORIZE_URL || "https://marketplace.gohighlevel.com/oauth/chooselocation",
+    // White-label host: customers must never see the underlying platform name, and the login session
+    // of a white-labeled agency lives on this domain, not on marketplace.gohighlevel.com.
+    authorizeUrl: env.REPORT_GHL_AUTHORIZE_URL || "https://marketplace.leadconnectorhq.com/oauth/chooselocation",
     apiVersion: env.REPORT_GHL_API_VERSION || "v3"
   };
 }

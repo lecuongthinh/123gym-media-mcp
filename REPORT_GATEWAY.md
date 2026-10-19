@@ -38,6 +38,7 @@ Tool and pack names are a public contract (customers' skills call them, ChatGPT 
    | `REPORT_GHL_CLIENT_ID`, `REPORT_GHL_CLIENT_SECRET` | the new app's credentials |
    | `REPORT_GHL_REDIRECT_URI` | `https://<host>/report/oauth/callback` |
    | `REPORT_GHL_VERSION_ID` | optional: the app's version id for the consent URL |
+   | `REPORT_GHL_AUTHORIZE_URL` | optional, default `https://marketplace.leadconnectorhq.com/oauth/chooselocation` (white-label host); set it to your own white-label domain, e.g. `https://app.uplifting.vn/oauth/chooselocation`, if that is where the agency's sessions live |
    | `REPORT_ADMIN_EMAILS` | comma list of dashboard admins |
    | `REPORT_SESSION_SECRET` | 32+ random chars (`openssl rand -hex 32`) |
    | `REPORT_ADMIN_WEBHOOK_URL` | optional; falls back to `HIGHLEVEL_INVITE_WEBHOOK_URL` (the existing "send email" workflow) |

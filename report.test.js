@@ -214,7 +214,9 @@ test("install -> pending (nothing usable) -> admin approves -> packs work and ar
 
     // The install requested only read-only scopes from HighLevel.
     const consent = await fetch(`${g.origin}/report/oauth/authorize/highlevel?s=x`, { redirect: "manual" });
-    const consentScope = new URL(consent.headers.get("location")).searchParams.get("scope");
+    const consentUrl = new URL(consent.headers.get("location"));
+    assert.equal(consentUrl.hostname, "marketplace.leadconnectorhq.com", "white-label consent host, not gohighlevel.com");
+    const consentScope = consentUrl.searchParams.get("scope");
     assert.ok(consentScope.split(" ").every((s) => s.endsWith(".readonly")));
 
     const me = (await callTool(g, token, "get_my_permissions")).body.result.structuredContent;
