@@ -2,6 +2,7 @@ import express from "express";
 import { adminEnabled, createReportAdminRouter } from "./admin.js";
 import { createReportMcpRouter } from "./gateway.js";
 import { createReportOAuthRouter, reportOAuthEnabled } from "./oauth.js";
+import { createProvisionRouter } from "./provision.js";
 import { createReportStore } from "./store.js";
 
 // Report gateway module. Self-contained: it touches nothing outside
@@ -26,6 +27,7 @@ export function createReportRouter({ env = process.env, fetchImpl = globalThis.f
 
   router.use(createReportOAuthRouter({ env, getStore, fetchImpl }));
   router.use(createReportMcpRouter({ env, getStore, fetchImpl }));
+  router.use(createProvisionRouter({ env, getStore }));
   router.use(createReportAdminRouter({ env, getStore, fetchImpl }));
 
   // Express 5 forwards rejected async handlers here. A failure in this module

@@ -2,6 +2,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypt
 import express from "express";
 import { createAccessCode, reportBase, reportOAuthEnabled } from "./oauth.js";
 import { allRequestedScopes, PACK_IDS, PACKS, PRESETS, ROLES, roleAllows } from "./packs.js";
+import { provisionCustomer, provisionWebhookEnabled, resolvePacks, validLocationId } from "./provision.js";
 
 // Permission dashboard for Uplifting admins: approve new customers, switch
 // packs per customer and per role, manage people, read the audit trail.
@@ -166,14 +167,21 @@ export function createReportAdminRouter({ env = process.env, getStore, fetchImpl
     const order = { pending: 0, active: 1, suspended: 2 };
     tenants.sort((a, b) => order[a.status] - order[b.status] || String(a.name).localeCompare(String(b.name)));
     const rows = tenants.map((t) => `<tr><td><a href="/report-admin/tenants/${t.id}"><strong>${escapeHtml(t.name)}</strong></a><div class="muted"><code>${escapeHtml(t.locationId)}</code></div></td>
-      <td><span class="badge ${t.status}">${STATUS_LABELS[t.status]}</span></td><td>${t.memberCount}</td><td><a href="/report-admin/tenants/${t.id}">Mở</a></td></tr>`).join("");
+      <td>${t.status === "active" && !t.connected ? `<span class="badge pending">Chờ khách kết nối</span>` : `<span class="badge ${t.status}">${STATUS_LABELS[t.status]}</span>`}</td><td>${t.memberCount}</td><td><a href="/report-admin/tenants/${t.id}">Mở</a></td></tr>`).join("");
     const paused = (await getStore(req).getSetting("paused")) === "true";
     const pauseCard = `<div class="card"><div class="row" style="justify-content:space-between"><div>${paused
       ? `<strong style="color:var(--bad)">Đang tạm dừng:</strong> mọi lệnh gọi dữ liệu của khách đều bị từ chối. Đăng nhập vẫn hoạt động.`
       : `<strong>Hệ thống đang hoạt động.</strong> <span class="muted">Dùng nút bên cạnh để dừng ngay mọi truy cập dữ liệu (không cần deploy).</span>`}</div>
       <form method="post" action="/report-admin/pause">${csrfField(req)}<input type="hidden" name="paused" value="${paused ? "false" : "true"}">
       <button class="${paused ? "primary" : "danger"}">${paused ? "Bật lại" : "Tạm dừng tất cả"}</button></form></div></div>`;
-    res.type("html").send(layout("Khách hàng", `<h1>Khách hàng</h1>${pauseCard}
+    const addCard = `<div class="card"><h2>Thêm khách mới (cấp quyền trước khi khách kết nối)</h2>
+      <form method="post" action="/report-admin/tenants" class="row">${csrfField(req)}
+        <input type="text" name="locationId" required placeholder="Location ID của sub-account" pattern="[A-Za-z0-9]{10,40}" style="min-width:17rem">
+        <input type="text" name="name" placeholder="Tên khách" maxlength="100">
+        <select name="preset">${Object.entries(PRESETS).map(([key, p]) => `<option value="${key}" ${key === "basic" ? "selected" : ""}>${escapeHtml(p.label)}</option>`).join("")}</select>
+        <button class="primary">Thêm và bật gói</button></form>
+      <p class="muted">Khách chỉ kết nối được khi sub-account của họ đã nằm trong danh sách này. Location ID lấy ở HighLevel (Settings → Business Profile, hoặc trong URL của sub-account).</p></div>`;
+    res.type("html").send(layout("Khách hàng", `<h1>Khách hàng</h1>${pauseCard}${addCard}
       <div class="card"><table><tr><th>Khách (sub-account)</th><th>Trạng thái</th><th>Thành viên</th><th></th></tr>
       ${rows || `<tr><td colspan="4" class="muted">Chưa có khách nào cài ứng dụng.</td></tr>`}</table></div>`, req.admin));
   });
@@ -186,6 +194,19 @@ export function createReportAdminRouter({ env = process.env, getStore, fetchImpl
     res.redirect(303, "/report-admin");
   });
 
+  router.post("/report-admin/tenants", requireSession, form, requireCsrf, async (req, res) => {
+    const locationId = String(req.body.locationId || "").trim();
+    const packs = resolvePacks({ preset: req.body.preset });
+    if (!validLocationId(locationId) || !packs) {
+      return res.status(400).type("html").send(layout("Không thêm được", `<div class="card"><p>Location ID không hợp lệ (10-40 ký tự chữ và số) hoặc gói không đúng.</p><p><a href="/report-admin">← Quay lại</a></p></div>`, req.admin));
+    }
+    const store = getStore(req);
+    const out = await provisionCustomer({
+      store, locationId, name: String(req.body.name || "").trim().slice(0, 100), packs, actor: req.admin.email, actorType: "admin"
+    });
+    return res.redirect(303, `/report-admin/tenants/${out.tenantId}`);
+  });
+
   router.get("/report-admin/setup", requireSession, (req, res) => {
     const scopes = allRequestedScopes();
     const base = reportBase(env);
@@ -193,6 +214,11 @@ export function createReportAdminRouter({ env = process.env, getStore, fetchImpl
       <div class="card"><h2>Địa chỉ MCP (khách dán vào ChatGPT/Claude)</h2><p class="code">${escapeHtml(base)}/mcp</p>
         <p class="muted">ChatGPT: bật Developer mode → Settings → Apps → Create. Claude: Settings → Connectors → Add custom connector.</p></div>
       <div class="card"><h2>Redirect URL của Marketplace app</h2><p class="code">${escapeHtml(env.REPORT_GHL_REDIRECT_URI || `${base}/oauth/callback`)}</p></div>
+      <div class="card"><h2>Cấp quyền tự động khi khách mua (webhook)</h2>${provisionWebhookEnabled(env)
+        ? `<p class="code">POST ${escapeHtml(base)}/provision<br>Authorization: Bearer &lt;REPORT_PROVISION_SECRET&gt;</p>
+           <p class="code">{"locationId":"...","name":"Tên khách","preset":"basic"}</p>
+           <p class="muted">preset: ${Object.keys(PRESETS).join(", ")}; hoặc "packs": [${PACK_IDS.map((p) => `"${p}"`).join(", ")}]. Tạo mới nếu chưa có, không đổi khách đã có (thêm "update": true để áp lại gói). Dùng action Custom Webhook trong workflow HighLevel.</p>`
+        : `<p class="muted">Đang tắt. Đặt biến <code>REPORT_PROVISION_SECRET</code> (32+ ký tự ngẫu nhiên) trên Render để bật.</p>`}</div>
       <div class="card"><h2>Scope cần chọn trên Marketplace app (${scopes.length}, chỉ đọc)</h2><p class="code">${scopes.map(escapeHtml).join("<br>")}</p>
         <p class="muted">Loại app: Sub-Account. Listing → Who can install = Everyone. Không chọn scope ghi.</p></div>`, req.admin));
   });

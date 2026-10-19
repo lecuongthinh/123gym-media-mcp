@@ -264,9 +264,11 @@ export function createReportOAuthRouter({ env = process.env, getStore, fetchImpl
     if (req.query.error) {
       return res.redirect(302, redirectWith(request.redirect_uri, { error: "access_denied", error_description: "Authorization was declined.", state: request.client_state }));
     }
+    let attemptedLocation = null;
     try {
       if (typeof req.query.code !== "string" || !req.query.code) throw new ReportAccessError("Không nhận được mã ủy quyền.");
       const body = await exchangeCode({ env, code: req.query.code, fetchImpl });
+      attemptedLocation = typeof body.locationId === "string" ? body.locationId : null;
       if (!body.locationId) {
         throw new ReportAccessError("Lần cài này cấp quyền cho cả agency. Hãy đăng nhập vào đúng sub-account của khách (không phải giao diện agency) rồi thử lại.");
       }
@@ -283,7 +285,9 @@ export function createReportOAuthRouter({ env = process.env, getStore, fetchImpl
           auth_mode: "location", access_token: body.access_token, refresh_token: body.refresh_token,
           location_id: locationId, scope: body.scope || "", expires_at: expiresAt
         }, env),
-        expiresAt, scopes: String(body.scope || "").split(/\s+/).filter(Boolean)
+        expiresAt, scopes: String(body.scope || "").split(/\s+/).filter(Boolean),
+        // Default: only customers an admin (or the provisioning webhook) already created may connect.
+        allowCreate: env.REPORT_ALLOW_UNKNOWN_INSTALLS === "true"
       });
       const authCode = secret("rac2_");
       await store.createAuthCode({
@@ -299,6 +303,7 @@ export function createReportOAuthRouter({ env = process.env, getStore, fetchImpl
       return res.redirect(302, redirectWith(request.redirect_uri, { code: authCode, state: request.client_state }));
     } catch (error) {
       const expected = error instanceof ReportAccessError;
+      if (error?.code === "NOT_PROVISIONED") await store.recordAudit({ actorType: "system", action: "install.rejected", result: "denied", metadata: { reason: "not_provisioned", locationId: attemptedLocation } }).catch(() => {});
       console.error("[report-login] failed:", expected ? error.message : (error?.code || error?.name || "Error"));
       return res.status(expected ? 403 : 500).type("html").send(page("Không kết nối được",
         `<p>${escapeHtml(expected ? error.message : "Kết nối thất bại. Thử lại, hoặc liên hệ Uplifting nếu vẫn lỗi.")}</p><p style="color:#666">Bạn có thể đóng cửa sổ này và thử lại từ ChatGPT/Claude.</p>`));

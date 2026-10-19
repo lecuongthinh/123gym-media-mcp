@@ -68,15 +68,24 @@ export class InMemoryReportStore {
       .map((row) => ({ email: row.email, role: row.role, expiresAt: row.expiresAt, consumed: Boolean(row.consumedAt) }));
   }
 
-  async provisionLogin({ subject, email, displayName, locationId, locationName, encryptedPayload, expiresAt, scopes }) {
+  async provisionTenant({ locationId, name }) {
+    const existing = [...this.tenants.values()].find((row) => row.location_id === locationId);
+    if (existing) return { id: existing.id, created: false, status: existing.status };
+    const tenant = { id: randomUUID(), location_id: locationId, name: name || locationId, status: "pending", created_at: new Date() };
+    this.tenants.set(tenant.id, tenant);
+    return { id: tenant.id, created: true, status: tenant.status };
+  }
+
+  async provisionLogin({ subject, email, displayName, locationId, locationName, encryptedPayload, expiresAt, scopes, allowCreate = false }) {
     let tenant = [...this.tenants.values()].find((row) => row.location_id === locationId);
     let created = false;
     if (!tenant) {
-      tenant = { id: randomUUID(), location_id: locationId, name: locationName, status: "pending", created_at: new Date() };
+      if (!allowCreate) throw new ReportAccessError("Tài khoản này chưa được Uplifting kích hoạt. Vui lòng liên hệ Uplifting để được cấp quyền trước khi kết nối.", "NOT_PROVISIONED");
+      tenant = { id: randomUUID(), location_id: locationId, name: locationName || locationId, status: "pending", created_at: new Date() };
       this.tenants.set(tenant.id, tenant);
       created = true;
-    } else if (locationName) {
-      tenant.name = locationName;
+    } else if (locationName && tenant.name === tenant.location_id) {
+      tenant.name = locationName; // keep a name an admin typed; only replace the placeholder
     }
     if (tenant.status === "suspended") throw new ReportAccessError("Tài khoản này đang bị tạm khóa.", "TENANT_SUSPENDED");
     let user = [...this.users.values()].find((row) => row.subject === subject);
@@ -128,7 +137,7 @@ export class InMemoryReportStore {
   async listTenants() {
     return [...this.tenants.values()].map((tenant) => ({
       id: tenant.id, locationId: tenant.location_id, name: tenant.name, status: tenant.status,
-      createdAt: tenant.created_at,
+      createdAt: tenant.created_at, connected: this.connections.get(tenant.id)?.status === "active",
       memberCount: [...this.memberships.values()].filter((m) => m.tenant_id === tenant.id && m.status === "active").length
     })).sort((a, b) => String(a.name).localeCompare(String(b.name)));
   }
@@ -352,17 +361,36 @@ export class PostgresReportStore {
     return rows.map((row) => ({ email: row.email, role: row.role, expiresAt: row.expires_at, consumed: Boolean(row.consumed_at) }));
   }
 
-  async provisionLogin({ subject, email, displayName, locationId, locationName, encryptedPayload, expiresAt, scopes }) {
+  async provisionTenant({ locationId, name }) {
+    const inserted = await this.pool.query(
+      `INSERT INTO report_tenants (location_id, name) VALUES ($1, $2)
+       ON CONFLICT (location_id) DO NOTHING RETURNING id, status`,
+      [locationId, name || locationId]
+    );
+    if (inserted.rowCount) return { id: inserted.rows[0].id, created: true, status: inserted.rows[0].status };
+    const { rows } = await this.pool.query("SELECT id, status FROM report_tenants WHERE location_id = $1", [locationId]);
+    return { id: rows[0].id, created: false, status: rows[0].status };
+  }
+
+  async provisionLogin({ subject, email, displayName, locationId, locationName, encryptedPayload, expiresAt, scopes, allowCreate = false }) {
     const client = await this.pool.connect();
     try {
       await client.query("BEGIN");
-      const tenantResult = await client.query(
-        `INSERT INTO report_tenants (location_id, name) VALUES ($1, $2)
-         ON CONFLICT (location_id) DO UPDATE SET name = COALESCE(NULLIF(EXCLUDED.name, ''), report_tenants.name), updated_at = now()
-         RETURNING id, status, (xmax = 0) AS created`,
-        [locationId, locationName || locationId]
-      );
-      const tenant = tenantResult.rows[0];
+      const found = await client.query("SELECT id, status, name, location_id FROM report_tenants WHERE location_id = $1 FOR UPDATE", [locationId]);
+      let tenant;
+      if (found.rowCount) {
+        tenant = { ...found.rows[0], created: false };
+        if (locationName && tenant.name === tenant.location_id) {
+          await client.query("UPDATE report_tenants SET name = $2, updated_at = now() WHERE id = $1", [tenant.id, locationName]);
+        }
+      } else {
+        if (!allowCreate) throw new ReportAccessError("Tài khoản này chưa được Uplifting kích hoạt. Vui lòng liên hệ Uplifting để được cấp quyền trước khi kết nối.", "NOT_PROVISIONED");
+        const inserted = await client.query(
+          "INSERT INTO report_tenants (location_id, name) VALUES ($1, $2) RETURNING id, status",
+          [locationId, locationName || locationId]
+        );
+        tenant = { ...inserted.rows[0], created: true };
+      }
       if (tenant.status === "suspended") throw new ReportAccessError("Tài khoản này đang bị tạm khóa.", "TENANT_SUSPENDED");
       const userResult = await client.query(
         `INSERT INTO report_users (subject, email, display_name) VALUES ($1, $2, $3)
@@ -435,11 +463,12 @@ export class PostgresReportStore {
   async listTenants() {
     const { rows } = await this.pool.query(
       `SELECT t.id, t.location_id, t.name, t.status, t.created_at,
-              (SELECT count(*)::int FROM report_memberships m WHERE m.tenant_id = t.id AND m.status = 'active') AS member_count
+              (SELECT count(*)::int FROM report_memberships m WHERE m.tenant_id = t.id AND m.status = 'active') AS member_count,
+              EXISTS (SELECT 1 FROM report_connections c WHERE c.tenant_id = t.id AND c.status = 'active') AS connected
          FROM report_tenants t ORDER BY t.name`
     );
     return rows.map((row) => ({
-      id: row.id, locationId: row.location_id, name: row.name, status: row.status, createdAt: row.created_at, memberCount: row.member_count
+      id: row.id, locationId: row.location_id, name: row.name, status: row.status, createdAt: row.created_at, memberCount: row.member_count, connected: row.connected
     }));
   }
 

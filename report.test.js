@@ -22,6 +22,7 @@ function baseEnv(extra = {}) {
     REPORT_ADMIN_EMAILS: "boss@uplifting.test",
     REPORT_SESSION_SECRET: randomBytes(32).toString("hex"),
     REPORT_DEV_LOGIN: "true",
+    REPORT_ALLOW_UNKNOWN_INSTALLS: "true",
     ...extra
   };
 }
@@ -31,7 +32,7 @@ function json(body, status = 200) {
 }
 
 // Fake HighLevel. Records every call so tests can assert what was sent.
-function fakeHighLevel({ locationId = "LOC1", userId = "U1", email = "an@example.com" } = {}) {
+function fakeHighLevel({ locationId = "LOC1TESTLOCATION", userId = "U1", email = "an@example.com" } = {}) {
   const calls = [];
   let refreshCount = 0;
   const impl = async (url, init = {}) => {
@@ -246,7 +247,7 @@ test("install -> pending (nothing usable) -> admin approves -> packs work and ar
     assert.equal(contacts.contacts[0].email, "l***@example.com", "email is masked by default");
     assert.equal(contacts.contacts[0].phone.endsWith("567"), true);
     const call = g.ghl.calls.find((c) => c.path === "/contacts/");
-    assert.match(call.search, /locationId=LOC1/);
+    assert.match(call.search, /locationId=LOC1TESTLOCATION/);
     assert.doesNotMatch(call.search, /SOMEONE-ELSE/, "a model-supplied locationId must be ignored");
     assert.equal(call.authorization, "Bearer ghl_access_1");
 
@@ -511,4 +512,101 @@ test("graceful shutdown: SIGTERM lets the server exit cleanly instead of being k
   if (result.code === "timeout") child.kill("SIGKILL");
   assert.equal(result.code, 0);
   assert.match(out, /"event":"shutdown"/);
+});
+
+const LOC_ID = "LOC1TESTLOCATION"; // the location the fake HighLevel grants
+
+test("pre-provisioning: unknown sub-accounts cannot connect by default", async () => {
+  const g = await startGateway({ env: baseEnv({ REPORT_ALLOW_UNKNOWN_INSTALLS: "false" }) });
+  try {
+    const clientId = await register(g);
+    const state = await startAuthorize(g, clientId, pkce().challenge);
+    const cb = await fetch(`${g.origin}/report/oauth/callback?code=ghlcode&state=${state}`, { redirect: "manual" });
+    assert.equal(cb.status, 403);
+    assert.match(await cb.text(), /chưa được Uplifting kích hoạt/);
+    assert.equal((await g.store.listTenants()).length, 0, "no customer is created by an unknown install");
+    const audit = await g.store.listAudit({ limit: 20 });
+    const rejected = audit.find((a) => a.action === "install.rejected");
+    assert.equal(rejected.metadata.locationId, LOC_ID, "the admin can see which location tried");
+  } finally { await g.close(); }
+});
+
+test("sold -> permissions set -> customer connects: a provisioned customer works at once, no approval step", async () => {
+  const g = await startGateway({ env: baseEnv({ REPORT_ALLOW_UNKNOWN_INSTALLS: "false" }) });
+  try {
+    const admin = await adminSession(g);
+    const csrf = await admin.csrfOf("/report-admin");
+    const added = await admin.post("/report-admin/tenants", { csrf, locationId: LOC_ID, name: "Khách A", preset: "basic" });
+    assert.equal(added.status, 303);
+    const tenants = await g.store.listTenants();
+    assert.equal(tenants.length, 1);
+    assert.equal(tenants[0].status, "active");
+    assert.equal(tenants[0].connected, false);
+    assert.match(await admin.page("/report-admin"), /Chờ khách kết nối/);
+
+    const owner = await adminConnect(g);
+    const me = (await callTool(g, owner.access_token, "get_my_permissions")).body.result.structuredContent;
+    assert.equal(me.tenantStatus, "active");
+    assert.equal(me.tenant, "Khách A", "the name the admin typed is kept");
+    assert.equal(me.packs.filter((p) => p.allowed).map((p) => p.id).sort().join(), "calendar,contacts,opportunities");
+    assert.equal((await callTool(g, owner.access_token, "crm_search_contacts")).body.result.isError, undefined);
+    assert.equal((await callTool(g, owner.access_token, "crm_list_orders")).body.result.isError, true, "packs outside the preset stay closed");
+    assert.equal((await g.store.listTenants())[0].connected, true);
+    assert.doesNotMatch(await admin.page("/report-admin"), /Chờ khách kết nối/);
+
+    const bad = await admin.post("/report-admin/tenants", { csrf, locationId: "bad id!", preset: "basic" });
+    assert.equal(bad.status, 400);
+    const forged = await admin.post("/report-admin/tenants", { csrf: "nope", locationId: "ANOTHERLOC1TESTLOCATION2345", preset: "basic" });
+    assert.equal(forged.status, 403);
+  } finally { await g.close(); }
+});
+
+test("provisioning webhook: authenticated, validated, idempotent, never reactivates a suspended customer", async () => {
+  const secret = randomBytes(32).toString("hex");
+  const off = await startGateway();
+  try {
+    assert.equal((await fetch(`${off.origin}/report/provision`, { method: "POST" })).status, 404, "off without REPORT_PROVISION_SECRET");
+  } finally { await off.close(); }
+
+  const g = await startGateway({ env: baseEnv({ REPORT_ALLOW_UNKNOWN_INSTALLS: "false", REPORT_PROVISION_SECRET: secret }) });
+  try {
+    const call = (body, token = secret) => fetch(`${g.origin}/report/provision`, {
+      method: "POST", headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body)
+    });
+    assert.equal((await call({ locationId: LOC_ID }, null)).status, 401);
+    assert.equal((await call({ locationId: LOC_ID }, "wrong-secret")).status, 401);
+    assert.equal((await call({ locationId: "x" })).status, 400);
+    assert.equal((await call({ locationId: LOC_ID, preset: "nope" })).status, 400);
+    assert.equal((await call({ locationId: LOC_ID, packs: ["contacts", "hack"] })).status, 400);
+    assert.equal((await g.store.listTenants()).length, 0, "rejected calls create nothing");
+
+    const created = await call({ locationId: LOC_ID, name: "Khách B", packs: ["contacts", "social_planner"] });
+    assert.equal(created.status, 201);
+    const body = await created.json();
+    assert.equal(body.created, true);
+    const tenantId = body.tenantId;
+    assert.equal((await g.store.getTenant(tenantId)).status, "active");
+    assert.equal((await g.store.getPermissions(tenantId)).grants.social_planner, true);
+
+    // The same webhook fired again must not change an existing customer ...
+    await g.store.setPackGrant(tenantId, "contacts", false, "admin-edit");
+    const again = await call({ locationId: LOC_ID, preset: "full" });
+    assert.equal(again.status, 200);
+    assert.equal((await again.json()).applied, false);
+    assert.equal((await g.store.getPermissions(tenantId)).grants.contacts, false, "an admin's edit survives a repeated webhook");
+    // ... unless it asks to update.
+    await call({ locationId: LOC_ID, packs: ["contacts"], update: true });
+    assert.deepEqual(Object.entries((await g.store.getPermissions(tenantId)).grants).filter(([, v]) => v).map(([k]) => k), ["contacts"]);
+
+    await g.store.setTenantStatus(tenantId, "suspended");
+    await call({ locationId: LOC_ID, preset: "full", update: true });
+    assert.equal((await g.store.getTenant(tenantId)).status, "suspended", "never reactivated by the webhook");
+
+    await g.store.setTenantStatus(tenantId, "active");
+    const owner = await adminConnect(g);
+    assert.equal((await callTool(g, owner.access_token, "crm_search_contacts")).body.result.isError, undefined);
+    const audit = await g.store.listAudit({ tenantId, limit: 50 });
+    assert.ok(audit.some((a) => a.action === "tenant.provisioned" && a.actor === "webhook"));
+    assert.equal(JSON.stringify(audit).includes(secret), false, "the webhook secret is never logged");
+  } finally { await g.close(); }
 });

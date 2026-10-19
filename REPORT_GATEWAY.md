@@ -41,6 +41,8 @@ Tool and pack names are a public contract (customers' skills call them, ChatGPT 
    | `REPORT_ADMIN_EMAILS` | comma list of dashboard admins |
    | `REPORT_SESSION_SECRET` | 32+ random chars (`openssl rand -hex 32`) |
    | `REPORT_ADMIN_WEBHOOK_URL` | optional; falls back to `HIGHLEVEL_INVITE_WEBHOOK_URL` (the existing "send email" workflow) |
+   | `REPORT_PROVISION_SECRET` | optional, 32+ chars: turns on the provisioning webhook |
+   | `REPORT_ALLOW_UNKNOWN_INSTALLS` | optional, default off: `true` lets any sub-account install and wait for approval |
    | `REPORT_ALLOWED_REDIRECT_HOSTS` | optional extra OAuth redirect hosts |
    | `REPORT_RATE_LIMIT_PER_MINUTE` | optional, default 60 per customer |
    | `REPORT_GHL_API_VERSION` | optional, default `v3` (see "Not verified") |
@@ -48,14 +50,38 @@ Tool and pack names are a public contract (customers' skills call them, ChatGPT 
    Already required by the posting app and reused: `MCP_RESOURCE_URL`, `TENANT_CREDENTIAL_ENCRYPTION_KEY`, `DATABASE_URL`.
 4. `npm run check:config` shows what is missing (names only). `/health` adds `"report":"enabled"` when on.
 
-## Onboarding a customer
+## Onboarding a customer (sold -> permissions set -> customer connects)
 
-1. Customer adds `https://<host>/report/mcp` as a custom connector (ChatGPT: Developer mode → Settings → Apps → Create;
-   Claude: Settings → Connectors → Add custom connector) and signs in as their CRM admin → customer appears as **Chờ duyệt**.
-2. In `/report-admin` open the customer, choose a preset (or tick packs) and **Duyệt**. Adjust the role matrix if needed.
-3. Staff who are not CRM admins cannot authorize the app themselves: create an **access code** (email + role) in the
-   customer page; they choose "Dùng mã truy cập" when connecting. Codes are single-use, 7 days, shown once, stored hashed.
+Customers are created and given their packs **before** they connect. By default a sub-account that is not already
+in the list cannot connect at all (the install is refused and logged as `install.rejected` with its location id).
+
+1. **Create the customer** with their sub-account's Location ID, either
+   - by hand: `/report-admin` -> "Thêm khách mới" (Location ID, name, preset); or
+   - automatically when they buy: a HighLevel workflow "Custom Webhook" action calls the provisioning webhook (below).
+   The customer is active at once with the chosen packs and shows as "Chờ khách kết nối".
+2. **Customer connects:** adds `https://<host>/report/mcp` as a custom connector (ChatGPT: Developer mode -> Settings -> Apps ->
+   Create; Claude: Settings -> Connectors -> Add custom connector) and signs in as their CRM admin. No approval step: the packs
+   you set apply immediately. Adjust packs or the role matrix any time in the customer's page.
+3. Staff who are not CRM admins cannot authorize the app themselves: create an **access code** (email + role) on the customer
+   page; they choose "Dùng mã truy cập" when connecting. Codes are single-use, 7 days, shown once, stored hashed.
 4. Skills should call `get_my_permissions` first and tell the user which pack is off instead of trying to work around it.
+
+Set `REPORT_ALLOW_UNKNOWN_INSTALLS=true` only if you want the older behavior: anyone can install and lands as **Chờ duyệt**
+with nothing enabled until you approve in the dashboard.
+
+### Provisioning webhook
+
+`POST https://<host>/report/provision`, header `Authorization: Bearer <REPORT_PROVISION_SECRET>` (32+ random chars; unset = the
+endpoint 404s). JSON body:
+
+```json
+{ "locationId": "UwsfBVLmz7XSKJbhuOTS", "name": "Trung tâm A", "preset": "basic" }
+```
+
+`preset` is `none | basic | social | full`, or send `"packs": ["contacts","calendar",...]`. A new customer is created and switched
+on (201). An existing customer is **not changed** (200, `applied:false`) unless `"update": true`, and a suspended customer is
+never reactivated. In a HighLevel workflow the Location ID usually comes from a contact custom field the buyer fills in.
+Every call is audited as `tenant.provisioned` by `webhook`; the secret is never logged.
 
 ## Running on the same service as the posting app
 
@@ -77,7 +103,7 @@ If the report module shares a Render service with Uplifting Social AI, these lim
 1. Deploy this code with **no** `REPORT_*` variables. Behavior is unchanged; confirm `/health` shows version 3.16.0 and posting still works.
 2. Run `npm run migrate` (013 is additive).
 3. Add the `REPORT_*` variables (this triggers one more deploy), confirm `/health` shows `"report":"enabled"`.
-4. Install on a test sub-account, approve in `/report-admin`, call each pack.
+4. Add a test sub-account in `/report-admin` ("Thêm khách mới"), install on it, call each pack.
 5. Only then onboard a customer. Roll back any step with Render's rollback, or pause from the dashboard.
 
 ## Local preview

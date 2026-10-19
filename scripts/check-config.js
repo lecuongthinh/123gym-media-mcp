@@ -16,6 +16,8 @@ report.reportGateway = {
   enabled: process.env.REPORT_ENABLED === "true",
   missing: process.env.REPORT_ENABLED === "true" ? reportRequired.filter((name) => !process.env[name]) : [],
   dashboard: process.env.REPORT_ADMIN_EMAILS && String(process.env.REPORT_SESSION_SECRET || "").length >= 32 ? "configured" : "not_configured",
+  provisionWebhook: String(process.env.REPORT_PROVISION_SECRET || "").length >= 32 ? "configured" : "not_configured",
+  allowUnknownInstalls: process.env.REPORT_ALLOW_UNKNOWN_INSTALLS === "true",
   adminEmailWebhook: process.env.REPORT_ADMIN_WEBHOOK_URL || process.env.HIGHLEVEL_INVITE_WEBHOOK_URL ? "configured" : "not_configured"
 };
 
