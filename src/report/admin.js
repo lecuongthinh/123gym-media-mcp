@@ -6,7 +6,8 @@ import { allRequestedScopes, PACK_IDS, PACKS, PRESETS, ROLES, roleAllows } from 
 // Permission dashboard for Uplifting admins: approve new customers, switch
 // packs per customer and per role, manage people, read the audit trail.
 // Sign-in is a one-time emailed link for an allow-listed address; the session
-// is a signed, HttpOnly, SameSite=Strict cookie, and every change is
+// is a signed, HttpOnly, SameSite=Lax cookie (Strict would drop it when the emailed
+// link, a cross-site navigation, redirects into the dashboard), and every change is
 // CSRF-protected and audited with the admin's email.
 
 const SESSION_TTL_MS = 8 * 3600_000;
@@ -149,13 +150,13 @@ export function createReportAdminRouter({ env = process.env, getStore, fetchImpl
       return res.status(400).type("html").send(layout("Liên kết hết hạn", `<div class="card"><p>Liên kết không hợp lệ, đã dùng hoặc hết hạn.</p><p><a href="/report-admin/login">Đăng nhập lại</a></p></div>`));
     }
     const session = signSession(env, { e: row.email, c: randomBytes(16).toString("base64url"), x: Date.now() + SESSION_TTL_MS });
-    res.set("Set-Cookie", `${COOKIE}=${session}; HttpOnly; SameSite=Strict; Path=/report-admin; Max-Age=${SESSION_TTL_MS / 1000}${secureCookie()}`);
+    res.set("Set-Cookie", `${COOKIE}=${session}; HttpOnly; SameSite=Lax; Path=/report-admin; Max-Age=${SESSION_TTL_MS / 1000}${secureCookie()}`);
     await getStore(req).recordAudit({ actorType: "admin", actor: row.email, action: "admin.login", result: "success" }).catch(() => {});
     return res.redirect(302, "/report-admin");
   });
 
   router.get("/report-admin/logout", (req, res) => {
-    res.set("Set-Cookie", `${COOKIE}=; HttpOnly; SameSite=Strict; Path=/report-admin; Max-Age=0${secureCookie()}`);
+    res.set("Set-Cookie", `${COOKIE}=; HttpOnly; SameSite=Lax; Path=/report-admin; Max-Age=0${secureCookie()}`);
     res.redirect(302, "/report-admin/login");
   });
 

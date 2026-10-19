@@ -131,7 +131,11 @@ async function adminSession(g) {
   const link = /href="([^"]*verify[^"]*)"/.exec((await login.text()).replace(/&amp;/g, "&"))[1];
   const verify = await fetch(`${g.origin}/report-admin/verify${new URL(link).search}`, { redirect: "manual" });
   assert.equal(verify.status, 302);
-  const cookie = verify.headers.getSetCookie()[0].split(";")[0];
+  const setCookie = verify.headers.getSetCookie()[0];
+  // The sign-in link is opened from an email (cross-site). Strict cookies are dropped on the redirect that follows.
+  assert.match(setCookie, /SameSite=Lax/);
+  assert.doesNotMatch(setCookie, /SameSite=Strict/);
+  const cookie = setCookie.split(";")[0];
   const page = async (path) => (await fetch(`${g.origin}${path}`, { headers: { cookie } })).text();
   const post = (path, fields) => fetch(`${g.origin}${path}`, {
     method: "POST", redirect: "manual", headers: { cookie, "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(fields)
