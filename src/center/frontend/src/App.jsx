@@ -12,12 +12,21 @@ if (typeof window !== "undefined" && window.__CANDY_TOKEN__) {
   delete window.__CANDY_TOKEN__;
   if (location.search) history.replaceState(null, "", location.pathname + location.hash);
 }
+// Khi app bị gắn dưới 1 tiền tố đường dẫn (vd /center/* lúc chạy chung service với app khác), gọi API
+// bằng đường dẫn tuyệt đối "/api/..." sẽ trật về gốc domain (vd https://host/api/... thay vì
+// https://host/center/api/...) vì "/" luôn tính từ gốc domain, không phải từ vị trí trang hiện tại. Vite
+// đã biết tiền tố này qua `base` lúc build (xem vite.config.js, biến VITE_BASE_PATH) và expose lại qua
+// import.meta.env.BASE_URL — ghép vào đây để MỌI lệnh gọi "/api/..." trong code tự động đúng tiền tố.
+const API_BASE_PATH = (import.meta.env.BASE_URL || "/").replace(/\/$/, "");
 const _rawFetch = window.fetch.bind(window);
 window.fetch = (input, opts = {}) => {
-  const url = typeof input === "string" ? input : input?.url || "";
+  let url = typeof input === "string" ? input : input?.url || "";
   const token = localStorage.getItem(TOKEN_KEY);
   if (token && url.startsWith("/api/")) {
     opts = { ...opts, headers: { ...(opts.headers || {}), Authorization: `Bearer ${token}` } };
+  }
+  if (typeof input === "string" && url.startsWith("/api/") && API_BASE_PATH) {
+    input = API_BASE_PATH + url;
   }
   return _rawFetch(input, opts);
 };
