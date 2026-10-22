@@ -10,7 +10,7 @@
     "migrate": "node scripts/migrate.js",
     "check:config": "node scripts/check-config.js",
     "build": "npm run build:center",
-    "build:center": "cd src/center/frontend && VITE_BASE_PATH=/center/ npx vite build --emptyOutDir"
+    "build:center": "VITE_BASE_PATH=/center/ node_modules/.bin/vite build src/center/frontend --config src/center/frontend/vite.config.js --emptyOutDir"
   },
   "engines": {
     "node": ">=20"
