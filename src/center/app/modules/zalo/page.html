@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zalo OA Connector</title>
+<style>
+  :root { --bg:#f4f5f9; --card:#fff; --ink:#161b26; --mut:#667085; --line:#e4e7ec; --acc:#3457e0; --acc-ink:#fff;
+          --ok:#067647; --okbg:#e7f6ee; --warn:#b54708; --warnbg:#fff4e5; --bad:#b42318; --badbg:#fef3f2; --bar2:#98a2b3; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#10131a; --card:#181c25; --ink:#e8eaf0; --mut:#98a2b3; --line:#2a303c; --acc:#6f8bff; --acc-ink:#0b0f1a;
+          --ok:#4fd08f; --okbg:#132a1e; --warn:#f0a35a; --warnbg:#3a2a12; --bad:#f4877d; --badbg:#3a1414; --bar2:#667085; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif; }
+  main { max-width:960px; margin:0 auto; padding:20px 16px 40px; display:grid; gap:16px; }
+  h1 { font-size:20px; margin:0; } h3 { margin:0; font-size:15px; }
+  .muted { color:var(--mut); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; }
+  .card.attention { border-color:var(--warn); background:var(--warnbg); }
+  .row { display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+  .chip { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:600; background:var(--line); color:var(--mut); margin-left:8px; }
+  .chip.ok { background:var(--okbg); color:var(--ok); } .chip.bad { background:var(--badbg); color:var(--bad); } .chip.warn { background:var(--warnbg); color:var(--warn); }
+  button, select { font:inherit; padding:8px 14px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:var(--ink); cursor:pointer; }
+  button.primary { background:var(--acc); border-color:var(--acc); color:var(--acc-ink); font-weight:600; }
+  button:disabled { opacity:.5; cursor:default; }
+  button:focus-visible, select:focus-visible { outline:2px solid var(--acc); outline-offset:2px; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:12px; }
+  .stat .l { font-size:12px; text-transform:uppercase; letter-spacing:.05em; color:var(--mut); font-weight:600; }
+  .stat .v { font-size:28px; font-weight:700; font-variant-numeric:tabular-nums; margin:2px 0; }
+  .bars { display:flex; align-items:flex-end; gap:6px; height:110px; }
+  .bars > div { flex:1; height:100%; display:flex; flex-direction:column; justify-content:flex-end; }
+  .tbl { overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--mut); font-weight:600; font-size:12px; }
+  td.detail { max-width:340px; overflow-wrap:anywhere; color:var(--mut); }
+  .err { color:var(--bad); }
+  #gate { padding:40px 0; text-align:center; }
+</style>
+</head>
+<body>
+<main id="app"><div id="gate" class="muted">Đang đăng nhập qua GHL…</div></main>
+<script>
+(function () {
+  var BASE = "/apps/zalo";
+  var token = null, role = "user", st = null, logs = [], only = "", busy = "", err = "", znsUrl = "";
+  var KIND = { user_send_text:"Khách nhắn", user_send_image:"Khách gửi ảnh", user_send_sticker:"Khách gửi sticker", user_send_file:"Khách gửi tệp", user_send_gif:"Khách gửi GIF", user_send_audio:"Khách gửi thoại", user_send_location:"Khách gửi vị trí", oa_send_text:"Nhân viên nhắn (Web OA)", ghl_reply:"Trả lời từ GHL", follow:"Khách theo dõi OA", unfollow:"Bỏ theo dõi", retry:"Gửi lại", zns:"Gửi ZNS", connect:"Kết nối", disconnect:"Ngắt kết nối", uid_field:"Tạo trường Zalo UID", profile:"Đọc hồ sơ Zalo" };
+
+  function h(tag, attrs, kids) {
+    var e = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) {
+      if (k === "class") e.className = attrs[k];
+      else if (k.slice(0, 2) === "on") e.addEventListener(k.slice(2), attrs[k]);
+      else if (k === "disabled") e.disabled = !!attrs[k];
+      else if (attrs[k] != null) e.setAttribute(k, attrs[k]);
+    });
+    (kids == null ? [] : [].concat(kids)).forEach(function (c) { if (c != null && c !== false) e.appendChild(typeof c === "string" || typeof c === "number" ? document.createTextNode(String(c)) : c); });
+    return e;
+  }
+  var fmtDate = function (d) { return d ? new Date(d).toLocaleDateString("vi-VN") : "—"; };
+  var fmtTime = function (d) { return new Date(d).toLocaleString("vi-VN"); };
+
+  // Trả lời không phải JSON (thường là trang lỗi 502/503 của Render lúc đang khởi động lại) → thử lại 1 lần rồi báo lỗi dễ hiểu.
+  function api(path, opts, retried) {
+    opts = opts || {};
+    opts.headers = Object.assign({ Authorization: "Bearer " + token }, opts.headers || {});
+    return fetch(BASE + path, opts).then(function (r) {
+      return r.text().then(function (t) {
+        var j = null; try { j = JSON.parse(t); } catch (e) {}
+        if (j === null) {
+          if (!retried && /^(502|503|504)$/.test(String(r.status))) return new Promise(function (res) { setTimeout(res, 3000); }).then(function () { return api(path, opts, true); });
+          throw new Error("Máy chủ chưa phản hồi đúng (HTTP " + r.status + "). Có thể đang khởi động lại — thử lại sau vài giây.");
+        }
+        if (!r.ok) throw new Error(j.error || "Lỗi không rõ");
+        return j;
+      });
+    });
+  }
+  function post(path, body) { return api(path, { method: "POST", body: JSON.stringify(body || {}) }); }
+
+  // Đăng nhập: xin gói SSO mới từ GHL (cửa sổ cha) MỖI LẦN mở; không lưu token ở đâu ngoài bộ nhớ trang.
+  function sso() {
+    return new Promise(function (resolve, reject) {
+      if (window.parent === window) return reject(new Error("Hãy mở trang này từ menu của sub-account trong GHL."));
+      var t = setTimeout(function () { reject(new Error("GHL không phản hồi — tải lại trang.")); }, 4000);
+      function onMsg(ev) {
+        if (ev.data && ev.data.message === "REQUEST_USER_DATA_RESPONSE") { clearTimeout(t); window.removeEventListener("message", onMsg); resolve(ev.data.payload); }
+      }
+      window.addEventListener("message", onMsg);
+      window.parent.postMessage({ message: "REQUEST_USER_DATA" }, "*");
+    }).then(function (encryptedData) {
+      return fetch(BASE + "/api/sso", { method: "POST", body: JSON.stringify({ encryptedData: encryptedData }) })
+        .then(function (r) { return r.text().then(function (t) { var j = null; try { j = JSON.parse(t); } catch (e) {} if (j === null) throw new Error("Máy chủ chưa phản hồi đúng (HTTP " + r.status + "). Tải lại trang sau vài giây."); if (!r.ok) throw new Error(j.error || "Đăng nhập thất bại"); return j; }); });
+    });
+  }
+
+  function load() {
+    return Promise.all([
+      api("/api/status"),
+      api("/api/logs" + (only ? "?status=" + only : "")),
+    ]).then(function (r) { st = r[0]; logs = r[1]; render(); }).catch(function (e) { err = e.message; render(); });
+  }
+
+  function statCard(label, value, sub) { return h("div", { class: "card stat" }, [h("div", { class: "l" }, label), h("div", { class: "v" }, value), h("div", { class: "muted" }, sub)]); }
+
+  function render() {
+    var app = document.getElementById("app");
+    app.replaceChildren();
+    if (!st) { app.appendChild(h("div", { id: "gate", class: err ? "err" : "muted" }, err || "Đang tải…")); return; }
+    var c = st.connection, admin = role === "admin";
+    var status = !c || c.status === "disconnected" ? "off" : c.status === "error" ? "error" : "on";
+    app.appendChild(h("h1", {}, "Zalo OA Connector"));
+
+    if (!st.platform.zaloConfigured || !st.platform.providerConfigured) {
+      app.appendChild(h("div", { class: "card attention" }, [h("b", {}, "Server chưa cấu hình xong: "),
+        (!st.platform.zaloConfigured ? "thiếu app Zalo (ZALO_APP_ID/ZALO_APP_SECRET). " : "") + (!st.platform.providerConfigured ? "thiếu GHL_ZALO_CONVERSATION_PROVIDER_ID. " : "") + "Liên hệ quản trị nền tảng."]));
+    }
+
+    var left = h("div", {}, [
+      h("h3", {}, ["Kết nối Zalo OA", h("span", { class: "chip " + (status === "on" ? "ok" : status === "error" ? "bad" : "warn") }, status === "on" ? "Đang hoạt động" : status === "error" ? "Cần kết nối lại" : "Chưa kết nối")]),
+      c && c.oaName ? h("div", { class: "muted", style: "margin-top:6px" }, c.oaName + " · " + (c.followers != null ? c.followers + " người theo dõi · " : "") + "kết nối " + fmtDate(c.connectedAt)) : null,
+      status === "error" ? h("div", { class: "err", style: "margin-top:6px" }, c.lastError || "") : null,
+      status === "off" ? h("div", { class: "muted", style: "margin-top:6px" }, "Bấm “Kết nối”, trang Zalo sẽ hiện mã QR — dùng Zalo trên điện thoại quét để đăng nhập tài khoản quản trị OA, rồi bấm Cho phép.") : null,
+    ]);
+    var right = admin ? h("div", { class: "row", style: "gap:8px" }, [
+      h("button", { class: "primary", disabled: busy === "connect", onclick: connect }, status === "on" ? "Kết nối lại" : "Kết nối Zalo OA"),
+      status !== "off" ? h("button", { disabled: busy === "dc", onclick: disconnect }, "Ngắt kết nối") : null,
+    ]) : h("span", { class: "muted" }, "Chỉ quản trị mới kết nối được.");
+    var conn = h("div", { class: "card" }, [h("div", { class: "row" }, [left, right]),
+      err ? h("p", { class: "err", style: "margin-bottom:0" }, err) : null,
+      c && !c.uidField && status === "on" ? h("p", { class: "muted", style: "margin-bottom:0" }, "Chưa tạo được trường “Zalo UID” trên GHL — tin vẫn đồng bộ, nhưng hồ sơ contact chưa hiện UID.") : null]);
+    app.appendChild(conn);
+
+    if (admin && status !== "off") {
+      var znsBox = h("div", { class: "card" }, [
+        h("div", { class: "row" }, [h("div", {}, [h("h3", {}, "Gửi ZNS từ Workflow"), h("div", { class: "muted" }, "Thông báo theo mẫu đã được Zalo duyệt, gửi tới số điện thoại của contact.")]),
+          h("button", { disabled: busy === "zns", onclick: loadZns }, znsUrl ? "Làm mới" : "Lấy địa chỉ webhook")]),
+        znsUrl ? h("div", { style: "margin-top:12px;display:grid;gap:8px" }, [
+          h("input", { readonly: "readonly", value: znsUrl, style: "width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:12px ui-monospace,monospace", onclick: function (e) { e.target.select(); } }),
+          h("div", { class: "muted", style: "font-size:13px" }, "Trong Workflow GHL thêm action “Webhook” (POST) với URL trên, rồi khai báo Custom Data: template_id = mã mẫu ZNS; template_data = JSON tham số của mẫu (ví dụ {\"customer_name\":\"{{contact.name}}\"}). Số điện thoại lấy từ contact. Muốn gửi theo Zalo UID thay vì số điện thoại, thêm send_by = uid. URL này chứa khoá riêng của trung tâm — đừng chia sẻ công khai."),
+        ]) : null,
+      ]);
+      app.appendChild(znsBox);
+    }
+
+    app.appendChild(h("div", { class: "stats" }, [
+      statCard("Khách nhắn (7 ngày)", st.last7["in"].ok, st.last7["in"].failed ? st.last7["in"].failed + " lỗi" : "không lỗi"),
+      statCard("Đã gửi tới khách (7 ngày)", st.last7.out.ok, st.last7.out.failed ? st.last7.out.failed + " lỗi" : "không lỗi"),
+      statCard("Còn trong cửa sổ 7 ngày", st.contacts.in_window, "trên " + st.contacts.total + " khách Zalo đã liên kết"),
+      statCard("Lỗi chưa xử lý", st.failedOpen, st.lastOk ? "đồng bộ OK gần nhất: " + fmtTime(st.lastOk) : "chưa có tin nào"),
+    ]));
+
+    var days = []; st.perDay.forEach(function (r) { if (days.indexOf(r.d) < 0) days.push(r.d); }); days = days.slice(-14);
+    if (days.length) {
+      var val = function (d, dir) { var r = st.perDay.filter(function (x) { return x.d === d && x.direction === dir; })[0]; return r ? r.n : 0; };
+      var max = Math.max.apply(null, [1].concat(days.map(function (d) { return val(d, "in") + val(d, "out"); })));
+      app.appendChild(h("div", { class: "card" }, [h("h3", { style: "margin-bottom:10px" }, "Tin nhắn 14 ngày qua"),
+        h("div", { class: "bars" }, days.map(function (d) {
+          return h("div", { title: d + ": " + val(d, "in") + " nhận, " + val(d, "out") + " gửi" }, [
+            h("div", { style: "height:" + (val(d, "out") / max) * 100 + "%;background:var(--bar2);opacity:.6;border-radius:3px 3px 0 0" }),
+            h("div", { style: "height:" + (val(d, "in") / max) * 100 + "%;background:var(--acc)" })]);
+        })),
+        h("div", { class: "muted", style: "font-size:12px;margin-top:8px" }, "Màu đậm: khách nhắn đến · màu xám: gửi tới khách")]));
+    }
+
+    var sel = h("select", { onchange: function (e) { only = e.target.value; load(); } }, [["", "Tất cả"], ["failed", "Chỉ lỗi"], ["skipped", "Bị bỏ qua"]].map(function (o) { var op = h("option", { value: o[0] }, o[1]); if (o[0] === only) op.selected = true; return op; }));
+    var body = logs.length ? h("div", { class: "tbl" }, h("table", {}, [
+      h("thead", {}, h("tr", {}, ["Thời gian", "Loại", "Kết quả", "Chi tiết", ""].map(function (t) { return h("th", {}, t); }))),
+      h("tbody", {}, logs.map(function (l) {
+        return h("tr", {}, [
+          h("td", {}, fmtTime(l.at)),
+          h("td", {}, (l.direction === "in" ? "⬇ " : l.direction === "out" ? "⬆ " : "⚙ ") + (KIND[l.kind] || l.kind)),
+          h("td", {}, h("span", { class: "chip " + (l.status === "ok" ? "ok" : l.status === "failed" ? "bad" : "warn"), style: "margin:0" }, l.status === "ok" ? "OK" : l.status === "failed" ? "Lỗi" : "Bỏ qua")),
+          h("td", { class: "detail" }, l.detail || ""),
+          h("td", {}, l.can_retry && admin ? h("button", { disabled: busy === "r" + l.id, onclick: function () { retry(l.id); } }, "Gửi lại") : null),
+        ]);
+      })),
+    ])) : h("p", { class: "muted" }, "Chưa có hoạt động nào.");
+    app.appendChild(h("div", { class: "card" }, [h("div", { class: "row", style: "margin-bottom:10px" }, [h("h3", {}, "Nhật ký đồng bộ"), sel]), body]));
+  }
+
+  function loadZns() {
+    busy = "zns"; err = ""; render();
+    api("/api/zns-setup").then(function (j) { znsUrl = j.url; }).catch(function (e) { err = e.message; }).then(function () { busy = ""; render(); });
+  }
+  function connect() {
+    busy = "connect"; err = ""; render();
+    post("/api/connect-url").then(function (j) {
+      var w = window.open(j.url, "zalo-connect", "width=520,height=720");
+      if (!w) err = "Trình duyệt chặn cửa sổ mới — cho phép popup rồi bấm lại.";
+    }).catch(function (e) { err = e.message; }).then(function () { busy = ""; render(); });
+  }
+  function disconnect() {
+    if (!confirm("Ngắt kết nối Zalo OA? Tin nhắn Zalo sẽ ngừng đồng bộ vào GHL.")) return;
+    busy = "dc"; render();
+    post("/api/disconnect").then(load).catch(function (e) { err = e.message; }).then(function () { busy = ""; render(); });
+  }
+  function retry(id) {
+    busy = "r" + id; err = ""; render();
+    post("/api/retry", { id: id }).then(load).catch(function (e) { err = e.message; }).then(function () { busy = ""; render(); });
+  }
+
+  window.addEventListener("message", function (e) { if (e.data && typeof e.data === "object" && "zaloConnect" in e.data) load(); });
+
+  sso().then(function (j) { token = j.token; role = j.role; return load(); })
+    .then(function () { setInterval(load, 15000); })
+    .catch(function (e) { err = e.message; render(); });
+})();
+</script>
+</body>
+</html>

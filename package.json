@@ -8,16 +8,25 @@
     "start": "node server.js",
     "test": "node --test",
     "migrate": "node scripts/migrate.js",
-    "check:config": "node scripts/check-config.js"
+    "check:config": "node scripts/check-config.js",
+    "build": "npm run build:center",
+    "build:center": "cd src/center/frontend && VITE_BASE_PATH=/center/ npx vite build --emptyOutDir"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.18.1",
+    "crypto-js": "^4.2.0",
     "express": "^5.1.0",
     "jose": "^6.2.12",
     "pg": "^8.16.3",
     "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^5.4.0"
   }
 }

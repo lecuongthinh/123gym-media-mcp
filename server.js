@@ -24,6 +24,7 @@ import { authenticateIssuedToken, completeHighLevelLogin, createOAuthRouter, inv
 import { fetchHighLevelUsers } from "./src/highlevel-users.js";
 import { createAdminPanelRouter } from "./src/admin-panel.js";
 import { createReportRouter, reportStatus } from "./src/report/index.js";
+import { createCenterRouter, centerEnabled } from "./src/center/index.js";
 
 const app = express();
 app.use((req, res, next) => {
@@ -33,6 +34,10 @@ app.use((req, res, next) => {
   });
   next();
 });
+// Gắn TRƯỚC express.json() ở dưới — Center Management tự đọc body thô của chính nó (không dùng req.body),
+// nên nếu express.json() đọc mất stream trước thì mọi request POST/PUT của module này sẽ nhận thân rỗng.
+// Đặt trước app.use(express.json(...)) đảm bảo request /center/* không bao giờ chạm tới middleware đó.
+app.use("/center", await createCenterRouter({ env: process.env }));
 app.use(express.json({ limit: "10mb" }));
 
 const PORT = process.env.PORT || 10000;
@@ -50,7 +55,7 @@ app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social A
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
   const configured = configuration.oauthReady || configuration.legacyAdminReady;
-  res.status(configured ? 200 : 503).json({ status: configured ? "healthy" : "misconfigured", version: SERVICE_VERSION, ...(reportStatus(process.env).enabled ? { report: "enabled" } : {}) });
+  res.status(configured ? 200 : 503).json({ status: configured ? "healthy" : "misconfigured", version: SERVICE_VERSION, ...(reportStatus(process.env).enabled ? { report: "enabled" } : {}), ...(centerEnabled(process.env) ? { center: "enabled" } : {}) });
 });
 
 app.get(["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"], (req, res) => {
