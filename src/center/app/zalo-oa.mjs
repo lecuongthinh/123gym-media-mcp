@@ -321,6 +321,23 @@ export async function backfillPlaceholderNames(locationId) {
   return { checked: rows.length, updated };
 }
 
+// Khi khách bấm thẻ "chia sẻ thông tin", sự kiện `user_submit_info` KHÔNG tới webhook đặt ngoài Việt Nam (đã kiểm chứng ở OA EIM
+// 2026-10-17: nhật ký không có sự kiện nào), nhưng Zalo gửi kèm 1 TIN NHẮN THƯỜNG "Bạn đã gửi thông tin cho OA …: Họ Tên / Số điện
+// thoại / Địa chỉ" (tới bình thường) và hồ sơ khách (`user/detail`) trả `shared_info.phone` đầy đủ — nên lấy SĐT từ hồ sơ, không
+// được thì đọc thẳng từ tin nhắn đó, rồi khớp với contact như `user_submit_info`.
+const SHARED_INFO_TEXT = /^\s*Bạn đã gửi thông tin cho OA/i;
+async function syncPhoneAfterShare(locationId, uid, text) {
+  const prof = await readProfile(locationId, uid, { quiet: true });
+  let phone = prof?.phone, name = prof?.name;
+  if (!phone) {
+    phone = (String(text).match(/Số điện thoại:\s*([+\d][\d\s.-]{7,})/i) || [])[1];
+    name = name || (String(text).match(/Họ Tên:\s*(.+)/i) || [])[1]?.trim();
+  }
+  if (!phone) { await logSync(locationId, { direction: "in", kind: "user_submit_info", status: "skipped", detail: "Khách đã chia sẻ thông tin nhưng không đọc được số điện thoại", uid }); return; }
+  const { contactId, hint } = await linkUidByPhone(locationId, uid, phone, name);
+  await logSync(locationId, { direction: "in", kind: "user_submit_info", status: "ok", detail: hint || "Đã khớp SĐT khách chia sẻ với contact và gắn Zalo UID", uid, contactId });
+}
+
 // Tìm hoặc tạo contact GHL cho 1 Zalo UID. Thứ tự: bảng ánh xạ → (nếu Zalo cho SĐT) trùng SĐT → tạo mới.
 export async function resolveContact(locationId, uid, hintName) {
   const m = (await q("select ghl_contact_id, name from platform.zalo_contacts where location_id=$1 and zalo_uid=$2", [locationId, uid])).rows[0];
@@ -470,6 +487,9 @@ async function processEvent(locationId, payload) {
     } catch (e) {
       await logSync(locationId, { direction: "in", kind: ev, status: "failed", detail: e.message, uid, contactId, retry: { type: "push", push } });
     }
+    if (ev === "user_send_text" && SHARED_INFO_TEXT.test(payload.message?.text || "")) {
+      await syncPhoneAfterShare(locationId, uid, payload.message.text).catch((e) => logSync(locationId, { direction: "in", kind: "user_submit_info", status: "failed", detail: e.message, uid }));
+    }
   }
 }
 
@@ -495,6 +515,20 @@ async function zaloSendCs(locationId, uid, { text, imageUrl }) {
 }
 // Mã lỗi Zalo thường gặp, dịch ra tiếng người để nhân viên hiểu ngay (-232: ngoài cửa sổ 7 ngày).
 const humanZaloError = (e) => e.zaloErrorCode === -232 ? "Ngoài cửa sổ 7 ngày kể từ lần khách nhắn gần nhất — Zalo không cho gửi tin tư vấn (dùng ZNS)." : e.message;
+
+// Gửi thẻ "chia sẻ số điện thoại" (request_user_info) cho 1 khách — khách bấm thì Zalo bắn sự kiện `user_submit_info`
+// (UID + SĐT) về webhook. Miễn phí trong khung tin tư vấn; ảnh thẻ mặc định lấy từ ảnh đại diện của chính OA.
+export async function sendRequestInfoCard(locationId, uid, { title, subtitle, imageUrl } = {}) {
+  const token = await getOaAccessToken(locationId);
+  const oa = await zaloGet(token, "/v2.0/oa/getoa").catch(() => ({}));
+  const el = { title: title || oa.name || "Chia sẻ thông tin", subtitle: subtitle || "Chia sẻ số điện thoại để được hỗ trợ và nhận thông báo nhanh hơn.", image_url: imageUrl || oa.avatar || oa.cover };
+  const r = await fetch(`${ZALO_API}/v3.0/oa/message/cs`, { method: "POST", headers: { access_token: token, "Content-Type": "application/json" },
+    body: JSON.stringify({ recipient: { user_id: uid }, message: { attachment: { type: "template", payload: { template_type: "request_user_info", elements: [el] } } } }) });
+  const j = await r.json().catch(() => ({}));
+  if (j.error && j.error !== 0) { const e = new Error(`Zalo ${j.error}: ${j.message || ""}`); e.zaloErrorCode = j.error; throw e; }
+  await logSync(locationId, { direction: "out", kind: "request_info", status: "ok", detail: "Đã gửi thẻ xin số điện thoại", uid });
+  return j;
+}
 
 export async function sendToZalo(locationId, uid, { text, attachments = [] }) {
   for (const url of attachments) await zaloSendCs(locationId, uid, { imageUrl: url });
