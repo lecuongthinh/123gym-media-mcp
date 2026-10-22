@@ -199,9 +199,9 @@ The backend connects directly through `DATABASE_URL`; it does not use the Supaba
 4. Configure Auth0 variables and validate protected-resource metadata.
 5. Provision one Testing Agency Auth0 user and membership.
 6. Run `npm test` and `npm run check:config`.
-7. Deploy only `feature/oauth-multitenant-v1` to the staging Render service.
+7. The Render service (`uplifting-social-ai`, URL `uplifting-social-ai-staging.onrender.com`) deploys `main` with Auto-Deploy; merge only tested work into `main`.
 8. Confirm `/health` reports version `3.7.0` and does not expose configuration.
 9. Complete ChatGPT OAuth and run read-only `list_social_accounts` for `UwsfBVLmz7XSKJbhuOTS`.
 10. Attempt the 123 GYM `locationId` with the Testing Agency user and confirm it is blocked before any HighLevel request.
 11. Inspect `audit_events` for success/failure records without secrets.
-12. Keep production and `main` unchanged.
+12. `main` is the live multi-tenant release branch (since 2026-10-22). The old single-tenant service `123gym-media-mcp` (v3.0.0) is suspended; do not resume it, since it also watches `main` and would redeploy this code without its database and settings.
