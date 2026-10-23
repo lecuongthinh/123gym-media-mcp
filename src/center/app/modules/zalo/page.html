@@ -41,7 +41,9 @@
 <main id="app"><div id="gate" class="muted">Đang đăng nhập qua GHL…</div></main>
 <script>
 (function () {
-  var BASE = "/apps/zalo";
+  // Trang có thể được gắn dưới 1 tiền tố (vd /center/apps/zalo/ khi chạy chung service với app khác) —
+  // tự tính tiền tố từ chính URL đang chạy thay vì hardcode "/apps/zalo", để không bị gọi API trật ra gốc domain.
+  var BASE = location.pathname.replace(/\/apps\/zalo\/?$/, "") + "/apps/zalo";
   var token = null, role = "user", st = null, logs = [], only = "", busy = "", err = "", znsUrl = "";
   var KIND = { user_send_text:"Khách nhắn", user_send_image:"Khách gửi ảnh", user_send_sticker:"Khách gửi sticker", user_send_file:"Khách gửi tệp", user_send_gif:"Khách gửi GIF", user_send_audio:"Khách gửi thoại", user_send_location:"Khách gửi vị trí", oa_send_text:"Nhân viên nhắn (Web OA)", ghl_reply:"Trả lời từ GHL", follow:"Khách theo dõi OA", unfollow:"Bỏ theo dõi", retry:"Gửi lại", zns:"Gửi ZNS", connect:"Kết nối", disconnect:"Ngắt kết nối", uid_field:"Tạo trường Zalo UID", profile:"Đọc hồ sơ Zalo" };
 
