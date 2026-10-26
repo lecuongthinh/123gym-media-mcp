@@ -5,8 +5,9 @@
 // Lỗi trong 1 module được chặn tại đây — không làm sập request của module khác. (Sập cả tiến trình thì không
 // chặn được ở tầng này; vì vậy mọi handler nền phải tự .catch.)
 import zalo from "./zalo/index.mjs";
+import service from "./service/index.mjs";
 
-const MODULES = { zalo };
+const MODULES = { zalo, service };
 
 export async function dispatchModule(ctx) {
   const m = ctx.u.pathname.match(/^\/apps\/([a-z0-9-]+)(\/.*)?$/);

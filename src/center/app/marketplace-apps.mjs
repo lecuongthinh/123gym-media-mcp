@@ -32,6 +32,17 @@ const APPS = {
     redirectUri: `${BASE_URL}/apps/zalo/oauth/callback`,
     scopes: "conversations.readonly conversations.write conversations/message.readonly conversations/message.write contacts.readonly contacts.write locations.readonly locations/customFields.readonly locations/customFields.write",
   },
+  // App "Project & Service Management" (ELUX — thang máy; đóng gói lại cho ngành dịch vụ/dự án tương tự).
+  // Dữ liệu nằm ở GHL Custom Objects của chính sub-account khách, nên chỉ cần quyền objects/associations/users.
+  service: {
+    key: "service",
+    clientId: env.SERVICE_CLIENT_ID, clientSecret: env.SERVICE_CLIENT_SECRET,
+    sharedSecret: env.SERVICE_SHARED_SECRET,
+    versionId: env.SERVICE_VERSION_ID,
+    // SERVICE_REDIRECT_URI cho phép đặt thẳng khi host gộp gắn module dưới tiền tố (vd https://<host>/center/apps/service/oauth/callback), không phụ thuộc PUBLIC_BASE_URL dùng chung.
+    redirectUri: env.SERVICE_REDIRECT_URI || `${BASE_URL}/apps/service/oauth/callback`,
+    scopes: "locations.readonly locations/customFields.readonly opportunities.readonly users.readonly objects/schema.readonly objects/record.readonly objects/record.write associations.readonly associations/relation.readonly associations/relation.write",
+  },
 };
 
 export const getApp = (key) => {
