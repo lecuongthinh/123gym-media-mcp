@@ -626,3 +626,54 @@ export async function handleOpportunityStageWebhook(locationId, { opportunityId,
   }
   return { hocVienId, contactId, studentName };
 }
+
+// Dữ liệu cho tab "Kinh doanh" (xem App.jsx): (1) phễu bán hàng — số lượng + giá trị deal ĐANG MỞ theo từng
+// giai đoạn của mọi pipeline, đọc trực tiếp từ GHL, không qua base_snapshot/overlay (đọc trực tiếp vì
+// Opportunity là dữ liệu CRM sống, đổi liên tục, không hợp để cache như Lớp/Học viên); (2) "Học viên mới,
+// chưa xếp lớp" — quét các deal đang nằm ở giai đoạn "Đã ghi danh" (chính là backlog cần xử lý, không phải
+// quét toàn bộ Học Viên từng tạo — không có endpoint liệt kê toàn bộ quan hệ theo associationId), với mỗi
+// deal tra Học Viên tương ứng (quan hệ opportunity_hoc_vien) rồi kiểm tra đã có Ghi Danh nào chưa.
+export async function getKinhDoanh(locationId) {
+  const t = await getTenantState(locationId);
+  const pipelinesResp = await ghl(t, "GET", `/opportunities/pipelines?locationId=${t.LOC}`);
+  const pipelines = pipelinesResp.pipelines || [];
+  const funnel = pipelines.map((p) => ({
+    pipelineId: p.id,
+    pipelineName: p.name,
+    stages: (p.stages || []).map((s) => ({ id: s.id, name: s.name, count: 0, value: 0 })),
+  }));
+  const stageById = new Map();
+  let ghiDanhStageId = null;
+  for (const p of funnel) for (const s of p.stages) { stageById.set(s.id, s); if (s.name === GHI_DANH_STAGE_NAME) ghiDanhStageId = s.id; }
+
+  // Giới hạn 100 deal đang mở — đủ cho quy mô 1 trung tâm, không phân trang thêm (dashboard tham khảo,
+  // không phải sổ sách chính xác tuyệt đối).
+  // Lưu ý: /opportunities/search đòi query param location_id (snake_case) — KHÁC mọi endpoint khác trong
+  // file này (dùng locationId camelCase) — xác nhận thật qua lỗi 422 lúc test, không phải đoán.
+  const oppResp = await ghl(t, "GET", `/opportunities/search?location_id=${t.LOC}&status=open&limit=100`);
+  const opportunities = oppResp.opportunities || [];
+  for (const o of opportunities) {
+    const st = stageById.get(o.pipelineStageId);
+    if (st) { st.count++; st.value += Number(o.monetaryValue) || 0; }
+  }
+
+  const chuaXepLop = [];
+  if (ghiDanhStageId) {
+    const relAssocId = await assocId(t, "opportunity_hoc_vien").catch(() => null);
+    const ghiDanhAssocId = await assocId(t, "hoc_vien_ghi_danh").catch(() => null);
+    const atGhiDanh = opportunities.filter((o) => o.pipelineStageId === ghiDanhStageId);
+    for (const o of atGhiDanh) {
+      if (!relAssocId) break;
+      const rel = await ghl(t, "GET", `/associations/relations/${o.id}?associationIds=${relAssocId}&locationId=${t.LOC}`).catch(() => null);
+      const hocVienId = rel?.relations?.[0]?.firstRecordId;
+      if (!hocVienId) continue; // hand-off chưa kịp chạy, hoặc lỗi — không phải lỗi của trang này
+      let hasGhiDanh = false;
+      if (ghiDanhAssocId) {
+        const gdRel = await ghl(t, "GET", `/associations/relations/${hocVienId}?associationIds=${ghiDanhAssocId}&locationId=${t.LOC}`).catch(() => null);
+        hasGhiDanh = Boolean(gdRel?.relations?.length);
+      }
+      if (!hasGhiDanh) chuaXepLop.push({ hocVienId, opportunityId: o.id, name: o.name, contactId: o.contactId, contactName: o.contact?.name || "" });
+    }
+  }
+  return { funnel, chuaXepLop };
+}
