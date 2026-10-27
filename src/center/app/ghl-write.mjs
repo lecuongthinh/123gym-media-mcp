@@ -564,3 +564,65 @@ export async function createLop(locationId, { name, coSo, capDo, siSoToiDa }) {
   t.ALLOWED_LOP.set(name.trim(), lopId);
   return { lopId, lop: name.trim(), co_so: coSo || "", cap_do: capDo || "", si_so_toi_da: siSoToiDa || "" };
 }
+
+// Tạo pipeline bán hàng (Opportunity) cho 1 tenant — việc onboard 1 khách mới (chưa có pipeline nào trong
+// GHL) để nối Opportunity→Ghi danh theo đúng mô hình đã validate qua ELUX (xem reference_ghl_app_management_
+// pattern). Endpoint này KHÔNG nằm trong tài liệu GHL public API chính thức (không có trong registry chuẩn),
+// nhưng đã xác nhận hoạt động thật khi gọi trực tiếp — dùng y hệt cách ELUX đã làm.
+export async function createPipeline(locationId, { name, stages, showInFunnel = true }) {
+  const t = await getTenantState(locationId);
+  assertWriterEnabled(t);
+  if (!name || !name.trim()) throw new Error("Cần tên pipeline");
+  if (!Array.isArray(stages) || stages.length === 0) throw new Error("Cần ít nhất 1 giai đoạn (stage)");
+  const body = { locationId: t.LOC, name: name.trim(), showInFunnel, stages: stages.map((s, i) => ({ name: s, position: i })) };
+  const r = await ghl(t, "POST", "/opportunities/pipelines", body);
+  return r.pipeline || r;
+}
+
+const GHI_DANH_STAGE_NAME = "Đã ghi danh";
+
+// Tên giai đoạn (stage) không nằm trong payload webhook OpportunityStageUpdate (chỉ có pipelineStageId) — tra
+// lại qua GET /opportunities/pipelines, gộp tất cả pipeline của tenant vào 1 map id->tên. Khớp theo TÊN (không
+// ghi cứng ID) vì mỗi tenant tự tạo pipeline riêng, ID chắc chắn khác nhau.
+async function getPipelineStageNames(t) {
+  if (t.pipelineStageCache && Date.now() - t.pipelineStageCache.at < 30 * 60_000) return t.pipelineStageCache.map;
+  const j = await ghl(t, "GET", `/opportunities/pipelines?locationId=${t.LOC}`);
+  const map = new Map();
+  for (const p of j.pipelines || []) for (const s of p.stages || []) map.set(s.id, s.name);
+  t.pipelineStageCache = { at: Date.now(), map };
+  return map;
+}
+
+// Hand-off Opportunity → Ghi danh (xem reference_ghl_app_management_pattern: Opportunity là phễu 1 chiều,
+// bàn giao DUY NHẤT 1 lần khi tới đích): webhook OpportunityStageUpdate gọi hàm này mỗi lần 1 deal đổi giai
+// đoạn; chỉ xử lý khi đổi ĐÚNG sang giai đoạn tên "Đã ghi danh". Chỉ tạo Học Viên (tên lấy từ tên deal — quy
+// ước nhân viên đặt tên deal theo tên học viên) + nối Contact của deal làm Phụ huynh + nối Opportunity↔Học
+// Viên để truy vết. CHƯA xếp lớp/tạo Ghi danh thật ở đây vì lúc Won chưa chắc đã biết lớp cụ thể — nhân viên
+// xếp lớp/ghi danh thủ công qua app như hiện tại (xem enrollStudent). Idempotent: webhook có thể gọi lại
+// nhiều lần cho cùng 1 lần đổi giai đoạn — kiểm tra quan hệ Opportunity↔Học Viên đã có chưa trước khi tạo mới.
+export async function handleOpportunityStageWebhook(locationId, { opportunityId, pipelineStageId, contactId, name }) {
+  const t = await getTenantState(locationId);
+  if (!writerConfigured(t.tenant)) return { skipped: "writer_disabled" };
+  const stageNames = await getPipelineStageNames(t);
+  if (stageNames.get(pipelineStageId) !== GHI_DANH_STAGE_NAME) return { skipped: "not_ghi_danh_stage" };
+
+  const relAssocId = await assocId(t, "opportunity_hoc_vien").catch(() => null);
+  if (relAssocId) {
+    const rel = await ghl(t, "GET", `/associations/relations/${opportunityId}?associationIds=${relAssocId}&locationId=${t.LOC}`).catch(() => null);
+    if (rel && (rel.relations || []).length) return { skipped: "already_handled", hocVienId: rel.relations[0].firstRecordId };
+  }
+
+  const studentName = (name || "").trim();
+  if (!studentName) return { skipped: "no_name" };
+
+  const { hocVienId } = await createHocVien(locationId, { name: studentName });
+  if (contactId) {
+    await lienKetPhuHuynhHocVien(locationId, { contactId, hocVienId })
+      .catch((e) => console.error(`[opportunity-handoff] Không nối được phụ huynh (${contactId}) cho học viên ${hocVienId}:`, e.message));
+  }
+  if (relAssocId) {
+    await ghl(t, "POST", "/associations/relations", { locationId: t.LOC, associationId: relAssocId, firstRecordId: hocVienId, secondRecordId: opportunityId })
+      .catch((e) => console.error(`[opportunity-handoff] Không nối được Opportunity↔Học viên:`, e.message));
+  }
+  return { hocVienId, contactId, studentName };
+}
