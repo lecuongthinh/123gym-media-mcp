@@ -33,9 +33,9 @@ export function oauthConfigured() {
 // Giống hệt link cài đặt công khai trong OAUTH_INSTALL_LINK.md (client_id/scope/version_id không phải bí
 // mật) — tách thành hàm để /oauth/start (trang chọn sub-account cho người cài cấp AGENCY) dựng lại được,
 // chỉ khác là gắn thêm `state` = locationId người đó chọn trước khi chuyển sang GHL.
-const BASE_SCOPES = "contacts.readonly objects/schema.readonly objects/schema.write objects/record.readonly objects/record.write associations.write associations.readonly associations/relation.readonly associations/relation.write users.readonly locations.readonly";
+const BASE_SCOPES = "contacts.readonly contacts.write objects/schema.readonly objects/schema.write objects/record.readonly objects/record.write associations.write associations.readonly associations/relation.readonly associations/relation.write users.readonly locations.readonly opportunities.readonly opportunities.write locations/customFields.readonly locations/customFields.write";
 const SCOPES = BASE_SCOPES;
-const VERSION_ID = "6acbbc31bcc2ad19c0e3715a";
+const VERSION_ID = "6ae085531ce4ebeec304a375";
 export function buildAuthorizeUrl(state) {
   const p = new URLSearchParams({
     response_type: "code",
