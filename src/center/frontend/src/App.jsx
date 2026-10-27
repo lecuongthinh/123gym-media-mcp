@@ -1594,6 +1594,62 @@ function BarRow({ label, value, max, color }) {
 
 const ATT_STATUS_COLOR = { co_mat: "var(--ok)", den_muon: "var(--warn)", vang_co_phep: "var(--warn)", vang_khong_phep: "var(--bad)" };
 
+// Tab "Kinh doanh" — phễu bán hàng (đọc trực tiếp GHL, không qua base_snapshot) + "Học viên mới, chưa xếp
+// lớp" (backlog từ hand-off Opportunity→Học viên khi deal đạt giai đoạn "Đã ghi danh", xem ghl-write.mjs).
+// Lưu ý: học viên trong danh sách này CHƯA xuất hiện ở "Học viên có sẵn" trong form Xếp lớp (dropdown đó chỉ
+// liệt kê học viên đã có ít nhất 1 ghi danh) — nhân viên xếp lớp bằng cách chọn "Học viên mới" và gõ lại
+// ĐÚNG tên hiện trong danh sách dưới đây, không phải tạo 1 cái tên tuỳ ý.
+function KinhDoanh() {
+  const [d, setD] = useState(null);
+  useEffect(() => { get("/api/candy/kinh-doanh").then(setD); }, []);
+  if (!d) return <p className="muted">Đang tải…</p>;
+  if (d.writerEnabled === false) return <p className="muted">Chưa kết nối GHL cho trung tâm này.</p>;
+  const totalOpen = d.funnel.reduce((sum, p) => sum + p.stages.reduce((s, st) => s + st.count, 0), 0);
+  const totalValue = d.funnel.reduce((sum, p) => sum + p.stages.reduce((s, st) => s + st.value, 0), 0);
+  return (
+    <section>
+      <div className="stat-grid" style={{ marginBottom: 20 }}>
+        <StatCard label="Deal đang mở" value={totalOpen} sub={`trên ${d.funnel.length} quy trình bán hàng`} />
+        <StatCard label="Tổng giá trị deal mở" value={fmtVnd(totalValue)} />
+        <StatCard label="Học viên mới, chưa xếp lớp" value={d.chuaXepLop.length} sub="từ các deal đã ghi danh" />
+      </div>
+      {d.funnel.length === 0 ? (
+        <p className="muted">Trung tâm này chưa có quy trình bán hàng (pipeline) nào trên GHL.</p>
+      ) : d.funnel.map((p) => {
+        const max = Math.max(1, ...p.stages.map((s) => s.count));
+        return (
+          <div className="card wide" key={p.pipelineId} style={{ marginBottom: 14 }}>
+            <h3>{p.pipelineName}</h3>
+            {p.stages.map((s) => (
+              <BarRow key={s.id} label={s.name} value={s.count} max={max} />
+            ))}
+          </div>
+        );
+      })}
+      <div className="card wide">
+        <h3>Học viên mới, chưa xếp lớp ({d.chuaXepLop.length})</h3>
+        {d.chuaXepLop.length === 0 ? (
+          <div className="alert-ok-msg"><OkIcon /> Không có học viên nào đang chờ xếp lớp.</div>
+        ) : (
+          <ul className="attention-list">
+            {d.chuaXepLop.map((x) => (
+              <li key={x.hocVienId}>
+                <span className="strong">{x.name}</span>
+                {x.contactName && <span className="muted"> · Phụ huynh: {x.contactName}</span>}
+              </li>
+            ))}
+          </ul>
+        )}
+        {d.chuaXepLop.length > 0 && (
+          <p className="muted" style={{ marginTop: 10, fontSize: 13 }}>
+            Qua tab "Quản lý lớp" → chọn lớp → "+ Ghi danh học viên vào lớp này" → "Học viên mới", gõ đúng tên ở trên.
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function Dashboard() {
   const [d, setD] = useState(null);
   useEffect(() => { get("/api/candy/dashboard").then(setD); }, []);
@@ -1721,6 +1777,7 @@ const NAV_ICON = {
   "thoi-khoa-bieu": <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="2" y="3" width="12" height="11" rx="1.6" /><path d="M2 6.5h12" /><path d="M5 1.5v3M11 1.5v3" /></svg>,
   "diem-danh": <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="6.3" /><path d="M5.2 8.2 7.1 10l3.5-4.3" /></svg>,
   "bao-cao": <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 13V8M8 13V4M13 13v-3" /></svg>,
+  "kinh-doanh": <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M2 2.5h12L9.5 8.3v4.4L6.5 14V8.3L2 2.5Z" /></svg>,
   "cau-hinh": <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M2 4h12M2 8h12M2 12h12" /><circle cx="10" cy="4" r="1.6" fill="var(--card)" /><circle cx="5" cy="8" r="1.6" fill="var(--card)" /><circle cx="11" cy="12" r="1.6" fill="var(--card)" /></svg>,
 };
 
@@ -1819,7 +1876,7 @@ export default function App() {
   // bản deploy thật (data/contacts.json không đi kèm code, xem server.mjs), nên trang mặc định phải là
   // trang luôn có sẵn ở mọi nơi deploy, không riêng máy cục bộ.
   const [page, setPage] = useState(() => (
-    location.hash.startsWith("#/diem-danh") ? "diem-danh" : location.hash.startsWith("#/lop") ? "lop" : location.hash.startsWith("#/bao-cao") ? "bao-cao" : location.hash.startsWith("#/hoc-vien/") ? "hoc-vien" : location.hash.startsWith("#/danh-sach-hoc-vien") ? "hoc-vien-ds" : location.hash.startsWith("#/cau-hinh") ? "cau-hinh" : location.hash.startsWith("#/thoi-khoa-bieu") ? "thoi-khoa-bieu" : location.hash.startsWith("#/giao-vien") ? "giao-vien" : location.hash.startsWith("#/khach") ? "khach" : "bao-cao"
+    location.hash.startsWith("#/diem-danh") ? "diem-danh" : location.hash.startsWith("#/lop") ? "lop" : location.hash.startsWith("#/bao-cao") ? "bao-cao" : location.hash.startsWith("#/kinh-doanh") ? "kinh-doanh" : location.hash.startsWith("#/hoc-vien/") ? "hoc-vien" : location.hash.startsWith("#/danh-sach-hoc-vien") ? "hoc-vien-ds" : location.hash.startsWith("#/cau-hinh") ? "cau-hinh" : location.hash.startsWith("#/thoi-khoa-bieu") ? "thoi-khoa-bieu" : location.hash.startsWith("#/giao-vien") ? "giao-vien" : location.hash.startsWith("#/khach") ? "khach" : "bao-cao"
   ));
   const [id, setId] = useState(() => location.hash.replace("#/khach/", "") || null);
   const [hvId, setHvId] = useState(() => (location.hash.startsWith("#/hoc-vien/") ? decodeURIComponent(location.hash.replace("#/hoc-vien/", "")) : null));
@@ -1828,6 +1885,7 @@ export default function App() {
       if (location.hash.startsWith("#/diem-danh")) { setPage("diem-danh"); setId(null); }
       else if (location.hash.startsWith("#/lop")) { setPage("lop"); setId(null); }
       else if (location.hash.startsWith("#/bao-cao")) { setPage("bao-cao"); setId(null); }
+      else if (location.hash.startsWith("#/kinh-doanh")) { setPage("kinh-doanh"); setId(null); }
       else if (location.hash.startsWith("#/cau-hinh")) { setPage("cau-hinh"); setId(null); }
       else if (location.hash.startsWith("#/thoi-khoa-bieu")) { setPage("thoi-khoa-bieu"); setId(null); }
       else if (location.hash.startsWith("#/giao-vien")) { setPage("giao-vien"); setId(null); }
@@ -1838,11 +1896,12 @@ export default function App() {
     window.addEventListener("hashchange", h); return () => window.removeEventListener("hashchange", h);
   }, []);
   const open = (i) => { location.hash = `#/khach/${i}`; };
-  const TITLES = { "diem-danh": "Điểm danh", lop: "Quản lý lớp", "bao-cao": "Báo cáo tổng quan", khach: "Khách hàng", "hoc-vien": "Hồ sơ học viên", "hoc-vien-ds": "Học viên", "cau-hinh": "Cấu hình", "thoi-khoa-bieu": "Thời khoá biểu", "giao-vien": "Giáo viên" };
+  const TITLES = { "diem-danh": "Điểm danh", lop: "Quản lý lớp", "bao-cao": "Báo cáo tổng quan", "kinh-doanh": "Kinh doanh", khach: "Khách hàng", "hoc-vien": "Hồ sơ học viên", "hoc-vien-ds": "Học viên", "cau-hinh": "Cấu hình", "thoi-khoa-bieu": "Thời khoá biểu", "giao-vien": "Giáo viên" };
   const SUBS = {
     "diem-danh": `${brand.orgLabel} · điểm danh theo lớp`,
     lop: `${brand.orgLabel} · danh sách lớp và học viên`,
     "bao-cao": `${brand.orgLabel} · tổng quan hoạt động`,
+    "kinh-doanh": `${brand.orgLabel} · phễu bán hàng và học viên chờ xếp lớp`,
     khach: "123 GYM Bạch Đằng · bản demo, dữ liệu chỉ nằm trên máy này", // module riêng, không thuộc thương hiệu trên — không đổi theo tenant
     "hoc-vien": `${brand.orgLabel} · xuyên suốt mọi lớp học viên từng/đang học`,
     "hoc-vien-ds": `${brand.orgLabel} · toàn bộ học viên, kể cả chưa ghi danh lớp`,
@@ -1859,6 +1918,7 @@ export default function App() {
     { key: "giao-vien", href: "#/giao-vien", label: "Giáo viên" },
     { key: "thoi-khoa-bieu", href: "#/thoi-khoa-bieu", label: "Thời khoá biểu" },
     { key: "diem-danh", href: "#/diem-danh", label: "Điểm danh" },
+    { key: "kinh-doanh", href: "#/kinh-doanh", label: "Kinh doanh" },
     { key: "bao-cao", href: "#/bao-cao", label: "Báo cáo" },
     // Cấu hình chứa quy tắc nghiệp vụ + quản lý nhân sự — chỉ admin mới cần thấy trong menu (server vẫn
     // là lớp chặn thật sự cho các thao tác ghi; ẩn ở đây chỉ để đỡ rối cho nhân viên không dùng tới).
@@ -1892,6 +1952,7 @@ export default function App() {
         {page === "diem-danh" ? <Attendance />
           : page === "lop" ? <ClassManagement />
           : page === "bao-cao" ? <Dashboard />
+          : page === "kinh-doanh" ? <KinhDoanh />
           : page === "hoc-vien" ? <StudentProfile hocVienId={hvId} back={() => { location.hash = "#/bao-cao"; }} />
           : page === "hoc-vien-ds" ? <StudentListPage />
           : page === "cau-hinh" ? (me.role === "admin" ? <ConfigPage me={me} brand={brand} /> : <p className="muted">Chỉ quản lý mới xem được trang này.</p>)

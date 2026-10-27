@@ -5,7 +5,7 @@
 // nạp riêng theo từng locationId (hàm getAppState() bên dưới), tra theo tenant của phiên đăng nhập đang gọi.
 import http from "http"; import fs from "fs"; import path from "path"; import { fileURLToPath } from "url";
 import { ghlGet } from "./ghl-readonly.mjs";
-import { getCoSoOptions, writeAttendance, writerEnabled, getBuoiHoc, setBuoiHocTrangThai, getPhuHuynh, enrollStudent, createHocVien, createLop, renewEnrollment, setLichHoc, setGhiDanhTrangThai, generateSessions, listBuoiHoc, updateBuoiHoc, createGiaoVien, updateGiaoVien, ganGiaoVienChoLop, seedTenantFromGhl, handleOpportunityStageWebhook } from "./ghl-write.mjs";
+import { getCoSoOptions, writeAttendance, writerEnabled, getBuoiHoc, setBuoiHocTrangThai, getPhuHuynh, enrollStudent, createHocVien, createLop, renewEnrollment, setLichHoc, setGhiDanhTrangThai, generateSessions, listBuoiHoc, updateBuoiHoc, createGiaoVien, updateGiaoVien, ganGiaoVienChoLop, seedTenantFromGhl, handleOpportunityStageWebhook, getKinhDoanh } from "./ghl-write.mjs";
 import { findStaff, listStaff, addStaff, setStaffRole, removeStaff, createSession, getSession, destroySession, getCmlKey, decryptGhlUserData } from "./auth.mjs";
 import { kvGet, kvSet, getTenantByLocation, listTenants } from "./db.mjs";
 import { handleOAuthInstall, buildAuthorizeUrl } from "./oauth-onboarding.mjs";
@@ -870,6 +870,13 @@ ${err ? `<p style="background:#fde8e8;color:#c22;padding:10px 14px;border-radius
         totalPhi, expiringSoon, absentStreak, todaySessions, todayThu, thuLabel: THU_LABEL,
         lopChuaCoGV, lopChuaCoLich, tongHocBuDaDat: t.hocBuOverlay.length,
       });
+    }
+    // Tab "Kinh doanh" (xem ghl-write.mjs:getKinhDoanh) — phễu bán hàng + danh sách "học viên mới, chưa xếp
+    // lớp". Đọc trực tiếp GHL mỗi lần gọi (Opportunity là dữ liệu CRM sống), không qua base_snapshot/overlay.
+    if (u.pathname === "/api/candy/kinh-doanh") {
+      if (!(await writerEnabled(user.locationId))) return json(res, { funnel: [], chuaXepLop: [], writerEnabled: false });
+      try { return json(res, { ...(await getKinhDoanh(user.locationId)), writerEnabled: true }); }
+      catch (e) { return json(res, { error: String(e.message) }, 400); }
     }
     if ((m = u.pathname.match(/^\/api\/candy\/phu-huynh\/([^/]+)$/))) {
       await sleep(DELAY);
