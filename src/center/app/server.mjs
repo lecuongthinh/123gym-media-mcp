@@ -5,7 +5,7 @@
 // nạp riêng theo từng locationId (hàm getAppState() bên dưới), tra theo tenant của phiên đăng nhập đang gọi.
 import http from "http"; import fs from "fs"; import path from "path"; import { fileURLToPath } from "url";
 import { ghlGet } from "./ghl-readonly.mjs";
-import { getCoSoOptions, writeAttendance, writerEnabled, getBuoiHoc, setBuoiHocTrangThai, getPhuHuynh, enrollStudent, createHocVien, createLop, renewEnrollment, setLichHoc, setGhiDanhTrangThai, generateSessions, listBuoiHoc, updateBuoiHoc, createGiaoVien, updateGiaoVien, ganGiaoVienChoLop, seedTenantFromGhl } from "./ghl-write.mjs";
+import { getCoSoOptions, writeAttendance, writerEnabled, getBuoiHoc, setBuoiHocTrangThai, getPhuHuynh, enrollStudent, createHocVien, createLop, renewEnrollment, setLichHoc, setGhiDanhTrangThai, generateSessions, listBuoiHoc, updateBuoiHoc, createGiaoVien, updateGiaoVien, ganGiaoVienChoLop, seedTenantFromGhl, handleOpportunityStageWebhook } from "./ghl-write.mjs";
 import { findStaff, listStaff, addStaff, setStaffRole, removeStaff, createSession, getSession, destroySession, getCmlKey, decryptGhlUserData } from "./auth.mjs";
 import { kvGet, kvSet, getTenantByLocation, listTenants } from "./db.mjs";
 import { handleOAuthInstall, buildAuthorizeUrl } from "./oauth-onboarding.mjs";
@@ -206,6 +206,13 @@ export async function requestHandler(req, res) {
       res.end(JSON.stringify({ ok: true }));
       logWebhook({ type, locationId, headers: req.headers, body, signatureValid }).catch((e) => console.error("[webhook] Lưu nhật ký thất bại:", e.message));
       if (locationId && /^(Record|Relation)/.test(type)) scheduleResync(locationId);
+      // Hand-off Opportunity → Ghi danh (xem ghl-write.mjs:handleOpportunityStageWebhook) — chạy nền, không
+      // chặn phản hồi 200 cho GHL (đã trả ở trên).
+      if (locationId && type === "OpportunityStageUpdate" && body?.id && body?.pipelineStageId) {
+        handleOpportunityStageWebhook(locationId, { opportunityId: body.id, pipelineStageId: body.pipelineStageId, contactId: body.contactId, name: body.name })
+          .then((r) => { if (!r.skipped) console.log(`[opportunity-handoff] Tạo học viên ${r.hocVienId} ("${r.studentName}") từ Opportunity ${body.id} (${locationId})`); })
+          .catch((e) => console.error(`[opportunity-handoff] Lỗi xử lý Opportunity ${body.id} (${locationId}):`, e.message));
+      }
       return;
     }
     // Công khai, không cần đăng nhập — nếu đã có token hợp lệ (Bearer) thì trả thương hiệu ĐÚNG của tenant
