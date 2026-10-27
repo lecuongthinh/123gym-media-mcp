@@ -255,7 +255,7 @@ export async function requestHandler(req, res) {
 <h2 style="margin:0 0 8px">Kết nối Center Management</h2>
 <p style="color:#667085;margin:0 0 20px">Bạn đang cài từ giao diện AGENCY — GHL cần biết trước đang kết nối cho sub-account nào. Dán Location ID của sub-account đó (Settings &gt; Business Profile trong sub-account, hoặc nhìn trong URL dạng .../location/&lt;id&gt;/...).</p>
 ${err ? `<p style="background:#fde8e8;color:#c22;padding:10px 14px;border-radius:8px;margin:0 0 16px">${err}</p>` : ""}
-<form method="GET" action="/oauth/go">
+<form method="GET" action="oauth/go">
 <input name="location_id" placeholder="Location ID" required style="width:100%;box-sizing:border-box;padding:12px 14px;border:1px solid #d0d5dd;border-radius:8px;font-size:15px;margin-bottom:12px">
 <button type="submit" style="width:100%;padding:12px 14px;border:none;border-radius:8px;background:linear-gradient(135deg,#3457e0,#7c5cff);color:#fff;font-size:15px;font-weight:600;cursor:pointer">Tiếp tục tới GHL</button>
 </form>
@@ -264,7 +264,7 @@ ${err ? `<p style="background:#fde8e8;color:#c22;padding:10px 14px;border-radius
     if (req.method === "GET" && u.pathname === "/oauth/go") {
       const locationId = String(u.searchParams.get("location_id") || "").trim();
       if (!locationId) {
-        res.writeHead(302, { Location: "/oauth/start?error=" + encodeURIComponent("Cần nhập Location ID") });
+        res.writeHead(302, { Location: "start?error=" + encodeURIComponent("Cần nhập Location ID") });
         return res.end();
       }
       res.writeHead(302, { Location: buildAuthorizeUrl(locationId) });
