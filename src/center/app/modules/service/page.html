@@ -699,7 +699,7 @@
     var rows = [];
     phases.forEach(function (g) {
       var closed = !!taskCollapsed[colKey(pid, g)], all = tasks.filter(function (t) { return (t.giai_doan || "Khác") === g; });
-      rows.push(h("tr", { class: "phase click", onclick: function () { taskCollapsed[colKey(pid, g)] = !closed; repaint(); } }, h("td", { colspan: 6 }, [(closed ? "▸ " : "▾ ") + g, h("span", { class: "pc" }, pctOf(all) + "% · " + all.filter(function (t) { return t.trang_thai === "hoan_thanh"; }).length + "/" + all.length)])));
+      rows.push(h("tr", { class: "phase click", onclick: function () { var k = colKey(pid, g); taskCollapsed[k] = !taskCollapsed[k]; repaint(); } }, h("td", { colspan: 6 }, [(closed ? "▸ " : "▾ ") + g, h("span", { class: "pc" }, pctOf(all) + "% · " + all.filter(function (t) { return t.trang_thai === "hoan_thanh"; }).length + "/" + all.length)])));
       if (closed) return;
       by[g].forEach(function (t) {
         var edit = canEditTask(t), stop = function (ev) { ev.stopPropagation(); };
@@ -748,7 +748,7 @@
       var g = t.giai_doan || "Khác";
       if (g !== phase) { phase = g; hidden = !!taskCollapsed[colKey(pid, g)];
         var grp = ds.filter(function (u) { return (u.giai_doan || "Khác") === g; }), s0 = Math.min.apply(null, grp.map(function (u) { return dayNum(u.ngay_bat_dau_kh); })), e0 = Math.max.apply(null, grp.map(function (u) { return dayNum(u.ngay_ket_thuc_kh); }));
-        rows.push(h("div", { class: "gr ph", style: "cursor:pointer", onclick: function () { taskCollapsed[colKey(pid, g)] = !hidden; repaint(); } }, [h("div", { class: "gl", style: "width:" + LEFT + "px" }, [(hidden ? "▸ " : "▾ ") + g, h("span", { style: "margin-left:auto;color:var(--mut);font-weight:600" }, pctOf(grp) + "%")]), h("div", { class: "gc", style: "width:" + W + "px" }, h("div", { style: "position:absolute;top:11px;height:6px;border-radius:3px;background:var(--ink2);opacity:.45;left:" + x(s0) + "px;width:" + Math.max(6, (e0 - s0 + 1) * dayW) + "px" }))])); }
+        rows.push(h("div", { class: "gr ph", style: "cursor:pointer", onclick: function () { var k = colKey(pid, g); taskCollapsed[k] = !taskCollapsed[k]; repaint(); } }, [h("div", { class: "gl", style: "width:" + LEFT + "px" }, [(hidden ? "▸ " : "▾ ") + g, h("span", { style: "margin-left:auto;color:var(--mut);font-weight:600" }, pctOf(grp) + "%")]), h("div", { class: "gc", style: "width:" + W + "px" }, h("div", { style: "position:absolute;top:11px;height:6px;border-radius:3px;background:var(--ink2);opacity:.45;left:" + x(s0) + "px;width:" + Math.max(6, (e0 - s0 + 1) * dayW) + "px" }))])); }
       if (hidden) return;
       var s = dayNum(t.ngay_bat_dau_kh), e = dayNum(t.ngay_ket_thuc_kh), late = taskLate(t), moc = t.loai === "moc", end = x(moc ? e + 0.5 : e + 1);
       var tip = function (ev) { showTip(ev, [h("div", { class: "m" }, t.name), h("div", {}, "Kế hoạch: " + fmtD(t.ngay_bat_dau_kh) + (moc ? "" : " → " + fmtD(t.ngay_ket_thuc_kh))), t.ngay_bat_dau_tt ? h("div", {}, "Thực tế: " + fmtD(t.ngay_bat_dau_tt) + " → " + (t.ngay_ket_thuc_tt ? fmtD(t.ngay_ket_thuc_tt) : "đang làm")) : null, h("div", {}, taskPct(t) + "% · " + opt("taskStatus", t.trang_thai || "chua_lam") + " · " + who(t))]); };
