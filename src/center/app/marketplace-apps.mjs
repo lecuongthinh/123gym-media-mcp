@@ -41,7 +41,7 @@ const APPS = {
     versionId: env.SERVICE_VERSION_ID,
     // SERVICE_REDIRECT_URI cho phép đặt thẳng khi host gộp gắn module dưới tiền tố (vd https://<host>/center/apps/service/oauth/callback), không phụ thuộc PUBLIC_BASE_URL dùng chung.
     redirectUri: env.SERVICE_REDIRECT_URI || `${BASE_URL}/apps/service/oauth/callback`,
-    scopes: "locations.readonly locations/customFields.readonly opportunities.readonly users.readonly objects/schema.readonly objects/record.readonly objects/record.write associations.readonly associations/relation.readonly associations/relation.write",
+    scopes: "locations.readonly locations/customFields.readonly opportunities.readonly users.readonly contacts.readonly objects/schema.readonly objects/record.readonly objects/record.write associations.readonly associations/relation.readonly associations/relation.write",
   },
 };
 
