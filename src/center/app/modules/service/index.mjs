@@ -14,8 +14,11 @@ import { createGhl } from "./ghl.mjs";
 import { todayVN, qrSign, qrVerify, makeLimiter, cleanText, flat } from "./logic.mjs";
 import * as svc from "./service.mjs";
 import * as notify from "./notify.mjs";
+import * as ttpl from "./templates.mjs";
 
-let notifyStore; const store = () => (notifyStore ||= notify.dbStore());
+// Chạy thử cục bộ (SERVICE_DEV_LOCATION) dùng kho trong bộ nhớ, không đụng database.
+let notifyStore; const store = () => (notifyStore ||= (devLocation() ? notify.memoryStore() : notify.dbStore()));
+let taskTplStore; const tplStore = () => (taskTplStore ||= (devLocation() ? ttpl.memoryStore() : ttpl.dbStore()));
 
 const APP = "service";
 const PAGE = new URL("./page.html", import.meta.url);
@@ -201,6 +204,11 @@ fetch(location.pathname.replace(/\\/q$/,"")+"/q/submit",{method:"POST",body:JSON
             const sig = qrSign(qrSecret(), sess.locationId, id);
             return j({ url: `${publicModuleUrl(req, u)}/q?l=${encodeURIComponent(sess.locationId)}&u=${encodeURIComponent(id)}&s=${sig}` });
           }
+          if (sub === "/api/tasks") return j(await svc.listTasks(ghl, cleanText(u.searchParams.get("projectId") ?? "", 40)));
+          if (sub === "/api/task-templates") {
+            const list = await ttpl.effectiveTaskTemplates(tplStore(), sess.locationId);
+            return j({ templates: list.map((t) => ({ key: t.key, label: t.label, text: ttpl.itemsToText(t.items), count: t.items.length })) });
+          }
           if (sub === "/api/notify/templates") {
             adminOnly();
             return j({ templates: await notify.effectiveTemplates(store(), sess.locationId), subjects: notify.SUBJECTS, statuses: OPTIONS.orderStatus, webhookUrl: `${publicModuleUrl(req, u)}/webhooks/notify?loc=${encodeURIComponent(sess.locationId)}&k=${notify.notifyKey(sess.locationId)}` });
@@ -219,6 +227,13 @@ fetch(location.pathname.replace(/\\/q$/,"")+"/q/submit",{method:"POST",body:JSON
           if (sub === "/api/contract/generate") { adminOnly(); return j(await svc.generateMaintenance(ghl, cleanText(b.id, 40), b, today)); }
           if (sub === "/api/inspection/schedule") { adminOnly(); return j(await svc.scheduleInspection(ghl, cleanText(b.unitId, 40), b)); }
           if (sub === "/api/inspection/record") { adminOnly(); return j(await svc.recordInspection(ghl, cleanText(b.id, 40), b)); }
+          if (sub === "/api/task") { adminOnly(); return j(await svc.createTask(ghl, b, { today })); }
+          if (sub === "/api/task/update") return j(await svc.updateTask(ghl, cleanText(b.id, 40), b.patch || {}, { today, isAdmin, me }));
+          if (sub === "/api/tasks/generate") { adminOnly(); return j(await svc.generateTasks(ghl, cleanText(b.projectId, 40), b, today, await ttpl.effectiveTaskTemplates(tplStore(), sess.locationId))); }
+          if (sub === "/api/task-template") {
+            adminOnly(); let t; try { t = ttpl.validateTaskTemplate(b); } catch (e) { throw new svc.UserError(e.message, e.status || 400); }
+            await tplStore().save(sess.locationId, t); return j({ ok: true });
+          }
           if (sub === "/api/notify/template") {
             adminOnly(); let t; try { t = notify.validateTemplate(b); } catch (e) { throw new svc.UserError(e.message, e.status || 400); }
             await store().save(sess.locationId, t); return j({ ok: true, template: t });

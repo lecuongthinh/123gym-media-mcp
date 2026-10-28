@@ -54,6 +54,55 @@ export function toE164VN(p) {
   return /^\d{8,10}$/.test(n) ? "+84" + n : null;
 }
 
+// --- tiến độ công việc (dự án) -----------------------------------------------------------------------
+export const TASK_CLOSED = ["hoan_thanh", "huy"];
+const taskWeight = (t) => { const d = daysBetween(t.ngay_bat_dau_kh, t.ngay_ket_thuc_kh); return Number.isFinite(d) ? Math.max(1, d + 1) : 1; };
+export const isTaskOverdue = (t, today) => !TASK_CLOSED.includes(t.trang_thai) && isDate(t.ngay_ket_thuc_kh) && t.ngay_ket_thuc_kh < today;
+// % tiến độ của dự án = trung bình có trọng số theo số ngày kế hoạch (việc dài ảnh hưởng nhiều hơn); việc hủy không tính.
+export function taskProgress(tasks, today) {
+  const live = tasks.filter((t) => t.trang_thai !== "huy");
+  let w = 0, acc = 0, done = 0, doing = 0, overdue = 0, start = null, end = null, nextMilestone = null;
+  for (const t of live) {
+    const pct = t.trang_thai === "hoan_thanh" ? 100 : Math.max(0, Math.min(100, Number(t.phan_tram) || 0));
+    const wt = taskWeight(t); w += wt; acc += wt * pct;
+    if (t.trang_thai === "hoan_thanh") done++; else if (pct > 0 || t.trang_thai === "dang_lam" || t.trang_thai === "cho_kiem_tra") doing++;
+    if (isTaskOverdue(t, today)) overdue++;
+    if (isDate(t.ngay_bat_dau_kh) && (!start || t.ngay_bat_dau_kh < start)) start = t.ngay_bat_dau_kh;
+    if (isDate(t.ngay_ket_thuc_kh) && (!end || t.ngay_ket_thuc_kh > end)) end = t.ngay_ket_thuc_kh;
+    if (t.loai === "moc" && t.trang_thai !== "hoan_thanh" && isDate(t.ngay_ket_thuc_kh) && (!nextMilestone || t.ngay_ket_thuc_kh < nextMilestone.date)) nextMilestone = { name: t.name, date: t.ngay_ket_thuc_kh };
+  }
+  return { percent: w ? Math.round(acc / w) : 0, total: live.length, done, doing, overdue, start, end, nextMilestone };
+}
+// Quy tắc đồng bộ giữa trạng thái, % và ngày thực tế khi sửa 1 công việc (chỉ trả các field cần ghi).
+export function normalizeTaskPatch(cur, patch, today) {
+  const p = { ...patch };
+  const hasPct = p.phan_tram !== undefined, hasSt = p.trang_thai !== undefined;
+  if (hasPct) p.phan_tram = Math.max(0, Math.min(100, Math.round(Number(p.phan_tram) || 0)));
+  const curSt = cur.trang_thai || "chua_lam";
+  let st = hasSt ? p.trang_thai : curSt;
+  if (hasSt && st === "hoan_thanh") p.phan_tram = 100;
+  else if (hasPct && p.phan_tram === 100 && st !== "huy") st = "hoan_thanh";
+  else if (hasPct && !hasSt) { if (p.phan_tram > 0 && curSt === "chua_lam") st = "dang_lam"; else if (p.phan_tram < 100 && curSt === "hoan_thanh") st = p.phan_tram > 0 ? "dang_lam" : "chua_lam"; }
+  if (hasSt && st === "chua_lam" && !hasPct) p.phan_tram = 0;
+  if (hasSt && curSt === "hoan_thanh" && st !== "hoan_thanh" && st !== "huy" && !hasPct) p.phan_tram = 90; // mở lại việc đã xong
+  if (st !== curSt || hasSt) p.trang_thai = st;
+  if (["dang_lam", "cho_kiem_tra", "hoan_thanh"].includes(st) && !cur.ngay_bat_dau_tt && !p.ngay_bat_dau_tt) p.ngay_bat_dau_tt = today;
+  if (st === "hoan_thanh" && !cur.ngay_ket_thuc_tt && !p.ngay_ket_thuc_tt) p.ngay_ket_thuc_tt = today;
+  return p;
+}
+// Từ mẫu + ngày khởi công → danh sách công việc cần tạo. Khoá sinh cố định (dự án, mẫu, số thứ tự) nên gọi lại không tạo trùng.
+export function planFromTemplate({ template, projectId, start, existingKeys = new Set() }) {
+  if (!isDate(start)) throw new Error("Ngày khởi công không hợp lệ");
+  const out = [];
+  template.items.forEach((it, i) => {
+    const key = `TASK:${projectId}:${template.key}:${i + 1}`;
+    if (existingKeys.has(key)) return;
+    const s = addDays(start, it.offset), e = addDays(s, (it.moc ? 1 : it.days) - 1);
+    out.push({ key, props: { name: it.name, giai_doan: it.giai_doan, loai: it.moc ? "moc" : "viec", trang_thai: "chua_lam", phan_tram: 0, ngay_bat_dau_kh: s, ngay_ket_thuc_kh: e, thu_tu: i + 1, khoa_sinh: key, du_an_id: projectId } });
+  });
+  return out;
+}
+
 // --- kiểm định ------------------------------------------------------------------------------------------
 // Chu kỳ lấy từ field của TỪNG thang (chưa xác minh với văn bản pháp luật — xem ghi chú dự án), không hardcode.
 export const nextInspectionDate = (doneDate, cycleMonths) => (isDate(doneDate) && Number(cycleMonths) > 0 ? addMonths(doneDate, Math.round(Number(cycleMonths))) : null);

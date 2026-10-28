@@ -180,6 +180,16 @@
   @media (max-width:860px) { .top { gap:8px; } .top .btn .lb { display:none; } .top .btn.sm { padding:8px 10px; } .search { min-width:0; } .search input { padding-right:8px; } }
   @media (max-width:520px) { .hb .nm { white-space:normal; line-height:1.25; font-size:12.5px; } .kpi .row svg { width:62px; height:26px; } .kpi .v { white-space:nowrap; font-size:23px; } .g4 { grid-template-columns:minmax(0,1fr) minmax(0,1fr); } .pulse b { font-size:25px; } .hb .r { grid-template-columns:minmax(70px,34%) 1fr auto; } }
   @media print { body * { visibility:hidden; } .modal, .modal * { visibility:visible; } .modal { position:absolute; inset:0; background:#fff; color:#000; padding:0; display:block; } .modal .box { box-shadow:none; padding:0; max-width:none; background:#fff; animation:none; } .doc { padding:0; border-radius:0; } .modal button, .modal input { display:none; } @page { size:A4; margin:16mm; } }
+  .gantt { overflow-x:auto; border:1px solid var(--line); border-radius:12px; background:var(--surface); } .gt { position:relative; }
+  .gh { display:flex; height:26px; border-bottom:1px solid var(--line); font-size:11.5px; color:var(--mut); font-weight:600; background:var(--surface); } .gh .gl { align-items:center; }
+  .gr { display:flex; height:30px; border-bottom:1px solid var(--line); } .gr:not(.ph):hover .gl, .gr:not(.ph):hover .gc { background:var(--surface2); } .gr.ph { background:var(--surface2); font-weight:700; font-size:12.5px; }
+  .gl { flex:none; position:sticky; left:0; z-index:2; padding:0 10px; display:flex; align-items:center; gap:6px; font-size:12.5px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; border-right:1px solid var(--line); background:var(--surface); } .gr.ph .gl { background:var(--surface2); }
+  .gc { position:relative; flex:none; }
+  .gb { position:absolute; top:7px; height:16px; border-radius:5px; background:color-mix(in srgb,var(--acc) 28%,transparent); overflow:hidden; cursor:pointer; } .gb i { display:block; height:100%; background:var(--acc); }
+  .gb.late { outline:2px solid var(--badtx); } .gb.hoan_thanh { background:color-mix(in srgb,var(--goodtx) 30%,transparent); } .gb.hoan_thanh i { background:var(--goodtx); }
+  .gm { position:absolute; top:8px; width:13px; height:13px; transform:rotate(45deg); background:#e9a000; border-radius:2px; margin-left:-6px; cursor:pointer; } .gm.done { background:var(--goodtx); } .gm.late { outline:2px solid var(--badtx); }
+  .gtoday { position:absolute; top:26px; bottom:0; width:2px; background:var(--badtx); opacity:.55; z-index:1; pointer-events:none; }
+  tr.phase td { background:var(--surface2); font-weight:700; font-size:12.5px; } tr.phase .pc { float:right; color:var(--mut); font-weight:600; }
 </style>
 </head>
 <body>
@@ -273,8 +283,8 @@
   var isAdmin = function () { return M.role === "admin"; };
 
   /* ===== điều hướng + khung ===== */
-  var TABS = [["sales", "Kinh doanh", "sales"], ["dash", "Vận hành", "dash"], ["my", "Việc của tôi", "my"], ["phieu", "Phiếu dịch vụ", "phieu"], ["thang_may", "Thang máy", "thang_may"], ["cong_trinh", "Công trình", "cong_trinh"], ["hop_dong", "Hợp đồng", "hop_dong"], ["du_an", "Dự án", "du_an"], ["kiem_dinh", "Kiểm định", "kiem_dinh"], ["notify", "Mẫu tin", "bell"]];
-  var tabsFor = function () { return TABS.filter(function (t) { return isAdmin() || (t[0] !== "sales" && t[0] !== "notify"); }); };
+  var TABS = [["sales", "Kinh doanh", "sales"], ["dash", "Vận hành", "dash"], ["my", "Việc của tôi", "my"], ["phieu", "Phiếu dịch vụ", "phieu"], ["thang_may", "Thang máy", "thang_may"], ["cong_trinh", "Công trình", "cong_trinh"], ["hop_dong", "Hợp đồng", "hop_dong"], ["du_an", "Dự án", "du_an"], ["kiem_dinh", "Kiểm định", "kiem_dinh"], ["tasktpl", "Mẫu công việc", "du_an"], ["notify", "Mẫu tin", "bell"]];
+  var tabsFor = function () { return TABS.filter(function (t) { return isAdmin() || (t[0] !== "sales" && t[0] !== "notify" && t[0] !== "tasktpl"); }); };
   var bottomFor = function () { return isAdmin() ? ["sales", "dash", "phieu", "thang_may"] : ["my", "phieu", "thang_may", "dash"]; };
   function nav(v) { view = v; location.hash = v.id ? "#/" + v.tab + "/" + v.id : "#/" + v.tab; render(); window.scrollTo(0, 0); }
   window.addEventListener("hashchange", function () { var m = /^#\/(\w+)(?:\/(\w+))?/.exec(location.hash); if (m && M && (m[1] !== view.tab || m[2] !== view.id)) { view = { tab: m[1], id: m[2] }; render(); } });
@@ -315,13 +325,13 @@
       R.replaceChildren.apply(R, out.length ? out : [h("div", { class: "empty" }, "Không có kết quả cho “" + q + "”")]); R.style.display = "";
     });
   }
-  var TITLE = { sales: "Kinh doanh", dash: "Vận hành & dịch vụ", my: "Việc của tôi", phieu: "Phiếu dịch vụ", thang_may: "Thang máy", cong_trinh: "Công trình", hop_dong: "Hợp đồng", du_an: "Dự án thi công", kiem_dinh: "Kiểm định", notify: "Mẫu tin tự động (Zalo ZNS)" };
+  var TITLE = { sales: "Kinh doanh", dash: "Vận hành & dịch vụ", my: "Việc của tôi", phieu: "Phiếu dịch vụ", thang_may: "Thang máy", cong_trinh: "Công trình", hop_dong: "Hợp đồng", du_an: "Dự án thi công", kiem_dinh: "Kiểm định", notify: "Mẫu tin tự động (Zalo ZNS)", tasktpl: "Mẫu công việc (tiến độ dự án)" };
   function skeleton() { return [h("div", { class: "skel", style: "height:190px" }), h("div", { class: "g g4" }, [1, 2, 3, 4].map(function () { return h("div", { class: "skel", style: "height:116px" }); })), h("div", { class: "g g21" }, [h("div", { class: "skel", style: "height:300px" }), h("div", { class: "skel", style: "height:300px" })])]; }
   function render() {
     if (!M) return; hideTip(); renderNav(); shell.title.textContent = TITLE[view.tab] || "";
     shell.main.replaceChildren.apply(shell.main, skeleton());
     var p;
-    if (view.id) p = detailView(view.tab, view.id); else if (view.tab === "sales" && isAdmin()) p = salesView(); else if (view.tab === "dash") p = dashView(); else if (view.tab === "my") p = myView(); else if (view.tab === "du_an") p = projectsView(); else if (view.tab === "notify" && isAdmin()) p = notifyView(); else p = listView(view.tab);
+    if (view.id) p = detailView(view.tab, view.id); else if (view.tab === "sales" && isAdmin()) p = salesView(); else if (view.tab === "dash") p = dashView(); else if (view.tab === "my") p = myView(); else if (view.tab === "du_an") p = projectsView(); else if (view.tab === "notify" && isAdmin()) p = notifyView(); else if (view.tab === "tasktpl" && isAdmin()) p = taskTplView(); else p = listView(view.tab);
     var ver = (render.v = (render.v || 0) + 1);
     p.then(function (el) { if (ver !== render.v) return; shell.main.replaceChildren.apply(shell.main, [].concat(el).filter(Boolean)); renderNav(); }).catch(function (e) { if (ver === render.v) shell.main.replaceChildren(h("div", { class: "card err" }, e.message)); });
   }
@@ -517,7 +527,7 @@
 
   /* ===== Việc của tôi ===== */
   function myView() {
-    return api("/api/my-orders").then(function (r) {
+    return Promise.all([api("/api/my-orders"), api("/api/tasks").catch(function () { return { available: false, tasks: [] }; })]).then(function (res) { var r = res[0], tk = res[1];
       badge = r.mine.length || null;
       var card1 = function (o, claim) {
         var b = []; var stop = function (fn) { return function (ev) { ev.stopPropagation(); fn(); }; };
@@ -528,7 +538,7 @@
       };
       var head = h("div", { class: "card hero", style: "padding:20px 22px" }, [h("div", { class: "hi" }, greet() + ", " + firstName(M.me.name)), h("h2", { style: "margin-bottom:12px" }, r.mine.length ? "Bạn có " + r.mine.length + " việc đang mở" : "Bạn đã xử lý hết việc được giao"), h("div", { class: "pulse" }, [h("button", {}, [h("b", {}, r.mine.length), h("span", {}, "Đang làm")]), h("button", {}, [h("b", {}, r.doneToday), h("span", {}, "Xong hôm nay")]), h("button", {}, [h("b", {}, r.unassigned.length), h("span", {}, "Chờ nhận")])])]);
       return [head, h("h2", { style: "margin:4px 2px -6px" }, "Việc của tôi (" + r.mine.length + ")")].concat(r.mine.length ? r.mine.map(function (o) { return card1(o, false); }) : [card("", null, empty("Không có việc nào đang mở", "check"))])
-        .concat([h("h2", { style: "margin:10px 2px -6px" }, "Chưa ai nhận (" + r.unassigned.length + ")")], r.unassigned.length ? r.unassigned.slice(0, 20).map(function (o) { return card1(o, true); }) : [card("", null, empty("Không có phiếu chờ nhận", "check"))]);
+        .concat([h("h2", { style: "margin:10px 2px -6px" }, "Chưa ai nhận (" + r.unassigned.length + ")")], r.unassigned.length ? r.unassigned.slice(0, 20).map(function (o) { return card1(o, true); }) : [card("", null, empty("Không có phiếu chờ nhận", "check"))]).concat(myTasksCard(tk));
     });
   }
   function finishOrder(o) { form("Hoàn thành " + o.name, [{ k: "ket_qua", label: "Kết quả xử lý (bắt buộc)", t: "textarea", v: o.ket_qua || "" }], function (v) { return post("/api/order/update", { id: o.id, patch: { trang_thai: "hoan_thanh", ket_qua: v.ket_qua } }); }, "Hoàn thành", "Đã hoàn thành phiếu"); }
@@ -628,8 +638,135 @@
     return getList("du_an").then(function (rows) {
       var N = M.options.projectStage.length;
       var cols = M.options.projectStage.map(function (st, i) { var items = rows.filter(function (p) { return (p.giai_doan || "ky_hd") === st[0]; });
-        return h("div", { class: "col" }, [h("h3", {}, [st[1], h("span", {}, items.length)]), h("div", { class: "bar", style: "background:var(--q" + (1 + Math.floor(i * 6 / (N - 1))) + ")" })].concat(items.length ? items.map(function (p) { var late = p.ngay_du_kien_ban_giao && p.ngay_du_kien_ban_giao < M.today && st[0] !== "hoan_tat"; return h("div", { class: "c", tabindex: "0", onclick: function () { nav({ tab: "du_an", id: p.id }); }, onkeydown: function (e) { if (e.key === "Enter") nav({ tab: "du_an", id: p.id }); } }, [h("b", {}, p.name), h("div", { class: "d", style: "color:var(--mut);font-size:12.5px;margin:2px 0 6px" }, p.site || ""), h("div", { style: "display:flex;gap:6px;align-items:center;flex-wrap:wrap" }, [p.ngay_du_kien_ban_giao ? chip(fmtD(p.ngay_du_kien_ban_giao), "plain") : null, late ? chip("trễ hạn", "bad") : null])]); }) : [h("div", { class: "d", style: "color:var(--mut);padding:6px 6px 10px;font-size:12.5px" }, "Trống")])); });
+        return h("div", { class: "col" }, [h("h3", {}, [st[1], h("span", {}, items.length)]), h("div", { class: "bar", style: "background:var(--q" + (1 + Math.floor(i * 6 / (N - 1))) + ")" })].concat(items.length ? items.map(function (p) { var late = p.ngay_du_kien_ban_giao && p.ngay_du_kien_ban_giao < M.today && st[0] !== "hoan_tat"; return h("div", { class: "c", tabindex: "0", onclick: function () { nav({ tab: "du_an", id: p.id }); }, onkeydown: function (e) { if (e.key === "Enter") nav({ tab: "du_an", id: p.id }); } }, [h("b", {}, p.name), h("div", { class: "d", style: "color:var(--mut);font-size:12.5px;margin:2px 0 6px" }, p.site || ""), h("div", { style: "display:flex;gap:6px;align-items:center;flex-wrap:wrap" }, [p.ngay_du_kien_ban_giao ? chip(fmtD(p.ngay_du_kien_ban_giao), "plain") : null, late ? chip("trễ hạn", "bad") : null]), p.progress && p.progress.total ? h("div", { style: "margin-top:8px" }, [progressBar(p.progress.percent, p.progress.overdue ? "warn" : ""), h("small", { style: "color:var(--mut)" }, p.progress.percent + "% · " + p.progress.done + "/" + p.progress.total + " việc" + (p.progress.overdue ? " · " + p.progress.overdue + " trễ" : ""))]) : null]); }) : [h("div", { class: "d", style: "color:var(--mut);padding:6px 6px 10px;font-size:12.5px" }, "Trống")])); });
       return [card("Dự án thi công", rows.length + " dự án · từ ký hợp đồng đến bảo hành", h("div", { class: "kan" }, cols))];
+    });
+  }
+
+  /* ===== Tiến độ công việc (dự án): danh sách · Gantt · kanban ===== */
+  var TASK_COLS = [["chua_lam", "Chưa làm"], ["dang_lam", "Đang làm"], ["cho_kiem_tra", "Chờ kiểm tra"], ["hoan_thanh", "Hoàn thành"]];
+  var TASK_CLS = { chua_lam: "plain", dang_lam: "info", cho_kiem_tra: "warn", hoan_thanh: "ok", huy: "plain" };
+  var taskView = "list"; try { taskView = localStorage.getItem("svc_taskview") || "list"; } catch (e) {}
+  var dayNum = function (s) { var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s || ""); return m ? Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000 : null; };
+  var taskLate = function (t) { return ["hoan_thanh", "huy"].indexOf(t.trang_thai) < 0 && t.ngay_ket_thuc_kh && t.ngay_ket_thuc_kh < M.today; };
+  var taskPct = function (t) { return t.trang_thai === "hoan_thanh" ? 100 : Math.max(0, Math.min(100, Number(t.phan_tram) || 0)); };
+  var canEditTask = function (t) { if (isAdmin()) return true; var p = String(t.nguoi_phu_trach || "").toLowerCase(); return !!p && ((M.me.email && p.indexOf(M.me.email.toLowerCase()) >= 0) || (M.me.name && p.indexOf(M.me.name.toLowerCase()) >= 0)); };
+  function pctOf(tasks) { var w = 0, a = 0; tasks.forEach(function (t) { if (t.trang_thai === "huy") return; var d = dayNum(t.ngay_ket_thuc_kh) - dayNum(t.ngay_bat_dau_kh), wt = isFinite(d) ? Math.max(1, d + 1) : 1; w += wt; a += wt * taskPct(t); }); return w ? Math.round(a / w) : 0; }
+  function progressBar(p, cls) { return h("div", { class: "meter " + (cls || "") }, h("i", { style: "width:" + Math.max(0, Math.min(100, p)) + "%" })); }
+  var userOpts = function () { return (M.users || []).map(function (u) { return [u.name + (u.email ? " <" + u.email + ">" : ""), u.name]; }); };
+
+  function taskEdit(t) {
+    var users = userOpts(), f = [];
+    if (isAdmin()) {
+      f.push({ k: "name", label: "Tên công việc", v: t.name || "" }, { k: "giai_doan", label: "Giai đoạn", v: t.giai_doan || "" }, { k: "loai", label: "Loại", t: "select", options: M.options.taskType, v: t.loai || "viec" },
+        { k: "ngay_bat_dau_kh", label: "Bắt đầu (kế hoạch)", t: "date", v: t.ngay_bat_dau_kh || "" }, { k: "ngay_ket_thuc_kh", label: "Kết thúc (kế hoạch)", t: "date", v: t.ngay_ket_thuc_kh || "" },
+        users.length ? { k: "nguoi_phu_trach", label: "Người phụ trách", t: "select", options: users, v: t.nguoi_phu_trach || "" } : { k: "nguoi_phu_trach", label: "Người phụ trách (tên <email>)", v: t.nguoi_phu_trach || "" });
+    }
+    f.push({ k: "trang_thai", label: "Trạng thái", t: "select", options: M.options.taskStatus.filter(function (s) { return isAdmin() || s[0] !== "huy"; }), v: t.trang_thai || "chua_lam" }, { k: "phan_tram", label: "Hoàn thành (%)", t: "number", v: t.phan_tram == null ? 0 : t.phan_tram }, { k: "ghi_chu", label: "Ghi chú", t: "textarea", v: t.ghi_chu || "" });
+    form("Cập nhật: " + t.name, f, function (v) { var p = {}; Object.keys(v).forEach(function (k) { var a = v[k], b = t[k] == null ? "" : t[k]; if (String(a) !== String(b)) p[k] = a; }); return post("/api/task/update", { id: t.id, patch: p }); }, "Lưu", "Đã cập nhật công việc");
+  }
+  function taskAddForm(p) {
+    var users = userOpts();
+    form("Thêm công việc — " + p.name, [{ k: "name", label: "Tên công việc" }, { k: "giai_doan", label: "Giai đoạn" }, { k: "loai", label: "Loại", t: "select", options: M.options.taskType, v: "viec" }, { k: "ngay_bat_dau_kh", label: "Bắt đầu (kế hoạch)", t: "date", v: M.today }, { k: "ngay_ket_thuc_kh", label: "Kết thúc (kế hoạch)", t: "date" },
+      users.length ? { k: "nguoi_phu_trach", label: "Người phụ trách", t: "select", options: users } : { k: "nguoi_phu_trach", label: "Người phụ trách (tên <email>)" }], function (v) { v.du_an_id = p.id; return post("/api/task", v); }, "Thêm", "Đã thêm công việc");
+  }
+  function taskGenForm(p) {
+    api("/api/task-templates").then(function (d) {
+      form("Sinh công việc từ mẫu — " + p.name, [{ k: "templateKey", label: "Mẫu công việc", t: "select", options: d.templates.map(function (x) { return [x.key, x.label + " (" + x.count + " việc)"]; }), v: d.templates[0] && d.templates[0].key }, { k: "start", label: "Ngày khởi công", t: "date", v: M.today }],
+        function (v) { return post("/api/tasks/generate", { projectId: p.id, templateKey: v.templateKey, start: v.start }); }, "Sinh công việc", function (r) { return "Đã tạo " + r.created + " công việc" + (r.remaining ? " — còn " + r.remaining + ", bấm lại để tiếp tục" : ""); });
+    }).catch(function (e) { toast(e.message, true); });
+  }
+  function moveTask(t, st) { act(function () { return post("/api/task/update", { id: t.id, patch: { trang_thai: st } }); }, "Đã chuyển sang “" + opt("taskStatus", st) + "”"); }
+  var who = function (t) { return person(t.nguoi_phu_trach) || "Chưa giao"; };
+
+  function taskListView(tasks) {
+    var phases = [], by = {}; tasks.forEach(function (t) { var g = t.giai_doan || "Khác"; if (!by[g]) { by[g] = []; phases.push(g); } by[g].push(t); });
+    var rows = [];
+    phases.forEach(function (g) {
+      rows.push(h("tr", { class: "phase" }, h("td", { colspan: 6 }, [g, h("span", { class: "pc" }, pctOf(by[g]) + "% · " + by[g].filter(function (t) { return t.trang_thai === "hoan_thanh"; }).length + "/" + by[g].length)])));
+      by[g].forEach(function (t) {
+        rows.push(h("tr", { class: canEditTask(t) ? "click" : "", onclick: function () { if (canEditTask(t)) taskEdit(t); } }, [
+          h("td", { class: "nm", "data-l": "Công việc" }, [t.loai === "moc" ? "◆ " : "", t.name]), h("td", { "data-l": "Phụ trách" }, who(t)),
+          h("td", { "data-l": "Kế hoạch" }, fmtD(t.ngay_bat_dau_kh) + (t.loai === "moc" ? "" : " → " + fmtD(t.ngay_ket_thuc_kh))),
+          h("td", { "data-l": "Hoàn thành", style: "min-width:90px" }, [h("div", { style: "font-weight:650;font-size:12.5px" }, taskPct(t) + "%"), progressBar(taskPct(t), taskLate(t) ? "bad" : "")]),
+          h("td", { "data-l": "Trạng thái" }, chip(opt("taskStatus", t.trang_thai || "chua_lam"), TASK_CLS[t.trang_thai || "chua_lam"])), h("td", { "data-l": "" }, taskLate(t) ? chip("trễ " + (dayNum(M.today) - dayNum(t.ngay_ket_thuc_kh)) + " ngày", "bad") : null)]));
+      });
+    });
+    return h("div", { class: "tbl" }, h("table", { class: "rt" }, [h("thead", {}, h("tr", {}, ["Công việc", "Phụ trách", "Kế hoạch", "Hoàn thành", "Trạng thái", ""].map(function (x) { return h("th", {}, x); }))), h("tbody", {}, rows)]));
+  }
+
+  function taskKanbanView(tasks) {
+    var cols = TASK_COLS.map(function (c, i) {
+      var items = tasks.filter(function (t) { return (t.trang_thai || "chua_lam") === c[0]; });
+      return h("div", { class: "col" }, [h("h3", {}, [c[1], h("span", {}, items.length)]), h("div", { class: "bar", style: "background:var(--q" + (1 + i * 2) + ")" })].concat(items.length ? items.map(function (t) {
+        var idx = i, btns = [];
+        if (canEditTask(t)) { if (idx > 0) btns.push(h("button", { class: "btn sm", title: "Lùi", onclick: function (ev) { ev.stopPropagation(); moveTask(t, TASK_COLS[idx - 1][0]); } }, "←")); if (idx < TASK_COLS.length - 1) btns.push(h("button", { class: "btn sm", title: "Tiến", onclick: function (ev) { ev.stopPropagation(); moveTask(t, TASK_COLS[idx + 1][0]); } }, "→")); }
+        return h("div", { class: "c", tabindex: "0", onclick: function () { if (canEditTask(t)) taskEdit(t); } }, [h("b", {}, [t.loai === "moc" ? "◆ " : "", t.name]), h("div", { class: "d", style: "color:var(--mut);font-size:12.5px;margin:2px 0 6px" }, [t.giai_doan || "", " · ", who(t)]),
+          h("div", { style: "display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px" }, [t.ngay_ket_thuc_kh ? chip(fmtD(t.ngay_ket_thuc_kh), "plain") : null, taskLate(t) ? chip("trễ hạn", "bad") : null]), progressBar(taskPct(t), taskLate(t) ? "bad" : ""), btns.length ? h("div", { style: "display:flex;gap:6px;margin-top:8px;justify-content:flex-end" }, btns) : null]);
+      }) : [h("div", { class: "d", style: "color:var(--mut);padding:6px 6px 10px;font-size:12.5px" }, "Trống")]));
+    });
+    return h("div", { class: "kan" }, cols);
+  }
+
+  function taskGanttView(tasks) {
+    var ds = tasks.filter(function (t) { return dayNum(t.ngay_bat_dau_kh) != null && dayNum(t.ngay_ket_thuc_kh) != null; });
+    if (!ds.length) return empty("Chưa có công việc nào có ngày kế hoạch", "du_an");
+    var min = Math.min.apply(null, ds.map(function (t) { return dayNum(t.ngay_bat_dau_kh); })) - 2, max = Math.max.apply(null, ds.map(function (t) { return dayNum(t.ngay_ket_thuc_kh); })) + 3;
+    var total = max - min + 1, dayW = Math.max(3, Math.min(26, Math.floor(980 / total))), W = total * dayW, LEFT = 230, tdn = dayNum(M.today);
+    var x = function (dn) { return (dn - min) * dayW; };
+    var head = h("div", { class: "gh" }, [h("div", { class: "gl", style: "width:" + LEFT + "px" }, "Công việc"), h("div", { class: "gc", style: "width:" + W + "px" }, (function () {
+      var out = [], d = new Date(Date.UTC(1970, 0, 1) + min * 86400000); d.setUTCDate(1); d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+      for (var n = 0; n < 60; n++) { var dn = d.getTime() / 86400000; if (dn > max) break; if (dn >= min) out.push(h("span", { style: "position:absolute;left:" + x(dn) + "px;top:5px;padding-left:4px;border-left:1px solid var(--line2)" }, (d.getUTCMonth() + 1) + "/" + d.getUTCFullYear())); d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)); }
+      return out; })())]);
+    var rows = [], phase = null;
+    ds.forEach(function (t) {
+      var g = t.giai_doan || "Khác";
+      if (g !== phase) { phase = g; var grp = ds.filter(function (u) { return (u.giai_doan || "Khác") === g; }), s0 = Math.min.apply(null, grp.map(function (u) { return dayNum(u.ngay_bat_dau_kh); })), e0 = Math.max.apply(null, grp.map(function (u) { return dayNum(u.ngay_ket_thuc_kh); }));
+        rows.push(h("div", { class: "gr ph" }, [h("div", { class: "gl", style: "width:" + LEFT + "px" }, [g, h("span", { style: "margin-left:auto;color:var(--mut);font-weight:600" }, pctOf(grp) + "%")]), h("div", { class: "gc", style: "width:" + W + "px" }, h("div", { style: "position:absolute;top:11px;height:6px;border-radius:3px;background:var(--ink2);opacity:.45;left:" + x(s0) + "px;width:" + Math.max(6, (e0 - s0 + 1) * dayW) + "px" }))])); }
+      var s = dayNum(t.ngay_bat_dau_kh), e = dayNum(t.ngay_ket_thuc_kh), late = taskLate(t), moc = t.loai === "moc";
+      var tip = function (ev) { showTip(ev, [h("div", { class: "m" }, t.name), h("div", {}, fmtD(t.ngay_bat_dau_kh) + (moc ? "" : " → " + fmtD(t.ngay_ket_thuc_kh))), h("div", {}, taskPct(t) + "% · " + opt("taskStatus", t.trang_thai || "chua_lam") + " · " + who(t))]); };
+      var mark = moc ? h("div", { class: "gm" + (t.trang_thai === "hoan_thanh" ? " done" : "") + (late ? " late" : ""), style: "left:" + (x(e) + dayW / 2) + "px", onmousemove: tip, onmouseleave: hideTip })
+        : h("div", { class: "gb " + (t.trang_thai || "") + (late ? " late" : ""), style: "left:" + x(s) + "px;width:" + Math.max(6, (e - s + 1) * dayW) + "px", onmousemove: tip, onmouseleave: hideTip }, h("i", { style: "width:" + taskPct(t) + "%" }));
+      rows.push(h("div", { class: "gr", onclick: function () { if (canEditTask(t)) taskEdit(t); } }, [h("div", { class: "gl", style: "width:" + LEFT + "px", title: t.name }, [t.loai === "moc" ? "◆ " : "", t.name]), h("div", { class: "gc", style: "width:" + W + "px" }, mark)]));
+    });
+    var gt = h("div", { class: "gt", style: "width:" + (LEFT + W) + "px" }, [head].concat(rows, tdn >= min && tdn <= max ? [h("div", { class: "gtoday", style: "left:" + (LEFT + x(tdn) + dayW / 2) + "px", title: "Hôm nay" })] : []));
+    return h("div", { class: "gantt" }, gt);
+  }
+
+  function taskSection(p, R) {
+    if (!R.tasksAvailable) return card("Tiến độ công việc", null, empty("Chưa bật tính năng công việc cho sub-account này (cần tạo object “Công việc” trong GHL).", "du_an"));
+    var tasks = R.tasks, pr = R.progress || {}, body = h("div", {}), sw = h("div", { class: "chips" });
+    function paint() {
+      sw.replaceChildren.apply(sw, [["list", "Danh sách"], ["gantt", "Gantt"], ["kanban", "Kanban"]].map(function (v) { return h("button", { class: "pill" + (taskView === v[0] ? " on" : ""), onclick: function () { taskView = v[0]; try { localStorage.setItem("svc_taskview", v[0]); } catch (e) {} paint(); } }, v[1]); }));
+      body.replaceChildren(!tasks.length ? empty(isAdmin() ? "Chưa có công việc. Bấm “Sinh từ mẫu” để tạo bộ công việc chuẩn." : "Chưa có công việc", "du_an") : taskView === "gantt" ? taskGanttView(tasks) : taskView === "kanban" ? taskKanbanView(tasks) : taskListView(tasks));
+    }
+    paint();
+    var acts = isAdmin() ? [h("button", { class: "btn" + (tasks.length ? "" : " primary"), onclick: function () { taskGenForm(p); } }, [icon("plus", 15), "Sinh từ mẫu"]), h("button", { class: "btn", onclick: function () { taskAddForm(p); } }, "Thêm công việc")] : [];
+    var sum = pr.total ? h("div", { style: "display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:14px" }, [h("div", { style: "font-size:30px;font-weight:700;letter-spacing:-.02em" }, pr.percent + "%"), h("div", { style: "flex:1;min-width:160px" }, progressBar(pr.percent, pr.overdue ? "warn" : "")),
+      h("div", { style: "display:flex;gap:6px;flex-wrap:wrap" }, [chip(pr.done + "/" + pr.total + " việc xong", "plain"), pr.overdue ? chip(pr.overdue + " việc trễ", "bad") : null, pr.nextMilestone ? chip("Mốc kế: " + pr.nextMilestone.name + " " + fmtD(pr.nextMilestone.date), "info") : null])]) : null;
+    return card("Tiến độ công việc", pr.total ? "Kế hoạch " + fmtD(pr.start) + " → " + fmtD(pr.end) : "Danh sách công việc, Gantt và kanban của dự án", h("div", {}, [sum, h("div", { style: "display:flex;gap:10px;justify-content:space-between;align-items:center;flex-wrap:wrap;margin-bottom:12px" }, [sw, h("div", { style: "display:flex;gap:8px;flex-wrap:wrap" }, acts)]), body]));
+  }
+
+  function myTasksCard(tk) {
+    if (!tk || !tk.available) return [];
+    var mine = tk.tasks.filter(function (t) { return ["hoan_thanh", "huy"].indexOf(t.trang_thai) < 0 && canEditTask(t) && t.nguoi_phu_trach; });
+    if (!mine.length) return [];
+    return [h("h2", { style: "margin:10px 2px -6px" }, "Công việc dự án của tôi (" + mine.length + ")"), card("", null, h("div", { class: "tbl" }, h("table", { class: "rt" }, [h("thead", {}, h("tr", {}, ["Công việc", "Kế hoạch", "Hoàn thành", "Trạng thái"].map(function (x) { return h("th", {}, x); }))), h("tbody", {}, mine.map(function (t) {
+      return h("tr", { class: "click", onclick: function () { taskEdit(t); } }, [h("td", { class: "nm", "data-l": "Công việc" }, [t.loai === "moc" ? "◆ " : "", t.name, h("div", { style: "color:var(--mut);font-size:12px;font-weight:400" }, t.giai_doan || "")]), h("td", { "data-l": "Kế hoạch" }, fmtD(t.ngay_bat_dau_kh) + " → " + fmtD(t.ngay_ket_thuc_kh)), h("td", { "data-l": "Hoàn thành" }, taskPct(t) + "%"), h("td", { "data-l": "Trạng thái" }, [chip(opt("taskStatus", t.trang_thai || "chua_lam"), TASK_CLS[t.trang_thai || "chua_lam"]), taskLate(t) ? chip("trễ hạn", "bad") : null])]);
+    }))])))];
+  }
+
+  /* ===== Mẫu công việc (quản trị) ===== */
+  function taskTplView() {
+    return api("/api/task-templates").then(function (d) {
+      function block(t, isNew) {
+        var key = h("input", { value: t.key, disabled: isNew ? null : "disabled", placeholder: "vd lap_dat_thang_may" }), lab = h("input", { value: t.label }), txt = h("textarea", { rows: 12, style: "font:12.5px ui-monospace,monospace" }), err = h("div", { class: "err" });
+        txt.value = t.text;
+        var ok = h("button", { class: "btn primary", onclick: function () { err.textContent = ""; ok.disabled = true; post("/api/task-template", { key: key.value.trim(), label: lab.value, text: txt.value }).then(function () { toast("Đã lưu mẫu"); cache = {}; render(); }).catch(function (e) { err.textContent = e.message; ok.disabled = false; }); } }, "Lưu mẫu");
+        return card(isNew ? "Thêm mẫu mới" : t.label, isNew ? null : t.count + " công việc · khoá " + t.key, h("div", { style: "display:grid;gap:12px" }, [h("label", { class: "f" }, ["Khoá mẫu", key]), h("label", { class: "f" }, ["Tên mẫu", lab]), h("label", { class: "f" }, ["Công việc (mỗi dòng một việc)", txt]), err, h("div", {}, ok)]));
+      }
+      var how = card("Cách dùng", "Bộ công việc chuẩn, sinh ra khi bấm “Sinh từ mẫu” trong dự án.", h("div", { class: "sub", style: "line-height:1.7" }, ["Mỗi dòng một công việc theo dạng:  ", h("code", {}, "Giai đoạn | Tên | Bắt đầu | Số ngày | moc"), h("br"), "Bắt đầu = số ngày kể từ ngày khởi công (0 = ngay ngày khởi công). Thêm chữ ", h("code", {}, "moc"), " ở cột cuối nếu là mốc (cột trống = công việc thường). Sửa mẫu không ảnh hưởng các dự án đã sinh công việc."]));
+      return [how].concat(d.templates.map(function (t) { return block(t, false); }), [block({ key: "", label: "", text: "Giai đoạn 1 | Việc đầu tiên | 0 | 5\nGiai đoạn 1 | Mốc hoàn tất giai đoạn | 5 | 1 | moc", count: 0 }, true)]);
     });
   }
 
@@ -682,7 +819,7 @@
         chipsTop = [chip(opt("projectStage", r.giai_doan), "info")];
         if (isAdmin()) { acts.push(h("select", { class: "btn", "aria-label": "Giai đoạn", onchange: function (e) { var st = e.target.value; if (st !== r.giai_doan) act(function () { return post("/api/project/stage", { id: r.id, stage: st }); }, "Đã đổi giai đoạn"); } }, M.options.projectStage.map(function (s) { return h("option", { value: s[0], selected: s[0] === r.giai_doan }, s[1]); }))); if (r.giai_doan !== "bao_hanh" && r.giai_doan !== "hoan_tat") acts.push(h("button", { class: "btn primary", onclick: function () { handoverForm(r); } }, "Bàn giao")); }
         var idx = M.options.projectStage.map(function (s) { return s[0]; }).indexOf(r.giai_doan || "ky_hd");
-        facts = [fact("Tiến độ", Math.round(idx / (M.options.projectStage.length - 1) * 100) + "%", opt("projectStage", r.giai_doan), idx / (M.options.projectStage.length - 1) * 100), countdown("Dự kiến bàn giao", r.ngay_du_kien_ban_giao, 180), fact("Quản lý dự án", r.quan_ly_du_an || "—")];
+        facts = [R.progress && R.progress.total ? fact("Tiến độ", R.progress.percent + "%", R.progress.done + "/" + R.progress.total + " việc xong" + (R.progress.overdue ? " · " + R.progress.overdue + " trễ" : ""), R.progress.percent, R.progress.overdue ? "warn" : "") : fact("Tiến độ", Math.round(idx / (M.options.projectStage.length - 1) * 100) + "%", opt("projectStage", r.giai_doan), idx / (M.options.projectStage.length - 1) * 100), countdown("Dự kiến bàn giao", r.ngay_du_kien_ban_giao, 180), fact("Quản lý dự án", r.quan_ly_du_an || "—")];
         extra = [R.site ? relList("Công trình", "cong_trinh", [R.site], function (s) { return [s.name, s.dia_chi || "", null]; }) : null, R.hop_dong ? relList("Hợp đồng", "hop_dong", [R.hop_dong], function (c) { return [c.name, opt("contractType", c.loai), null]; }) : null];
       } else if (type === "kiem_dinh") {
         chipsTop = [chip(opt("inspectionStatus", r.trang_thai), r.trang_thai === "hoan_tat" ? "ok" : "info")];
@@ -692,7 +829,7 @@
       }
       var story = type === "phieu" && (r.mo_ta || r.ket_qua) ? card("Nội dung", null, h("div", { style: "display:grid;gap:12px;white-space:pre-wrap" }, [r.mo_ta ? h("div", {}, [h("small", { style: "color:var(--mut);font-weight:700;text-transform:uppercase;letter-spacing:.05em;font-size:11.5px" }, "Mô tả"), h("div", {}, r.mo_ta)]) : null, r.ket_qua ? h("div", {}, [h("small", { style: "color:var(--mut);font-weight:700;text-transform:uppercase;letter-spacing:.05em;font-size:11.5px" }, "Kết quả xử lý"), h("div", {}, r.ket_qua)]) : null])) : null;
       return [h("div", {}, back), h("div", { class: "card banner" }, [h("span", { class: "ico" }, icon(type, 24)), h("div", {}, [h("h2", {}, r.name || "—"), h("div", { style: "display:flex;gap:6px;margin-top:6px;flex-wrap:wrap" }, chipsTop)]), h("div", { style: "margin-left:auto;display:flex;gap:8px;flex-wrap:wrap" }, acts)]),
-        h("div", { class: "facts" }, facts), story, card("Thông tin", null, dl(type, r)), h("div", { class: "g g2" }, extra)];
+        h("div", { class: "facts" }, facts), story, type === "du_an" ? taskSection(r, R) : null, card("Thông tin", null, dl(type, r)), h("div", { class: "g g2" }, extra)];
     });
   }
 

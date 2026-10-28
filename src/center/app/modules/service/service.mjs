@@ -2,7 +2,7 @@
 // kiểm định...) và kiểm tra đầu vào. Không đụng HTTP — index.mjs lo phần đó. Mọi giá trị ghi xuống GHL đều đi qua
 // các hàm kiểm tra ở đây (liệt kê cố định các field cho phép, enum chỉ nhận key hợp lệ).
 import { OBJ, OPTIONS, isOption, ORDER_CLOSED, INSPECTION_OPEN } from "./schema.mjs";
-import { flat, computeDashboard, computeCharts, computeSales, planMaintenance, nextInspectionDate, isDate, cleanText, orderNumber, addMonths, toE164VN } from "./logic.mjs";
+import { flat, todayVN, computeDashboard, computeCharts, computeSales, planMaintenance, nextInspectionDate, isDate, cleanText, orderNumber, addMonths, toE164VN, taskProgress, normalizeTaskPatch, planFromTemplate } from "./logic.mjs";
 
 export class UserError extends Error { constructor(m, status = 400) { super(m); this.status = status; } }
 const need = (cond, msg, status = 400) => { if (!cond) throw new UserError(msg, status); };
@@ -39,7 +39,7 @@ export async function list(ghl, type) {
     case "cong_trinh": return d.sites.map((s) => ({ ...s, units: d.units.filter((u) => u.cong_trinh_id === s.id).length })).sort((a, b) => a.name.localeCompare(b.name));
     case "hop_dong": return d.contracts.map((c) => ({ ...c, site: S.get(c.cong_trinh_id)?.name || "", unitCount: unitsOf(d.units, c).length })).sort(byDate("ngay_het_han"));
     case "phieu": return d.orders.map((o) => ({ ...o, unit: U.get(o.thang_may_id)?.name || "", site: S.get(o.cong_trinh_id)?.name || "" })).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
-    case "du_an": return d.projects.map((p) => ({ ...p, site: S.get(p.cong_trinh_id)?.name || "", hop_dong: C.get(p.hop_dong_id)?.name || "" })).sort(byDate("ngay_du_kien_ban_giao"));
+    case "du_an": { const tasks = await loadTasks(ghl); return d.projects.map((p) => ({ ...p, site: S.get(p.cong_trinh_id)?.name || "", hop_dong: C.get(p.hop_dong_id)?.name || "", progress: tasks ? taskProgress(tasks.filter((t) => t.du_an_id === p.id), todayVN()) : null })).sort(byDate("ngay_du_kien_ban_giao")); }
     case "kiem_dinh": return d.inspections.map((k) => ({ ...k, unit: U.get(k.thang_may_id)?.name || "" })).sort(byDate("ngay_kiem_dinh"));
     default: throw new UserError("Loại dữ liệu không hợp lệ");
   }
@@ -61,7 +61,8 @@ export async function detail(ghl, type, id) {
   } else if (type === "phieu") {
     out.related = { thang_may: U.get(rec.thang_may_id) || null, site: S.get(rec.cong_trinh_id) || null, hop_dong: C.get(rec.hop_dong_id) || null };
   } else if (type === "du_an") {
-    out.related = { site: S.get(rec.cong_trinh_id) || null, hop_dong: C.get(rec.hop_dong_id) || null };
+    const tasks = await loadTasks(ghl), mine = tasks ? sortTasks(tasks.filter((t) => t.du_an_id === id)) : [];
+    out.related = { site: S.get(rec.cong_trinh_id) || null, hop_dong: C.get(rec.hop_dong_id) || null, tasks: mine, tasksAvailable: !!tasks, progress: taskProgress(mine, todayVN()) };
   } else if (type === "kiem_dinh") {
     out.related = { thang_may: U.get(rec.thang_may_id) || null };
   }
@@ -276,4 +277,77 @@ export async function recordInspection(ghl, id, i) {
   await ghl.updateRecord(OBJ.inspection, id, set);
   if (next && u) await ghl.updateRecord(OBJ.unit, u.id, { ngay_kiem_dinh_ke_tiep: next });
   return { ok: true, next };
+}
+
+
+// --- công việc / tiến độ dự án ------------------------------------------------------------------------------
+// Object "Công việc" có thể CHƯA được tạo ở khách (cài trước khi có tính năng) → coi như chưa bật, không làm hỏng các màn hình khác.
+async function loadTasks(ghl) {
+  try { return (await ghl.listAll(OBJ.task)).map(flat); }
+  catch (e) { if (e.status === 400 || e.status === 404 || e.status === 422) return null; throw e; }
+}
+const sortTasks = (a) => a.sort((x, y) => (Number(x.thu_tu) || 0) - (Number(y.thu_tu) || 0) || String(x.ngay_bat_dau_kh || "").localeCompare(String(y.ngay_bat_dau_kh || "")));
+const TASK_FIELDS = ["name", "giai_doan", "loai", "trang_thai", "phan_tram", "ngay_bat_dau_kh", "ngay_ket_thuc_kh", "ngay_bat_dau_tt", "ngay_ket_thuc_tt", "nguoi_phu_trach", "thang_may_id", "phu_thuoc_id", "ghi_chu", "thu_tu"];
+const WORKER_FIELDS = ["trang_thai", "phan_tram", "ghi_chu"]; // nhân viên chỉ cập nhật tiến độ việc của mình, không sửa kế hoạch
+
+export async function listTasks(ghl, projectId) {
+  const tasks = await loadTasks(ghl);
+  return tasks ? { available: true, tasks: sortTasks(tasks.filter((t) => !projectId || t.du_an_id === projectId)), progress: taskProgress(tasks.filter((t) => !projectId || t.du_an_id === projectId), todayVN()) } : { available: false, tasks: [], progress: null };
+}
+
+function taskProps(i, { forCreate }) {
+  const name = str(i.name, 120); if (forCreate) need(name, "Cần tên công việc");
+  const s = date(i.ngay_bat_dau_kh, "Ngày bắt đầu"), e = date(i.ngay_ket_thuc_kh, "Ngày kết thúc");
+  if (s && e) need(e >= s, "Ngày kết thúc phải sau ngày bắt đầu");
+  const pct = i.phan_tram === undefined || i.phan_tram === "" ? undefined : num(i.phan_tram, "Phần trăm");
+  if (pct !== undefined) need(pct <= 100, "Phần trăm từ 0 đến 100");
+  return { name: name || undefined, giai_doan: i.giai_doan === undefined ? undefined : str(i.giai_doan, 60), loai: opt("taskType", i.loai, "Loại"), trang_thai: opt("taskStatus", i.trang_thai, "Trạng thái"), phan_tram: pct,
+    ngay_bat_dau_kh: s, ngay_ket_thuc_kh: e, ngay_bat_dau_tt: date(i.ngay_bat_dau_tt, "Ngày bắt đầu thực tế"), ngay_ket_thuc_tt: date(i.ngay_ket_thuc_tt, "Ngày kết thúc thực tế"),
+    nguoi_phu_trach: i.nguoi_phu_trach === undefined ? undefined : str(i.nguoi_phu_trach, 120), thang_may_id: i.thang_may_id === undefined ? undefined : str(i.thang_may_id, 40), phu_thuoc_id: i.phu_thuoc_id === undefined ? undefined : str(i.phu_thuoc_id, 40),
+    ghi_chu: i.ghi_chu === undefined ? undefined : str(i.ghi_chu, 1000), thu_tu: num(i.thu_tu, "Thứ tự") };
+}
+
+export async function createTask(ghl, i, { today }) {
+  const projectId = str(i.du_an_id, 40); const projects = (await ghl.listAll(OBJ.project)).map(flat); need(projects.some((p) => p.id === projectId), "Chọn dự án");
+  const all = await loadTasks(ghl); need(all, "Chưa bật tính năng công việc (thiếu object Công việc)");
+  const base = taskProps(i, { forCreate: true });
+  const order = base.thu_tu ?? (Math.max(0, ...all.filter((t) => t.du_an_id === projectId).map((t) => Number(t.thu_tu) || 0)) + 1);
+  const rec = await ghl.createRecord(OBJ.task, clean({ ...base, loai: base.loai || "viec", trang_thai: "chua_lam", phan_tram: 0, thu_tu: order, du_an_id: projectId }));
+  relateLater(ghl, "cong_viec_du_an", { [OBJ.task]: rec.id, [OBJ.project]: projectId });
+  return { id: rec.id };
+}
+
+export async function updateTask(ghl, id, patch, { today, isAdmin, me }) {
+  const cur = (await loadTasks(ghl) || []).find((t) => t.id === id); need(cur, "Không tìm thấy công việc", 404);
+  if (!isAdmin) {
+    const who = String(cur.nguoi_phu_trach || "").toLowerCase();
+    need(who && ((me.email && who.includes(me.email.toLowerCase())) || (me.name && who.includes(me.name.toLowerCase()))), "Công việc này chưa giao cho bạn", 403);
+    for (const k of Object.keys(patch)) need(WORKER_FIELDS.includes(k), "Bạn chỉ được cập nhật trạng thái, phần trăm và ghi chú", 403);
+  }
+  const allowed = Object.fromEntries(Object.entries(patch).filter(([k]) => TASK_FIELDS.includes(k)));
+  const checked = clean(taskProps(allowed, { forCreate: false }));
+  need(Object.keys(checked).length, "Không có gì để cập nhật");
+  const ns = checked.ngay_bat_dau_kh ?? cur.ngay_bat_dau_kh, ne = checked.ngay_ket_thuc_kh ?? cur.ngay_ket_thuc_kh;
+  if (isDate(ns) && isDate(ne)) need(ne >= ns, "Ngày kết thúc phải sau ngày bắt đầu");
+  const set = clean(normalizeTaskPatch(cur, checked, today));
+  await ghl.updateRecord(OBJ.task, id, set);
+  return { ok: true, task: { ...cur, ...set } };
+}
+
+// Sinh công việc cho dự án từ 1 mẫu. Idempotent theo "khoá sinh"; mỗi lần tối đa MAX_TASKS để request không quá dài.
+const MAX_TASKS = 40;
+export async function generateTasks(ghl, projectId, { templateKey, start }, today, templates) {
+  const project = (await ghl.listAll(OBJ.project)).map(flat).find((p) => p.id === projectId); need(project, "Không tìm thấy dự án", 404);
+  const all = await loadTasks(ghl); need(all, "Chưa bật tính năng công việc (thiếu object Công việc)");
+  const template = templates.find((t) => t.key === templateKey); need(template, "Chọn mẫu công việc");
+  const from = date(start, "Ngày khởi công") || today;
+  const plan = planFromTemplate({ template, projectId, start: from, existingKeys: new Set(all.map((t) => t.khoa_sinh).filter(Boolean)) });
+  const batch = plan.slice(0, MAX_TASKS); let created = 0; const failed = [];
+  for (let k = 0; k < batch.length; k += 3) {
+    await Promise.all(batch.slice(k, k + 3).map(async (p) => {
+      try { const rec = await ghl.createRecord(OBJ.task, clean(p.props)); relateLater(ghl, "cong_viec_du_an", { [OBJ.task]: rec.id, [OBJ.project]: projectId }); created++; }
+      catch (e) { failed.push({ key: p.key, error: e.message }); }
+    }));
+  }
+  return { created, planned: plan.length, remaining: plan.length - batch.length + failed.length, failed };
 }
