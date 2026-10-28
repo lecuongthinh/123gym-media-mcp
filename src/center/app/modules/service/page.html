@@ -190,6 +190,8 @@
   .gm { position:absolute; top:8px; width:13px; height:13px; transform:rotate(45deg); background:#e9a000; border-radius:2px; margin-left:-6px; cursor:pointer; } .gm.done { background:var(--goodtx); } .gm.late { outline:2px solid var(--badtx); }
   .gtoday { position:absolute; top:26px; bottom:0; width:2px; background:var(--badtx); opacity:.55; z-index:1; pointer-events:none; }
   tr.phase td { background:var(--surface2); font-weight:700; font-size:12.5px; } tr.phase .pc { float:right; color:var(--mut); font-weight:600; }
+  .ga { position:absolute; top:24px; height:4px; border-radius:2px; background:var(--goodtx); } .ga.over { background:var(--badtx); }
+  .gn { position:absolute; top:8px; font-size:11px; color:var(--mut); white-space:nowrap; pointer-events:none; }
 </style>
 </head>
 <body>
@@ -443,7 +445,7 @@
 
       var stOrder = [["chua_ban_giao", "var(--q1)"], ["dang_bao_hanh", "var(--q3)"], ["dang_bao_tri", "var(--q6)"], ["ngoai_bao_hanh", "var(--mut)"], ["ngung_hoat_dong", "var(--line2)"]];
       var fleet = card("Đội thang", K.unitsTotal + " thang đang quản lý", stackBar(stOrder.map(function (s) { return { label: opt("unitStatus", s[0]), value: C.unitStatus[s[0]] || 0, color: s[1] }; })));
-      var stages = M.options.projectStage.map(function (s, i) { return { label: s[1], value: d.projectsByStage[s[0]] || 0, color: "var(--q" + (1 + Math.min(6, Math.floor(i * 6 / 9))) + ")" }; }).filter(function (r) { return r.value; });
+      var stages = M.options.projectLifecycle.map(function (s, i) { return { label: s[1], value: d.projectsByStage[s[0]] || 0, color: "var(--q" + (1 + i * 2) + ")" }; }).filter(function (r) { return r.value; });
       var projTotal = Object.keys(d.projectsByStage).reduce(function (a, k) { return a + d.projectsByStage[k]; }, 0);
       var proj = withTable("Dự án theo giai đoạn", projTotal + " dự án · " + d.projectsLate.length + " trễ hạn", stages.length ? hBars(stages) : empty("Chưa có dự án", "du_an"), ["Giai đoạn", "Số dự án"], stages.map(function (r) { return [r.label, r.value]; }));
       var rev = withTable("Doanh thu bảo trì theo hợp đồng", "Giá trị hợp đồng đang hiệu lực", C.topContracts.length ? hBars(C.topContracts.map(function (c) { return { label: c.name, sub: c.khach, value: c.gia_tri, onclick: go("hop_dong", c.id) }; }), { fmt: fmtM }) : empty("Chưa có hợp đồng", "hop_dong"), ["Hợp đồng", "Khách hàng", "Giá trị (VND)"], C.topContracts.map(function (c) { return [c.name, c.khach, fmtN(c.gia_tri)]; }));
@@ -636,10 +638,14 @@
   }
   function projectsView() {
     return getList("du_an").then(function (rows) {
-      var N = M.options.projectStage.length;
-      var cols = M.options.projectStage.map(function (st, i) { var items = rows.filter(function (p) { return (p.giai_doan || "ky_hd") === st[0]; });
-        return h("div", { class: "col" }, [h("h3", {}, [st[1], h("span", {}, items.length)]), h("div", { class: "bar", style: "background:var(--q" + (1 + Math.floor(i * 6 / (N - 1))) + ")" })].concat(items.length ? items.map(function (p) { var late = p.ngay_du_kien_ban_giao && p.ngay_du_kien_ban_giao < M.today && st[0] !== "hoan_tat"; return h("div", { class: "c", tabindex: "0", onclick: function () { nav({ tab: "du_an", id: p.id }); }, onkeydown: function (e) { if (e.key === "Enter") nav({ tab: "du_an", id: p.id }); } }, [h("b", {}, p.name), h("div", { class: "d", style: "color:var(--mut);font-size:12.5px;margin:2px 0 6px" }, p.site || ""), h("div", { style: "display:flex;gap:6px;align-items:center;flex-wrap:wrap" }, [p.ngay_du_kien_ban_giao ? chip(fmtD(p.ngay_du_kien_ban_giao), "plain") : null, late ? chip("trễ hạn", "bad") : null]), p.progress && p.progress.total ? h("div", { style: "margin-top:8px" }, [progressBar(p.progress.percent, p.progress.overdue ? "warn" : ""), h("small", { style: "color:var(--mut)" }, p.progress.percent + "% · " + p.progress.done + "/" + p.progress.total + " việc" + (p.progress.overdue ? " · " + p.progress.overdue + " trễ" : ""))]) : null]); }) : [h("div", { class: "d", style: "color:var(--mut);padding:6px 6px 10px;font-size:12.5px" }, "Trống")])); });
-      return [card("Dự án thi công", rows.length + " dự án · từ ký hợp đồng đến bảo hành", h("div", { class: "kan" }, cols))];
+      var cols = M.options.projectLifecycle.map(function (st, i) { var items = rows.filter(function (p) { return p.lifecycle === st[0]; });
+        return h("div", { class: "col" }, [h("h3", {}, [st[1], h("span", {}, items.length)]), h("div", { class: "bar", style: "background:var(--q" + (1 + i * 2) + ")" })].concat(items.length ? items.map(function (p) {
+          var pr = p.progress, late = p.ngay_du_kien_ban_giao && p.ngay_du_kien_ban_giao < M.today && st[0] !== "hoan_tat" && st[0] !== "bao_hanh";
+          return h("div", { class: "c", tabindex: "0", onclick: function () { nav({ tab: "du_an", id: p.id }); }, onkeydown: function (e) { if (e.key === "Enter") nav({ tab: "du_an", id: p.id }); } }, [h("b", {}, p.name), h("div", { class: "d", style: "color:var(--mut);font-size:12.5px;margin:2px 0 6px" }, p.site || ""),
+            h("div", { style: "display:flex;gap:6px;align-items:center;flex-wrap:wrap" }, [healthChip(p.health), p.ngay_du_kien_ban_giao ? chip("Bàn giao " + fmtD(p.ngay_du_kien_ban_giao), late ? "bad" : "plain") : null]),
+            pr && pr.total ? h("div", { style: "margin-top:8px" }, [progressBar(pr.percent, p.health && p.health.level === "red" ? "bad" : p.health && p.health.level === "yellow" ? "warn" : ""), h("small", { style: "color:var(--mut)" }, pr.percent + "% · " + pr.done + "/" + pr.total + " việc" + (phaseText(pr) ? " · " + pr.currentPhase.name : ""))]) : null]);
+        }) : [h("div", { class: "d", style: "color:var(--mut);padding:6px 6px 10px;font-size:12.5px" }, "Trống")])); });
+      return [card("Dự án thi công", rows.length + " dự án · theo vòng đời; tiến độ và sức khoẻ tự tính từ công việc", h("div", { class: "kan" }, cols))];
     });
   }
 
@@ -679,20 +685,35 @@
   function moveTask(t, st) { act(function () { return post("/api/task/update", { id: t.id, patch: { trang_thai: st } }); }, "Đã chuyển sang “" + opt("taskStatus", st) + "”"); }
   var who = function (t) { return person(t.nguoi_phu_trach) || "Chưa giao"; };
 
-  function taskListView(tasks) {
-    var phases = [], by = {}; tasks.forEach(function (t) { var g = t.giai_doan || "Khác"; if (!by[g]) { by[g] = []; phases.push(g); } by[g].push(t); });
+  var taskFilter = { who: "", st: "", late: false }, taskCollapsed = {};
+  var colKey = function (pid, g) { return pid + "|" + g; };
+  function filterTasks(tasks) { return tasks.filter(function (t) { return (!taskFilter.who || who(t) === taskFilter.who) && (!taskFilter.st || (t.trang_thai || "chua_lam") === taskFilter.st) && (!taskFilter.late || taskLate(t)); }); }
+  function taskFilters(tasks, repaint) {
+    var names = []; tasks.forEach(function (t) { var n = who(t); if (names.indexOf(n) < 0) names.push(n); });
+    var sel = function (key, label, opts) { return h("select", { class: "btn sm", "aria-label": label, onchange: function (e) { taskFilter[key] = e.target.value; repaint(); } }, [h("option", { value: "" }, label)].concat(opts.map(function (o) { return h("option", { value: o[0], selected: taskFilter[key] === o[0] }, o[1]); }))); };
+    return h("div", { style: "display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px" }, [sel("who", "Mọi người", names.map(function (n) { return [n, n]; })), sel("st", "Mọi trạng thái", M.options.taskStatus), h("label", { style: "display:flex;gap:6px;align-items:center;font-size:13px;font-weight:600;cursor:pointer" }, [h("input", { type: "checkbox", style: "width:auto", checked: taskFilter.late ? "checked" : null, onchange: function (e) { taskFilter.late = e.target.checked; repaint(); } }), "Chỉ việc trễ"])]);
+  }
+  function taskListView(tasks, repaint) {
+    var shown = filterTasks(tasks), pid = tasks[0] && tasks[0].du_an_id, phases = [], by = {};
+    shown.forEach(function (t) { var g = t.giai_doan || "Khác"; if (!by[g]) { by[g] = []; phases.push(g); } by[g].push(t); });
     var rows = [];
     phases.forEach(function (g) {
-      rows.push(h("tr", { class: "phase" }, h("td", { colspan: 6 }, [g, h("span", { class: "pc" }, pctOf(by[g]) + "% · " + by[g].filter(function (t) { return t.trang_thai === "hoan_thanh"; }).length + "/" + by[g].length)])));
+      var closed = !!taskCollapsed[colKey(pid, g)], all = tasks.filter(function (t) { return (t.giai_doan || "Khác") === g; });
+      rows.push(h("tr", { class: "phase click", onclick: function () { taskCollapsed[colKey(pid, g)] = !closed; repaint(); } }, h("td", { colspan: 6 }, [(closed ? "▸ " : "▾ ") + g, h("span", { class: "pc" }, pctOf(all) + "% · " + all.filter(function (t) { return t.trang_thai === "hoan_thanh"; }).length + "/" + all.length)])));
+      if (closed) return;
       by[g].forEach(function (t) {
-        rows.push(h("tr", { class: canEditTask(t) ? "click" : "", onclick: function () { if (canEditTask(t)) taskEdit(t); } }, [
+        var edit = canEditTask(t), stop = function (ev) { ev.stopPropagation(); };
+        var stSel = edit ? h("select", { class: "btn sm", "aria-label": "Trạng thái", onclick: stop, onchange: function (e) { var v = e.target.value; act(function () { return post("/api/task/update", { id: t.id, patch: { trang_thai: v } }); }, "Đã cập nhật"); } }, M.options.taskStatus.filter(function (x) { return isAdmin() || x[0] !== "huy"; }).map(function (x) { return h("option", { value: x[0], selected: x[0] === (t.trang_thai || "chua_lam") }, x[1]); })) : chip(opt("taskStatus", t.trang_thai || "chua_lam"), TASK_CLS[t.trang_thai || "chua_lam"]);
+        var pctIn = edit ? h("input", { type: "number", min: 0, max: 100, value: taskPct(t), "aria-label": "Phần trăm", style: "width:62px;padding:5px 6px;border-radius:8px;border:1px solid var(--line2);background:var(--surface);color:var(--ink)", onclick: stop, onchange: function (e) { var v = e.target.value; act(function () { return post("/api/task/update", { id: t.id, patch: { phan_tram: v } }); }, "Đã cập nhật"); } }) : h("span", { style: "font-weight:650;font-size:12.5px" }, taskPct(t) + "%");
+        rows.push(h("tr", { class: edit ? "click" : "", onclick: function () { if (edit) taskEdit(t); } }, [
           h("td", { class: "nm", "data-l": "Công việc" }, [t.loai === "moc" ? "◆ " : "", t.name]), h("td", { "data-l": "Phụ trách" }, who(t)),
           h("td", { "data-l": "Kế hoạch" }, fmtD(t.ngay_bat_dau_kh) + (t.loai === "moc" ? "" : " → " + fmtD(t.ngay_ket_thuc_kh))),
-          h("td", { "data-l": "Hoàn thành", style: "min-width:90px" }, [h("div", { style: "font-weight:650;font-size:12.5px" }, taskPct(t) + "%"), progressBar(taskPct(t), taskLate(t) ? "bad" : "")]),
-          h("td", { "data-l": "Trạng thái" }, chip(opt("taskStatus", t.trang_thai || "chua_lam"), TASK_CLS[t.trang_thai || "chua_lam"])), h("td", { "data-l": "" }, taskLate(t) ? chip("trễ " + (dayNum(M.today) - dayNum(t.ngay_ket_thuc_kh)) + " ngày", "bad") : null)]));
+          h("td", { "data-l": "Hoàn thành", style: "min-width:96px" }, [pctIn, progressBar(taskPct(t), taskLate(t) ? "bad" : "")]),
+          h("td", { "data-l": "Trạng thái" }, stSel), h("td", { "data-l": "" }, taskLate(t) ? chip("trễ " + (dayNum(M.today) - dayNum(t.ngay_ket_thuc_kh)) + " ngày", "bad") : null)]));
       });
     });
-    return h("div", { class: "tbl" }, h("table", { class: "rt" }, [h("thead", {}, h("tr", {}, ["Công việc", "Phụ trách", "Kế hoạch", "Hoàn thành", "Trạng thái", ""].map(function (x) { return h("th", {}, x); }))), h("tbody", {}, rows)]));
+    if (!rows.length) return h("div", {}, [taskFilters(tasks, repaint), empty("Không có công việc khớp bộ lọc", "du_an")]);
+    return h("div", {}, [taskFilters(tasks, repaint), h("div", { class: "tbl" }, h("table", { class: "rt" }, [h("thead", {}, h("tr", {}, ["Công việc", "Phụ trách", "Kế hoạch", "Hoàn thành", "Trạng thái", ""].map(function (x) { return h("th", {}, x); }))), h("tbody", {}, rows)]))]);
   }
 
   function taskKanbanView(tasks) {
@@ -708,42 +729,58 @@
     return h("div", { class: "kan" }, cols);
   }
 
-  function taskGanttView(tasks) {
+  var ganttZoom = "fit";
+  function taskGanttView(tasks, repaint) {
     var ds = tasks.filter(function (t) { return dayNum(t.ngay_bat_dau_kh) != null && dayNum(t.ngay_ket_thuc_kh) != null; });
     if (!ds.length) return empty("Chưa có công việc nào có ngày kế hoạch", "du_an");
-    var min = Math.min.apply(null, ds.map(function (t) { return dayNum(t.ngay_bat_dau_kh); })) - 2, max = Math.max.apply(null, ds.map(function (t) { return dayNum(t.ngay_ket_thuc_kh); })) + 3;
-    var total = max - min + 1, dayW = Math.max(3, Math.min(26, Math.floor(980 / total))), W = total * dayW, LEFT = 230, tdn = dayNum(M.today);
+    var pid = ds[0].du_an_id, tdn = dayNum(M.today);
+    var acts = ds.map(function (t) { return dayNum(t.ngay_bat_dau_tt); }).filter(function (d) { return d != null; });
+    var min = Math.min.apply(null, ds.map(function (t) { return dayNum(t.ngay_bat_dau_kh); }).concat(acts)) - 2, max = Math.max.apply(null, ds.map(function (t) { return dayNum(t.ngay_ket_thuc_kh); })) + 12;
+    var total = max - min + 1, dayW = ganttZoom === "detail" ? 18 : Math.max(3, Math.min(26, Math.floor(980 / total))), W = total * dayW, LEFT = 230;
     var x = function (dn) { return (dn - min) * dayW; };
+    var tools = h("div", { style: "display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap" }, [h("span", { style: "font-size:12.5px;color:var(--mut);font-weight:600" }, "Thu phóng:")].concat([["fit", "Vừa khít"], ["detail", "Chi tiết"]].map(function (z) { return h("button", { class: "pill" + (ganttZoom === z[0] ? " on" : ""), onclick: function () { ganttZoom = z[0]; repaint(); } }, z[1]); }), [h("span", { style: "margin-left:auto;font-size:12px;color:var(--mut);display:flex;gap:12px;flex-wrap:wrap" }, [h("span", {}, "▬ Kế hoạch"), h("span", {}, "▬ Thực tế (thanh mảnh)"), h("span", {}, "◆ Mốc"), h("span", {}, "│ Hôm nay")])]));
     var head = h("div", { class: "gh" }, [h("div", { class: "gl", style: "width:" + LEFT + "px" }, "Công việc"), h("div", { class: "gc", style: "width:" + W + "px" }, (function () {
-      var out = [], d = new Date(Date.UTC(1970, 0, 1) + min * 86400000); d.setUTCDate(1); d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
+      var out = [], d = new Date(Date.UTC(1970, 0, 1) + min * 86400000); d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
       for (var n = 0; n < 60; n++) { var dn = d.getTime() / 86400000; if (dn > max) break; if (dn >= min) out.push(h("span", { style: "position:absolute;left:" + x(dn) + "px;top:5px;padding-left:4px;border-left:1px solid var(--line2)" }, (d.getUTCMonth() + 1) + "/" + d.getUTCFullYear())); d = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)); }
       return out; })())]);
-    var rows = [], phase = null;
+    var rows = [], phase = null, hidden = false;
     ds.forEach(function (t) {
       var g = t.giai_doan || "Khác";
-      if (g !== phase) { phase = g; var grp = ds.filter(function (u) { return (u.giai_doan || "Khác") === g; }), s0 = Math.min.apply(null, grp.map(function (u) { return dayNum(u.ngay_bat_dau_kh); })), e0 = Math.max.apply(null, grp.map(function (u) { return dayNum(u.ngay_ket_thuc_kh); }));
-        rows.push(h("div", { class: "gr ph" }, [h("div", { class: "gl", style: "width:" + LEFT + "px" }, [g, h("span", { style: "margin-left:auto;color:var(--mut);font-weight:600" }, pctOf(grp) + "%")]), h("div", { class: "gc", style: "width:" + W + "px" }, h("div", { style: "position:absolute;top:11px;height:6px;border-radius:3px;background:var(--ink2);opacity:.45;left:" + x(s0) + "px;width:" + Math.max(6, (e0 - s0 + 1) * dayW) + "px" }))])); }
-      var s = dayNum(t.ngay_bat_dau_kh), e = dayNum(t.ngay_ket_thuc_kh), late = taskLate(t), moc = t.loai === "moc";
-      var tip = function (ev) { showTip(ev, [h("div", { class: "m" }, t.name), h("div", {}, fmtD(t.ngay_bat_dau_kh) + (moc ? "" : " → " + fmtD(t.ngay_ket_thuc_kh))), h("div", {}, taskPct(t) + "% · " + opt("taskStatus", t.trang_thai || "chua_lam") + " · " + who(t))]); };
-      var mark = moc ? h("div", { class: "gm" + (t.trang_thai === "hoan_thanh" ? " done" : "") + (late ? " late" : ""), style: "left:" + (x(e) + dayW / 2) + "px", onmousemove: tip, onmouseleave: hideTip })
-        : h("div", { class: "gb " + (t.trang_thai || "") + (late ? " late" : ""), style: "left:" + x(s) + "px;width:" + Math.max(6, (e - s + 1) * dayW) + "px", onmousemove: tip, onmouseleave: hideTip }, h("i", { style: "width:" + taskPct(t) + "%" }));
-      rows.push(h("div", { class: "gr", onclick: function () { if (canEditTask(t)) taskEdit(t); } }, [h("div", { class: "gl", style: "width:" + LEFT + "px", title: t.name }, [t.loai === "moc" ? "◆ " : "", t.name]), h("div", { class: "gc", style: "width:" + W + "px" }, mark)]));
+      if (g !== phase) { phase = g; hidden = !!taskCollapsed[colKey(pid, g)];
+        var grp = ds.filter(function (u) { return (u.giai_doan || "Khác") === g; }), s0 = Math.min.apply(null, grp.map(function (u) { return dayNum(u.ngay_bat_dau_kh); })), e0 = Math.max.apply(null, grp.map(function (u) { return dayNum(u.ngay_ket_thuc_kh); }));
+        rows.push(h("div", { class: "gr ph", style: "cursor:pointer", onclick: function () { taskCollapsed[colKey(pid, g)] = !hidden; repaint(); } }, [h("div", { class: "gl", style: "width:" + LEFT + "px" }, [(hidden ? "▸ " : "▾ ") + g, h("span", { style: "margin-left:auto;color:var(--mut);font-weight:600" }, pctOf(grp) + "%")]), h("div", { class: "gc", style: "width:" + W + "px" }, h("div", { style: "position:absolute;top:11px;height:6px;border-radius:3px;background:var(--ink2);opacity:.45;left:" + x(s0) + "px;width:" + Math.max(6, (e0 - s0 + 1) * dayW) + "px" }))])); }
+      if (hidden) return;
+      var s = dayNum(t.ngay_bat_dau_kh), e = dayNum(t.ngay_ket_thuc_kh), late = taskLate(t), moc = t.loai === "moc", end = x(moc ? e + 0.5 : e + 1);
+      var tip = function (ev) { showTip(ev, [h("div", { class: "m" }, t.name), h("div", {}, "Kế hoạch: " + fmtD(t.ngay_bat_dau_kh) + (moc ? "" : " → " + fmtD(t.ngay_ket_thuc_kh))), t.ngay_bat_dau_tt ? h("div", {}, "Thực tế: " + fmtD(t.ngay_bat_dau_tt) + " → " + (t.ngay_ket_thuc_tt ? fmtD(t.ngay_ket_thuc_tt) : "đang làm")) : null, h("div", {}, taskPct(t) + "% · " + opt("taskStatus", t.trang_thai || "chua_lam") + " · " + who(t))]); };
+      var cells = [];
+      cells.push(moc ? h("div", { class: "gm" + (t.trang_thai === "hoan_thanh" ? " done" : "") + (late ? " late" : ""), style: "left:" + (x(e) + dayW / 2) + "px", onmousemove: tip, onmouseleave: hideTip })
+        : h("div", { class: "gb " + (t.trang_thai || "") + (late ? " late" : ""), style: "left:" + x(s) + "px;width:" + Math.max(6, (e - s + 1) * dayW) + "px", onmousemove: tip, onmouseleave: hideTip }, h("i", { style: "width:" + taskPct(t) + "%" })));
+      var as = dayNum(t.ngay_bat_dau_tt); if (as != null && !moc) { var ae = dayNum(t.ngay_ket_thuc_tt); if (ae == null) ae = Math.max(as, tdn); cells.push(h("div", { class: "ga" + (ae > e ? " over" : ""), style: "left:" + x(as) + "px;width:" + Math.max(4, (ae - as + 1) * dayW) + "px" })); }
+      if (t.nguoi_phu_trach) cells.push(h("div", { class: "gn", style: "left:" + (end + 6) + "px" }, firstName(t.nguoi_phu_trach)));
+      rows.push(h("div", { class: "gr", onclick: function () { if (canEditTask(t)) taskEdit(t); } }, [h("div", { class: "gl", style: "width:" + LEFT + "px", title: t.name }, [t.loai === "moc" ? "◆ " : "", t.name]), h("div", { class: "gc", style: "width:" + W + "px" }, cells)]));
     });
     var gt = h("div", { class: "gt", style: "width:" + (LEFT + W) + "px" }, [head].concat(rows, tdn >= min && tdn <= max ? [h("div", { class: "gtoday", style: "left:" + (LEFT + x(tdn) + dayW / 2) + "px", title: "Hôm nay" })] : []));
-    return h("div", { class: "gantt" }, gt);
+    return h("div", {}, [tools, h("div", { class: "gantt" }, gt)]);
   }
+
+  var lifeOf = function (g) { return ["chuan_bi", "dang_thuc_hien", "bao_hanh", "hoan_tat"].indexOf(g) >= 0 ? g : (!g || g === "ky_hd" || g === "tam_ung" ? "chuan_bi" : "dang_thuc_hien"); };
+  var lifeLabel = function (p) { return opt("projectLifecycle", lifeOf(p.giai_doan)); };
+  var LIFE_CLS = { chuan_bi: "plain", dang_thuc_hien: "info", bao_hanh: "ok", hoan_tat: "plain" };
+  var HEALTH = { green: ["Đúng tiến độ", "ok"], yellow: ["Có rủi ro", "warn"], red: ["Trễ tiến độ", "bad"] };
+  function healthChip(hl) { if (!hl) return null; var c = HEALTH[hl.level]; var e = chip(c[0], c[1]); if (hl.reasons && hl.reasons.length) e.title = hl.reasons.join("; "); return e; }
+  function phaseText(pr) { return pr && pr.currentPhase ? pr.currentPhase.name + " · " + pr.currentPhase.done + "/" + pr.currentPhase.total + " việc" : null; }
 
   function taskSection(p, R) {
     if (!R.tasksAvailable) return card("Tiến độ công việc", null, empty("Chưa bật tính năng công việc cho sub-account này (cần tạo object “Công việc” trong GHL).", "du_an"));
     var tasks = R.tasks, pr = R.progress || {}, body = h("div", {}), sw = h("div", { class: "chips" });
     function paint() {
       sw.replaceChildren.apply(sw, [["list", "Danh sách"], ["gantt", "Gantt"], ["kanban", "Kanban"]].map(function (v) { return h("button", { class: "pill" + (taskView === v[0] ? " on" : ""), onclick: function () { taskView = v[0]; try { localStorage.setItem("svc_taskview", v[0]); } catch (e) {} paint(); } }, v[1]); }));
-      body.replaceChildren(!tasks.length ? empty(isAdmin() ? "Chưa có công việc. Bấm “Sinh từ mẫu” để tạo bộ công việc chuẩn." : "Chưa có công việc", "du_an") : taskView === "gantt" ? taskGanttView(tasks) : taskView === "kanban" ? taskKanbanView(tasks) : taskListView(tasks));
+      body.replaceChildren(!tasks.length ? empty(isAdmin() ? "Chưa có công việc. Bấm “Sinh từ mẫu” để tạo bộ công việc chuẩn." : "Chưa có công việc", "du_an") : taskView === "gantt" ? taskGanttView(tasks, paint) : taskView === "kanban" ? taskKanbanView(tasks) : taskListView(tasks, paint));
     }
     paint();
     var acts = isAdmin() ? [h("button", { class: "btn" + (tasks.length ? "" : " primary"), onclick: function () { taskGenForm(p); } }, [icon("plus", 15), "Sinh từ mẫu"]), h("button", { class: "btn", onclick: function () { taskAddForm(p); } }, "Thêm công việc")] : [];
     var sum = pr.total ? h("div", { style: "display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:14px" }, [h("div", { style: "font-size:30px;font-weight:700;letter-spacing:-.02em" }, pr.percent + "%"), h("div", { style: "flex:1;min-width:160px" }, progressBar(pr.percent, pr.overdue ? "warn" : "")),
-      h("div", { style: "display:flex;gap:6px;flex-wrap:wrap" }, [chip(pr.done + "/" + pr.total + " việc xong", "plain"), pr.overdue ? chip(pr.overdue + " việc trễ", "bad") : null, pr.nextMilestone ? chip("Mốc kế: " + pr.nextMilestone.name + " " + fmtD(pr.nextMilestone.date), "info") : null])]) : null;
+      h("div", { style: "display:flex;gap:6px;flex-wrap:wrap" }, [chip(pr.done + "/" + pr.total + " việc xong", "plain"), pr.overdue ? chip(pr.overdue + " việc trễ", "bad") : null, healthChip(R.health), pr.nextMilestone ? chip("Mốc kế: " + pr.nextMilestone.name + " " + fmtD(pr.nextMilestone.date), "info") : null])]) : null;
     return card("Tiến độ công việc", pr.total ? "Kế hoạch " + fmtD(pr.start) + " → " + fmtD(pr.end) : "Danh sách công việc, Gantt và kanban của dự án", h("div", {}, [sum, h("div", { style: "display:flex;gap:10px;justify-content:space-between;align-items:center;flex-wrap:wrap;margin-bottom:12px" }, [sw, h("div", { style: "display:flex;gap:8px;flex-wrap:wrap" }, acts)]), body]));
   }
 
@@ -809,17 +846,16 @@
         chipsTop = [chip(opt("siteType", r.loai_cong_trinh), "plain")];
         if (isAdmin()) acts.push(h("button", { class: "btn primary", onclick: function () { createUnitForm(r.id); } }, [icon("plus", 16), "Thêm thang"]));
         facts = [fact("Số thang", String(R.thang_may.length)), fact("Hợp đồng", String(R.hop_dong.length)), fact("Dự án", String(R.du_an.length)), fact("Số tầng", r.so_tang ? String(r.so_tang) : "—")];
-        extra = [relList("Thang máy", "thang_may", R.thang_may, function (u) { return [u.name, opt("unitType", u.loai) + (u.vi_tri ? " · " + u.vi_tri : ""), chip(opt("unitStatus", u.trang_thai))]; }), relList("Hợp đồng", "hop_dong", R.hop_dong, function (c) { return [c.name, opt("contractType", c.loai), chip(opt("contractStatus", c.trang_thai))]; }), relList("Dự án", "du_an", R.du_an, function (p) { return [p.name, "Dự kiến " + fmtD(p.ngay_du_kien_ban_giao), chip(opt("projectStage", p.giai_doan), "info")]; }), relList("Phiếu gần đây", "phieu", R.phieu, ordLine)];
+        extra = [relList("Thang máy", "thang_may", R.thang_may, function (u) { return [u.name, opt("unitType", u.loai) + (u.vi_tri ? " · " + u.vi_tri : ""), chip(opt("unitStatus", u.trang_thai))]; }), relList("Hợp đồng", "hop_dong", R.hop_dong, function (c) { return [c.name, opt("contractType", c.loai), chip(opt("contractStatus", c.trang_thai))]; }), relList("Dự án", "du_an", R.du_an, function (p) { return [p.name, "Dự kiến " + fmtD(p.ngay_du_kien_ban_giao), chip(lifeLabel(p), "info")]; }), relList("Phiếu gần đây", "phieu", R.phieu, ordLine)];
       } else if (type === "hop_dong") {
         chipsTop = [chip(opt("contractType", r.loai), "plain"), chip(opt("contractStatus", r.trang_thai), r.trang_thai === "hieu_luc" ? "ok" : "")];
         if (isAdmin() && r.loai === "bao_tri" && r.trang_thai === "hieu_luc") acts.push(h("button", { class: "btn primary", onclick: function () { generateForm(r); } }, [icon("wrench", 16), "Sinh phiếu bảo trì định kỳ"]));
         facts = [fact("Giá trị", fmtM(r.gia_tri), fmtN(r.gia_tri) + " VND"), countdown("Hết hạn sau", r.ngay_het_han, 365), fact("Số thang", String(R.thang_may.length)), fact("Chu kỳ bảo trì", r.chu_ky_bao_tri_thang ? (Number(r.chu_ky_bao_tri_thang) === 1 ? "Hằng tháng" : "Mỗi " + r.chu_ky_bao_tri_thang + " tháng") : "—", r.ngay_ky ? "Ký ngày " + fmtD(r.ngay_ky) : null)];
-        extra = [R.site ? relList("Công trình", "cong_trinh", [R.site], function (s) { return [s.name, s.dia_chi || "", null]; }) : null, relList("Thang máy trong hợp đồng", "thang_may", R.thang_may, function (u) { return [u.name, u.vi_tri || "", chip(opt("unitStatus", u.trang_thai))]; }), R.du_an.length ? relList("Dự án", "du_an", R.du_an, function (p) { return [p.name, "", chip(opt("projectStage", p.giai_doan), "info")]; }) : null, relList("Phiếu dịch vụ", "phieu", R.phieu, ordLine)];
+        extra = [R.site ? relList("Công trình", "cong_trinh", [R.site], function (s) { return [s.name, s.dia_chi || "", null]; }) : null, relList("Thang máy trong hợp đồng", "thang_may", R.thang_may, function (u) { return [u.name, u.vi_tri || "", chip(opt("unitStatus", u.trang_thai))]; }), R.du_an.length ? relList("Dự án", "du_an", R.du_an, function (p) { return [p.name, "", chip(lifeLabel(p), "info")]; }) : null, relList("Phiếu dịch vụ", "phieu", R.phieu, ordLine)];
       } else if (type === "du_an") {
-        chipsTop = [chip(opt("projectStage", r.giai_doan), "info")];
-        if (isAdmin()) { acts.push(h("select", { class: "btn", "aria-label": "Giai đoạn", onchange: function (e) { var st = e.target.value; if (st !== r.giai_doan) act(function () { return post("/api/project/stage", { id: r.id, stage: st }); }, "Đã đổi giai đoạn"); } }, M.options.projectStage.map(function (s) { return h("option", { value: s[0], selected: s[0] === r.giai_doan }, s[1]); }))); if (r.giai_doan !== "bao_hanh" && r.giai_doan !== "hoan_tat") acts.push(h("button", { class: "btn primary", onclick: function () { handoverForm(r); } }, "Bàn giao")); }
-        var idx = M.options.projectStage.map(function (s) { return s[0]; }).indexOf(r.giai_doan || "ky_hd");
-        facts = [R.progress && R.progress.total ? fact("Tiến độ", R.progress.percent + "%", R.progress.done + "/" + R.progress.total + " việc xong" + (R.progress.overdue ? " · " + R.progress.overdue + " trễ" : ""), R.progress.percent, R.progress.overdue ? "warn" : "") : fact("Tiến độ", Math.round(idx / (M.options.projectStage.length - 1) * 100) + "%", opt("projectStage", r.giai_doan), idx / (M.options.projectStage.length - 1) * 100), countdown("Dự kiến bàn giao", r.ngay_du_kien_ban_giao, 180), fact("Quản lý dự án", r.quan_ly_du_an || "—")];
+        chipsTop = [chip(opt("projectLifecycle", R.lifecycle), LIFE_CLS[R.lifecycle]), healthChip(R.health), phaseText(R.progress) ? chip("Giai đoạn: " + phaseText(R.progress), "info") : null];
+        if (isAdmin()) { acts.push(h("select", { class: "btn", "aria-label": "Vòng đời dự án", onchange: function (e) { var st = e.target.value; if (st !== R.lifecycle) act(function () { return post("/api/project/stage", { id: r.id, stage: st }); }, "Đã đổi vòng đời dự án"); } }, M.options.projectLifecycle.map(function (s) { return h("option", { value: s[0], selected: s[0] === R.lifecycle }, s[1]); }))); if (R.lifecycle === "chuan_bi" || R.lifecycle === "dang_thuc_hien") acts.push(h("button", { class: "btn primary", onclick: function () { handoverForm(r); } }, "Bàn giao")); }
+        facts = [R.progress && R.progress.total ? fact("Tiến độ", R.progress.percent + "%", R.progress.done + "/" + R.progress.total + " việc xong" + (R.progress.overdue ? " · " + R.progress.overdue + " trễ" : ""), R.progress.percent, R.progress.overdue ? "warn" : "") : fact("Tiến độ", "—", "Chưa có công việc"), R.progress && R.progress.currentPhase ? fact("Giai đoạn hiện tại", R.progress.currentPhase.name, R.progress.currentPhase.done + "/" + R.progress.currentPhase.total + " việc xong", R.progress.currentPhase.percent) : fact("Giai đoạn hiện tại", "—", R.progress && R.progress.total ? "Đã xong mọi giai đoạn" : "Chưa có công việc"), countdown("Dự kiến bàn giao", r.ngay_du_kien_ban_giao, 180), fact("Quản lý dự án", r.quan_ly_du_an || "—")];
         extra = [R.site ? relList("Công trình", "cong_trinh", [R.site], function (s) { return [s.name, s.dia_chi || "", null]; }) : null, R.hop_dong ? relList("Hợp đồng", "hop_dong", [R.hop_dong], function (c) { return [c.name, opt("contractType", c.loai), null]; }) : null];
       } else if (type === "kiem_dinh") {
         chipsTop = [chip(opt("inspectionStatus", r.trang_thai), r.trang_thai === "hoan_tat" ? "ok" : "info")];

@@ -2,7 +2,7 @@
 // kiểm định...) và kiểm tra đầu vào. Không đụng HTTP — index.mjs lo phần đó. Mọi giá trị ghi xuống GHL đều đi qua
 // các hàm kiểm tra ở đây (liệt kê cố định các field cho phép, enum chỉ nhận key hợp lệ).
 import { OBJ, OPTIONS, isOption, ORDER_CLOSED, INSPECTION_OPEN } from "./schema.mjs";
-import { flat, todayVN, computeDashboard, computeCharts, computeSales, planMaintenance, nextInspectionDate, isDate, cleanText, orderNumber, addMonths, toE164VN, taskProgress, normalizeTaskPatch, planFromTemplate } from "./logic.mjs";
+import { flat, todayVN, computeDashboard, computeCharts, computeSales, planMaintenance, nextInspectionDate, isDate, cleanText, orderNumber, addMonths, toE164VN, taskProgress, normalizeTaskPatch, planFromTemplate, projectLifecycle, projectHealth, LIFECYCLE } from "./logic.mjs";
 
 export class UserError extends Error { constructor(m, status = 400) { super(m); this.status = status; } }
 const need = (cond, msg, status = 400) => { if (!cond) throw new UserError(msg, status); };
@@ -26,6 +26,8 @@ export async function getSales(ghl, today) {
 }
 
 const by = (arr) => new Map(arr.map((x) => [x.id, x]));
+// Tiến độ + vòng đời + sức khoẻ của 1 dự án (tasks = null khi chưa bật tính năng công việc).
+const projectView = (p, tasks) => { const progress = tasks ? taskProgress(tasks, todayVN()) : null; return { progress, lifecycle: projectLifecycle(p), health: projectHealth(p, progress, todayVN()) }; };
 // Các thang thuộc 1 hợp đồng: suy từ id hợp đồng ghi trên thang (hợp đồng bảo trì → hop_dong_bao_tri_id, hợp đồng lắp đặt → hop_dong_lap_dat_id).
 const unitsOf = (units, c) => units.filter((u) => (c.loai === "bao_tri" ? u.hop_dong_bao_tri_id : u.hop_dong_lap_dat_id) === c.id);
 const label = (group, key) => (OPTIONS[group].find(([k]) => k === key) || [])[1] || key || "";
@@ -39,7 +41,7 @@ export async function list(ghl, type) {
     case "cong_trinh": return d.sites.map((s) => ({ ...s, units: d.units.filter((u) => u.cong_trinh_id === s.id).length })).sort((a, b) => a.name.localeCompare(b.name));
     case "hop_dong": return d.contracts.map((c) => ({ ...c, site: S.get(c.cong_trinh_id)?.name || "", unitCount: unitsOf(d.units, c).length })).sort(byDate("ngay_het_han"));
     case "phieu": return d.orders.map((o) => ({ ...o, unit: U.get(o.thang_may_id)?.name || "", site: S.get(o.cong_trinh_id)?.name || "" })).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
-    case "du_an": { const tasks = await loadTasks(ghl); return d.projects.map((p) => ({ ...p, site: S.get(p.cong_trinh_id)?.name || "", hop_dong: C.get(p.hop_dong_id)?.name || "", progress: tasks ? taskProgress(tasks.filter((t) => t.du_an_id === p.id), todayVN()) : null })).sort(byDate("ngay_du_kien_ban_giao")); }
+    case "du_an": { const tasks = await loadTasks(ghl); return d.projects.map((p) => ({ ...p, site: S.get(p.cong_trinh_id)?.name || "", hop_dong: C.get(p.hop_dong_id)?.name || "", ...projectView(p, tasks ? tasks.filter((t) => t.du_an_id === p.id) : null) })).sort(byDate("ngay_du_kien_ban_giao")); }
     case "kiem_dinh": return d.inspections.map((k) => ({ ...k, unit: U.get(k.thang_may_id)?.name || "" })).sort(byDate("ngay_kiem_dinh"));
     default: throw new UserError("Loại dữ liệu không hợp lệ");
   }
@@ -62,7 +64,7 @@ export async function detail(ghl, type, id) {
     out.related = { thang_may: U.get(rec.thang_may_id) || null, site: S.get(rec.cong_trinh_id) || null, hop_dong: C.get(rec.hop_dong_id) || null };
   } else if (type === "du_an") {
     const tasks = await loadTasks(ghl), mine = tasks ? sortTasks(tasks.filter((t) => t.du_an_id === id)) : [];
-    out.related = { site: S.get(rec.cong_trinh_id) || null, hop_dong: C.get(rec.hop_dong_id) || null, tasks: mine, tasksAvailable: !!tasks, progress: taskProgress(mine, todayVN()) };
+    out.related = { site: S.get(rec.cong_trinh_id) || null, hop_dong: C.get(rec.hop_dong_id) || null, tasks: mine, tasksAvailable: !!tasks, ...projectView(rec, tasks ? mine : null) };
   } else if (type === "kiem_dinh") {
     out.related = { thang_may: U.get(rec.thang_may_id) || null };
   }
@@ -194,7 +196,7 @@ export async function updateOrder(ghl, id, patch, { today, isAdmin, me }) {
 }
 
 export async function setProjectStage(ghl, id, stage) {
-  need(isOption("projectStage", stage), "Giai đoạn không hợp lệ");
+  need(LIFECYCLE.includes(stage) || isOption("projectStage", stage), "Giai đoạn không hợp lệ");
   const cur = (await ghl.listAll(OBJ.project)).map(flat).find((p) => p.id === id); need(cur, "Không tìm thấy dự án", 404);
   if (cur.giai_doan === stage) return { ok: true, unchanged: true };
   await ghl.updateRecord(OBJ.project, id, { giai_doan: stage });
@@ -331,6 +333,13 @@ export async function updateTask(ghl, id, patch, { today, isAdmin, me }) {
   if (isDate(ns) && isDate(ne)) need(ne >= ns, "Ngày kết thúc phải sau ngày bắt đầu");
   const set = clean(normalizeTaskPatch(cur, checked, today));
   await ghl.updateRecord(OBJ.task, id, set);
+  // Việc đầu tiên bắt đầu → dự án chuyển "Chuẩn bị" → "Đang thực hiện" (không làm hỏng cập nhật việc nếu ghi dự án lỗi).
+  if (["dang_lam", "cho_kiem_tra", "hoan_thanh"].includes(set.trang_thai) && cur.du_an_id) {
+    try {
+      const proj = (await ghl.listAll(OBJ.project)).map(flat).find((p) => p.id === cur.du_an_id);
+      if (proj && projectLifecycle(proj) === "chuan_bi") await ghl.updateRecord(OBJ.project, proj.id, { giai_doan: "dang_thuc_hien" });
+    } catch (e) { console.error("[service] chuyển vòng đời dự án lỗi:", e.message); }
+  }
   return { ok: true, task: { ...cur, ...set } };
 }
 

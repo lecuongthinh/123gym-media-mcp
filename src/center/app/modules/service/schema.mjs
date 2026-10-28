@@ -25,6 +25,8 @@ export const OPTIONS = {
   contractStatus: [["du_thao", "Dự thảo"], ["hieu_luc", "Hiệu lực"], ["het_han", "Hết hạn"], ["huy", "Hủy"]],
   projectStage: [["ky_hd", "Ký hợp đồng"], ["tam_ung", "Tạm ứng"], ["dat_hang", "Đặt hàng/nhập khẩu"], ["giao_hang", "Giao về công trình"], ["lap_dat", "Lắp đặt"], ["chay_thu", "Chạy thử/tự kiểm tra"], ["kiem_dinh", "Kiểm định"], ["nghiem_thu", "Nghiệm thu bàn giao"], ["bao_hanh", "Bảo hành"], ["hoan_tat", "Hoàn tất"]],
   inspectionStatus: [["len_lich", "Lên lịch"], ["da_nop_ho_so", "Đã nộp hồ sơ"], ["da_kiem_dinh", "Đã kiểm định"], ["hoan_tat", "Hoàn tất"]],
+  // Vòng đời dự án (cấp dự án, nhỏ và dùng chung mọi ngành). Giai đoạn cũ của thang máy (projectStage) vẫn đọc được nhờ ánh xạ ở logic.mjs.
+  projectLifecycle: [["chuan_bi", "Chuẩn bị"], ["dang_thuc_hien", "Đang thực hiện"], ["bao_hanh", "Bảo hành"], ["hoan_tat", "Hoàn tất"]],
   taskStatus: [["chua_lam", "Chưa làm"], ["dang_lam", "Đang làm"], ["cho_kiem_tra", "Chờ kiểm tra"], ["hoan_thanh", "Hoàn thành"], ["huy", "Hủy"]],
   taskType: [["viec", "Công việc"], ["moc", "Mốc"]],
   inspectionResult: [["dat", "Đạt"], ["dat_co_dieu_kien", "Đạt có điều kiện"], ["khong_dat", "Không đạt"]],

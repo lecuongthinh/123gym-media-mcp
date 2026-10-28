@@ -62,6 +62,9 @@ export const isTaskOverdue = (t, today) => !TASK_CLOSED.includes(t.trang_thai) &
 export function taskProgress(tasks, today) {
   const live = tasks.filter((t) => t.trang_thai !== "huy");
   let w = 0, acc = 0, done = 0, doing = 0, overdue = 0, start = null, end = null, nextMilestone = null;
+  const order = [], byPhase = new Map();
+  const sorted = [...live].sort((x, y) => (Number(x.thu_tu) || 0) - (Number(y.thu_tu) || 0));
+  for (const t of sorted) { const g = t.giai_doan || "Khác"; if (!byPhase.has(g)) { byPhase.set(g, []); order.push(g); } byPhase.get(g).push(t); }
   for (const t of live) {
     const pct = t.trang_thai === "hoan_thanh" ? 100 : Math.max(0, Math.min(100, Number(t.phan_tram) || 0));
     const wt = taskWeight(t); w += wt; acc += wt * pct;
@@ -71,7 +74,31 @@ export function taskProgress(tasks, today) {
     if (isDate(t.ngay_ket_thuc_kh) && (!end || t.ngay_ket_thuc_kh > end)) end = t.ngay_ket_thuc_kh;
     if (t.loai === "moc" && t.trang_thai !== "hoan_thanh" && isDate(t.ngay_ket_thuc_kh) && (!nextMilestone || t.ngay_ket_thuc_kh < nextMilestone.date)) nextMilestone = { name: t.name, date: t.ngay_ket_thuc_kh };
   }
-  return { percent: w ? Math.round(acc / w) : 0, total: live.length, done, doing, overdue, start, end, nextMilestone };
+  // Giai đoạn = cấp gom nhóm của công việc: KHÔNG có trạng thái riêng, mọi số liệu cộng dồn từ công việc con.
+  const phases = order.map((name) => { const ts = byPhase.get(name); let pw = 0, pa = 0, pd = 0; for (const t of ts) { const wt = taskWeight(t), pct = t.trang_thai === "hoan_thanh" ? 100 : Math.max(0, Math.min(100, Number(t.phan_tram) || 0)); pw += wt; pa += wt * pct; if (t.trang_thai === "hoan_thanh") pd++; } return { name, total: ts.length, done: pd, percent: pw ? Math.round(pa / pw) : 0 }; });
+  const currentPhase = phases.find((p) => p.done < p.total) || null;
+  return { percent: w ? Math.round(acc / w) : 0, total: live.length, done, doing, overdue, start, end, nextMilestone, phases, currentPhase };
+}
+// Vòng đời dự án: 4 giá trị chung. Giá trị cũ (10 giai đoạn của thang máy) được ánh xạ để dữ liệu cũ vẫn hiển thị đúng.
+export const LIFECYCLE = ["chuan_bi", "dang_thuc_hien", "bao_hanh", "hoan_tat"];
+export function projectLifecycle(p) {
+  const g = p?.giai_doan || "";
+  if (LIFECYCLE.includes(g)) return g;
+  return !g || g === "ky_hd" || g === "tam_ung" ? "chuan_bi" : "dang_thuc_hien";
+}
+// Sức khoẻ dự án (xanh/vàng/đỏ) tự tính từ công việc và hạn bàn giao — không nhập tay.
+export function projectHealth(project, progress, today) {
+  if (!progress || !progress.total) return null;
+  const life = projectLifecycle(project);
+  if (life === "bao_hanh" || life === "hoan_tat" || progress.percent === 100) return { level: "green", reasons: [] };
+  let level = "green"; const reasons = []; const due = project.ngay_du_kien_ban_giao;
+  if (isDate(due)) {
+    if (due < today) { level = "red"; reasons.push(`Quá hạn bàn giao ${daysBetween(due, today)} ngày`); }
+    else if (isDate(progress.end) && progress.end > due) { level = "red"; reasons.push(`Kế hoạch kết thúc muộn hơn hạn bàn giao ${daysBetween(due, progress.end)} ngày`); }
+  }
+  if (progress.overdue >= 3 || progress.overdue / progress.total >= 0.2) { level = "red"; reasons.push(`${progress.overdue} việc trễ`); }
+  else if (progress.overdue >= 1) { if (level === "green") level = "yellow"; reasons.push(`${progress.overdue} việc trễ`); }
+  return { level, reasons };
 }
 // Quy tắc đồng bộ giữa trạng thái, % và ngày thực tế khi sửa 1 công việc (chỉ trả các field cần ghi).
 export function normalizeTaskPatch(cur, patch, today) {
@@ -143,7 +170,7 @@ export function computeDashboard({ units, contracts, orders, inspections, projec
   const projectsLate = projects.filter((p) => p.giai_doan !== "hoan_tat" && isDate(p.ngay_du_kien_ban_giao) && p.ngay_du_kien_ban_giao < today)
     .map((p) => ({ id: p.id, name: p.name, giai_doan: p.giai_doan, due: p.ngay_du_kien_ban_giao, daysLate: daysBetween(p.ngay_du_kien_ban_giao, today) }));
   const projectsByStage = {};
-  for (const p of projects) projectsByStage[p.giai_doan || "ky_hd"] = (projectsByStage[p.giai_doan || "ky_hd"] || 0) + 1;
+  for (const p of projects) { const k = projectLifecycle(p); projectsByStage[k] = (projectsByStage[k] || 0) + 1; } // theo vòng đời dự án
 
   // KPI tháng hiện tại
   const mk = monthKey(today);
