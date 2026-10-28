@@ -113,8 +113,8 @@ export function createGhl({ locationId, getToken, fetchImpl = globalThis.fetch, 
     },
     // Tìm contact CÓ SẴN theo SĐT (chỉ đọc — không tạo). Trả id hoặc null. Cần scope contacts.readonly.
     async findContactByPhone(phone) {
-      const j = await call("GET", `/contacts/lookup?locationId=${locationId}&phone=${encodeURIComponent(phone)}&limit=1`, undefined, 1);
-      return j.contacts?.[0]?.id || null;
+      const j = await call("GET", `/contacts/search/duplicate?locationId=${locationId}&number=${encodeURIComponent(phone)}`, undefined, 1);
+      return j.contact?.id || null;
     },
     // Danh sách nhân viên GHL của sub-account (để giao việc). Có thể thiếu scope users.readonly → trả [] chứ không làm hỏng app.
     async users() {
