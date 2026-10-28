@@ -214,7 +214,7 @@
     plus: "M12 5v14|M5 12h14", more: "M5 12h.01|M12 12h.01|M19 12h.01", qr: "M4 4h6v6H4z|M14 4h6v6h-6z|M4 14h6v6H4z|M14 14h2v2h-2z|M18 14h2|M14 18h2|M18 18h2v2",
     alert: "M12 3 2 20h20z|M12 10v4|M12 17h.01", up: "M7 17 17 7|M8 7h9v9", down: "M7 7l10 10|M17 8v9H8", phone: "M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z",
     clock: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z|M12 7v5l3 2", wrench: "M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z", user: "M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z|M4 21a8 8 0 0 1 16 0",
-    box: "M3 7l9-4 9 4-9 4z|M3 7v10l9 4 9-4V7|M12 11v10", check: "M5 13l4 4L19 7", money: "M12 3v18|M16 7H10a3 3 0 0 0 0 6h4a3 3 0 0 1 0 6H8", cal: "M4 6h16v14H4z|M4 10h16|M8 3v4|M16 3v4", swap: "M7 7h13l-3-3|M17 17H4l3 3", flag: "M5 21V4|M5 4h12l-2 4 2 4H5", download: "M12 4v11|M7 11l5 5 5-5|M5 20h14", print: "M7 9V3h10v6|M7 17H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2|M7 14h10v7H7z", sales: "M3 3v18h18|M7 15l4-4 3 3 6-7|M16 7h4v4"
+    box: "M3 7l9-4 9 4-9 4z|M3 7v10l9 4 9-4V7|M12 11v10", check: "M5 13l4 4L19 7", money: "M12 3v18|M16 7H10a3 3 0 0 0 0 6h4a3 3 0 0 1 0 6H8", cal: "M4 6h16v14H4z|M4 10h16|M8 3v4|M16 3v4", swap: "M7 7h13l-3-3|M17 17H4l3 3", flag: "M5 21V4|M5 4h12l-2 4 2 4H5", download: "M12 4v11|M7 11l5 5 5-5|M5 20h14", print: "M7 9V3h10v6|M7 17H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2|M7 14h10v7H7z", sales: "M3 3v18h18|M7 15l4-4 3 3 6-7|M16 7h4v4", bell: "M6 16V11a6 6 0 0 1 12 0v5l2 2H4z|M10 21h4"
   };
   function icon(n, s) { var e = sv("svg", { viewBox: "0 0 24 24", width: s || 18, height: s || 18, fill: "none", stroke: "currentColor", "stroke-width": 1.8, "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" }); (IC[n] || "").split("|").forEach(function (d) { e.appendChild(sv("path", { d: d })); }); return e; }
 
@@ -273,8 +273,8 @@
   var isAdmin = function () { return M.role === "admin"; };
 
   /* ===== điều hướng + khung ===== */
-  var TABS = [["sales", "Kinh doanh", "sales"], ["dash", "Vận hành", "dash"], ["my", "Việc của tôi", "my"], ["phieu", "Phiếu dịch vụ", "phieu"], ["thang_may", "Thang máy", "thang_may"], ["cong_trinh", "Công trình", "cong_trinh"], ["hop_dong", "Hợp đồng", "hop_dong"], ["du_an", "Dự án", "du_an"], ["kiem_dinh", "Kiểm định", "kiem_dinh"]];
-  var tabsFor = function () { return TABS.filter(function (t) { return isAdmin() || t[0] !== "sales"; }); };
+  var TABS = [["sales", "Kinh doanh", "sales"], ["dash", "Vận hành", "dash"], ["my", "Việc của tôi", "my"], ["phieu", "Phiếu dịch vụ", "phieu"], ["thang_may", "Thang máy", "thang_may"], ["cong_trinh", "Công trình", "cong_trinh"], ["hop_dong", "Hợp đồng", "hop_dong"], ["du_an", "Dự án", "du_an"], ["kiem_dinh", "Kiểm định", "kiem_dinh"], ["notify", "Mẫu tin", "bell"]];
+  var tabsFor = function () { return TABS.filter(function (t) { return isAdmin() || (t[0] !== "sales" && t[0] !== "notify"); }); };
   var bottomFor = function () { return isAdmin() ? ["sales", "dash", "phieu", "thang_may"] : ["my", "phieu", "thang_may", "dash"]; };
   function nav(v) { view = v; location.hash = v.id ? "#/" + v.tab + "/" + v.id : "#/" + v.tab; render(); window.scrollTo(0, 0); }
   window.addEventListener("hashchange", function () { var m = /^#\/(\w+)(?:\/(\w+))?/.exec(location.hash); if (m && M && (m[1] !== view.tab || m[2] !== view.id)) { view = { tab: m[1], id: m[2] }; render(); } });
@@ -315,13 +315,13 @@
       R.replaceChildren.apply(R, out.length ? out : [h("div", { class: "empty" }, "Không có kết quả cho “" + q + "”")]); R.style.display = "";
     });
   }
-  var TITLE = { sales: "Kinh doanh", dash: "Vận hành & dịch vụ", my: "Việc của tôi", phieu: "Phiếu dịch vụ", thang_may: "Thang máy", cong_trinh: "Công trình", hop_dong: "Hợp đồng", du_an: "Dự án thi công", kiem_dinh: "Kiểm định" };
+  var TITLE = { sales: "Kinh doanh", dash: "Vận hành & dịch vụ", my: "Việc của tôi", phieu: "Phiếu dịch vụ", thang_may: "Thang máy", cong_trinh: "Công trình", hop_dong: "Hợp đồng", du_an: "Dự án thi công", kiem_dinh: "Kiểm định", notify: "Mẫu tin tự động (Zalo ZNS)" };
   function skeleton() { return [h("div", { class: "skel", style: "height:190px" }), h("div", { class: "g g4" }, [1, 2, 3, 4].map(function () { return h("div", { class: "skel", style: "height:116px" }); })), h("div", { class: "g g21" }, [h("div", { class: "skel", style: "height:300px" }), h("div", { class: "skel", style: "height:300px" })])]; }
   function render() {
     if (!M) return; hideTip(); renderNav(); shell.title.textContent = TITLE[view.tab] || "";
     shell.main.replaceChildren.apply(shell.main, skeleton());
     var p;
-    if (view.id) p = detailView(view.tab, view.id); else if (view.tab === "sales" && isAdmin()) p = salesView(); else if (view.tab === "dash") p = dashView(); else if (view.tab === "my") p = myView(); else if (view.tab === "du_an") p = projectsView(); else p = listView(view.tab);
+    if (view.id) p = detailView(view.tab, view.id); else if (view.tab === "sales" && isAdmin()) p = salesView(); else if (view.tab === "dash") p = dashView(); else if (view.tab === "my") p = myView(); else if (view.tab === "du_an") p = projectsView(); else if (view.tab === "notify" && isAdmin()) p = notifyView(); else p = listView(view.tab);
     var ver = (render.v = (render.v || 0) + 1);
     p.then(function (el) { if (ver !== render.v) return; shell.main.replaceChildren.apply(shell.main, [].concat(el).filter(Boolean)); renderNav(); }).catch(function (e) { if (ver === render.v) shell.main.replaceChildren(h("div", { class: "card err" }, e.message)); });
   }
@@ -431,7 +431,7 @@
       var work = withTable("Tải công việc", "Phiếu đang mở theo người phụ trách", wlRows.length ? hBars(wlRows) : empty("Không có phiếu đang mở", "check"), ["Người", "Phiếu mở"], wlRows.map(function (r) { return [r.label, r.value]; }),
         wlRows.some(function (r) { return r.color === "var(--s2)"; }) ? h("div", { style: "margin:-4px 0 10px" }, legend([{ label: "Có phiếu quá hạn", color: "var(--s2)", sq: 1 }, { label: "Đúng hạn", color: "var(--s1)", sq: 1 }])) : null);
 
-      var stOrder = [["chua_ban_giao", "var(--q1)"], ["dang_bao_hanh", "var(--q3)"], ["dang_bao_tri", "var(--q6)"], ["het_hop_dong", "var(--mut)"], ["ngung_hoat_dong", "var(--line2)"]];
+      var stOrder = [["chua_ban_giao", "var(--q1)"], ["dang_bao_hanh", "var(--q3)"], ["dang_bao_tri", "var(--q6)"], ["ngoai_bao_hanh", "var(--mut)"], ["ngung_hoat_dong", "var(--line2)"]];
       var fleet = card("Đội thang", K.unitsTotal + " thang đang quản lý", stackBar(stOrder.map(function (s) { return { label: opt("unitStatus", s[0]), value: C.unitStatus[s[0]] || 0, color: s[1] }; })));
       var stages = M.options.projectStage.map(function (s, i) { return { label: s[1], value: d.projectsByStage[s[0]] || 0, color: "var(--q" + (1 + Math.min(6, Math.floor(i * 6 / 9))) + ")" }; }).filter(function (r) { return r.value; });
       var projTotal = Object.keys(d.projectsByStage).reduce(function (a, k) { return a + d.projectsByStage[k]; }, 0);
@@ -580,6 +580,50 @@
   }
 
   /* ===== Dự án (kanban) ===== */
+  /* ===== Mẫu tin tự động (admin): workflow GHL gọi webhook, server gửi ZNS theo các mẫu này ===== */
+  function notifyView() {
+    return api("/api/notify/templates").then(function (d) {
+      var vars = (d.subjects.phieu || {}).vars || [];
+      var urlBox = h("input", { readonly: "readonly", value: d.webhookUrl, style: "flex:1;min-width:0;padding:9px 12px;border-radius:11px;border:1px solid var(--line2);background:var(--surface2);font:12.5px ui-monospace,monospace", onclick: function (e) { e.target.select(); } });
+      var copy = h("button", { class: "btn sm", onclick: function () { urlBox.select(); (navigator.clipboard ? navigator.clipboard.writeText(d.webhookUrl) : Promise.reject()).then(function () { toast("Đã chép URL"); }, function () { document.execCommand("copy"); toast("Đã chép URL"); }); } }, "Chép");
+      var hint = card("Cách dùng", "Workflow của contact trong GHL lo lịch, điều kiện, chờ; bước cuối là Webhook (POST) tới URL dưới đây.",
+        h("div", { style: "display:grid;gap:10px" }, [h("div", { style: "display:flex;gap:8px" }, [urlBox, copy]),
+          h("div", { class: "sub" }, "Trong Webhook action, thêm Custom Data: template_key = khoá mẫu bên dưới (vd phieu_hoan_thanh). SĐT lấy từ contact. URL chứa khoá bí mật — không chia sẻ công khai.")]));
+      var list = card("Các mẫu tin", "Bấm vào mẫu để sửa. Mẫu chỉ gửi khi đã BẬT và có id mẫu ZNS đã được Zalo duyệt.",
+        d.templates.length ? h("div", { class: "tbl" }, h("table", { class: "rt" }, [h("thead", {}, h("tr", {}, ["Mẫu", "Khoá", "Gửi khi phiếu ở trạng thái", "Id mẫu ZNS", "Trạng thái"].map(function (x) { return h("th", {}, x); }))),
+          h("tbody", {}, d.templates.map(function (t) {
+            var ready = t.enabled && t.zns_template_id;
+            return h("tr", { class: "click", onclick: function () { editTpl(t); } }, [h("td", { class: "nm" }, t.label), h("td", { "data-l": "Khoá" }, h("code", {}, t.key)),
+              h("td", { "data-l": "Trạng thái phiếu" }, (t.when.trang_thai || []).length ? t.when.trang_thai.map(function (k) { return opt("orderStatus", k); }).join(", ") : "Mọi trạng thái"),
+              h("td", { "data-l": "Id ZNS" }, t.zns_template_id || "— chưa có —"), h("td", { "data-l": "Tình trạng" }, chip(ready ? "Đang bật" : t.enabled ? "Bật, thiếu id ZNS" : "Tắt", ready ? "ok" : t.enabled ? "warn" : ""))]);
+          }))])) : empty("Chưa có mẫu nào", "bell"),
+        null, h("button", { class: "btn sm", onclick: function () { editTpl({ key: "", label: "", subject: "phieu", when: { trang_thai: [] }, zns_template_id: "", params: {}, enabled: false }); } }, [icon("plus", 14), "Thêm mẫu"]));
+      function editTpl(t) {
+        var isNew = !t.key, key = h("input", { value: t.key, disabled: isNew ? null : "disabled", placeholder: "vd phieu_nhac_hen" }),
+          lab = h("input", { value: t.label }), zid = h("input", { value: t.zns_template_id, placeholder: "Id mẫu ZNS từ Zalo" }),
+          on = h("input", { type: "checkbox", style: "width:auto" }), err = h("div", { class: "err" }),
+          sts = d.statuses.map(function (s) { return [s[0], h("input", { type: "checkbox", style: "width:auto" })]; }),
+          params = h("textarea", { rows: 5, placeholder: "ma_phieu = {{ma_phieu}}\nthang = {{thang}} - {{cong_trinh}}" });
+        on.checked = !!t.enabled; sts.forEach(function (x) { x[1].checked = (t.when.trang_thai || []).indexOf(x[0]) >= 0; });
+        params.value = Object.keys(t.params || {}).map(function (k) { return k + " = " + t.params[k]; }).join("\n");
+        var ok = h("button", { class: "btn primary", onclick: function () {
+          var pr = {}; params.value.split("\n").forEach(function (ln) { var i = ln.indexOf("="); if (i > 0 && ln.slice(0, i).trim()) pr[ln.slice(0, i).trim()] = ln.slice(i + 1).trim(); });
+          err.textContent = ""; ok.disabled = true;
+          post("/api/notify/template", { key: key.value.trim(), label: lab.value, subject: t.subject, when: { trang_thai: sts.filter(function (x) { return x[1].checked; }).map(function (x) { return x[0]; }) }, zns_template_id: zid.value.trim(), params: pr, enabled: on.checked })
+            .then(function () { modal.remove(); toast("Đã lưu mẫu"); render(); }).catch(function (e) { err.textContent = e.message; ok.disabled = false; });
+        } }, "Lưu");
+        var lf = function (l, el) { return h("label", { class: "f" }, [l, el]); };
+        var modal = h("div", { class: "modal", onclick: function (e) { if (e.target === modal) modal.remove(); } }, h("div", { class: "box" }, [h("h2", {}, isNew ? "Thêm mẫu tin" : "Sửa mẫu tin"),
+          lf("Khoá mẫu (workflow GHL gửi template_key này)", key), lf("Tên hiển thị", lab), lf("Id mẫu ZNS (Zalo đã duyệt)", zid),
+          h("div", { class: "f" }, [h("span", { style: "font-size:12px;color:var(--mut);font-weight:700" }, "Chỉ gửi khi phiếu đang ở trạng thái (bỏ trống = mọi trạng thái)"), h("div", { style: "display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:6px" }, sts.map(function (x, i) { return h("label", { style: "display:flex;gap:6px;align-items:center;font-weight:400;font-size:13.5px" }, [x[1], d.statuses[i][1]]); }))]),
+          lf("Tham số ZNS: mỗi dòng  tên_tham_số = nội dung", params), h("div", { class: "sub" }, "Biến dùng được: " + vars.map(function (v) { return "{{" + v + "}}"; }).join(" ")),
+          h("label", { style: "display:flex;gap:10px;align-items:center;font-weight:600" }, [on, "Bật mẫu này"]), err,
+          h("div", { style: "display:flex;gap:8px" }, [ok, h("button", { class: "btn", onclick: function () { modal.remove(); } }, "Huỷ")])]));
+        document.body.appendChild(modal);
+      }
+      return [hint, list];
+    });
+  }
   function projectsView() {
     return getList("du_an").then(function (rows) {
       var N = M.options.projectStage.length;
@@ -590,7 +634,7 @@
   }
 
   /* ===== Chi tiết ===== */
-  var LABEL = { dia_chi: "Địa chỉ", tinh_thanh: "Tỉnh/Thành", so_tang: "Số tầng", ten_chu_dau_tu: "Chủ đầu tư", nguoi_lien_he: "Người liên hệ", sdt_lien_he: "SĐT liên hệ", ghi_chu: "Ghi chú", hang: "Hãng", model: "Model", so_serial: "Số serial", vi_tri: "Vị trí", tai_trong_kg: "Tải trọng (kg)", so_diem_dung: "Số điểm dừng", toc_do_m_s: "Tốc độ (m/s)", ngay_ban_giao: "Ngày bàn giao", het_bao_hanh: "Hết bảo hành", chu_ky_kiem_dinh_thang: "Chu kỳ kiểm định (tháng)", ngay_kiem_dinh_ke_tiep: "Kiểm định kế tiếp", gia_tri: "Giá trị (VND)", ngay_hieu_luc: "Hiệu lực từ", ngay_het_han: "Hết hạn", tan_suat_bao_tri_thang: "Tần suất bảo trì (lần/tháng)", sla_phan_hoi_gio: "SLA phản hồi (giờ)", ten_khach_hang: "Khách hàng", so_hoa_don_ghl: "Hoá đơn GHL", ngay_du_kien_ban_giao: "Dự kiến bàn giao", quan_ly_du_an: "Quản lý dự án", doi_thi_cong: "Đội thi công", ngay_hen: "Ngày hẹn", ngay_hoan_thanh: "Ngày hoàn thành", ket_qua: "Kết quả", nguoi_phu_trach: "Phụ trách", nguoi_bao: "Người báo", sdt_nguoi_bao: "SĐT người báo", ngay_kiem_dinh: "Ngày kiểm định", don_vi_kiem_dinh: "Đơn vị kiểm định", pham_vi_bao_tri: "Phạm vi bảo trì", loai_cong_trinh: "Loại công trình", loai: "Loại", trang_thai: "Trạng thái", uu_tien: "Ưu tiên", nguon: "Nguồn", giai_doan: "Giai đoạn" };
+  var LABEL = { dia_chi: "Địa chỉ", tinh_thanh: "Tỉnh/Thành", so_tang: "Số tầng", ten_chu_dau_tu: "Chủ đầu tư", nguoi_lien_he: "Người liên hệ", sdt_lien_he: "SĐT liên hệ", ghi_chu: "Ghi chú", hang: "Hãng", model: "Model", so_serial: "Số serial", vi_tri: "Vị trí", tai_trong_kg: "Tải trọng (kg)", so_diem_dung: "Số điểm dừng", toc_do_m_s: "Tốc độ (m/s)", ngay_ban_giao: "Ngày bàn giao", het_bao_hanh: "Hết bảo hành", chu_ky_kiem_dinh_thang: "Chu kỳ kiểm định (tháng)", ngay_kiem_dinh_ke_tiep: "Kiểm định kế tiếp", gia_tri: "Giá trị (VND)", ngay_hieu_luc: "Hiệu lực từ", ngay_het_han: "Hết hạn", chu_ky_bao_tri_thang: "Chu kỳ bảo trì (tháng)", ngay_ky: "Ngày ký", ten_khach_hang: "Khách hàng", sdt_thong_bao: "SĐT nhận thông báo", ngay_du_kien_ban_giao: "Dự kiến bàn giao", quan_ly_du_an: "Quản lý dự án", doi_thi_cong: "Đội thi công", ngay_hen: "Ngày hẹn", ngay_hoan_thanh: "Ngày hoàn thành", ket_qua: "Kết quả", nguoi_phu_trach: "Phụ trách", nguoi_bao: "Người báo", sdt_nguoi_bao: "SĐT người báo", ngay_kiem_dinh: "Ngày kiểm định", don_vi_kiem_dinh: "Đơn vị kiểm định", pham_vi_bao_tri: "Phạm vi bảo trì", loai_cong_trinh: "Loại công trình", loai: "Loại", trang_thai: "Trạng thái", uu_tien: "Ưu tiên", nguon: "Nguồn", giai_doan: "Giai đoạn" };
   var ENUM = { loai_cong_trinh: "siteType", uu_tien: "orderPriority", nguon: "orderSource", giai_doan: "projectStage", pham_vi_bao_tri: "contractScope" };
   function fieldVal(type, k, v) {
     if (k === "loai") return opt({ phieu: "orderType", thang_may: "unitType", hop_dong: "contractType" }[type], v);
@@ -632,7 +676,7 @@
       } else if (type === "hop_dong") {
         chipsTop = [chip(opt("contractType", r.loai), "plain"), chip(opt("contractStatus", r.trang_thai), r.trang_thai === "hieu_luc" ? "ok" : "")];
         if (isAdmin() && r.loai === "bao_tri" && r.trang_thai === "hieu_luc") acts.push(h("button", { class: "btn primary", onclick: function () { generateForm(r); } }, [icon("wrench", 16), "Sinh phiếu bảo trì định kỳ"]));
-        facts = [fact("Giá trị", fmtM(r.gia_tri), fmtN(r.gia_tri) + " VND"), countdown("Hết hạn sau", r.ngay_het_han, 365), fact("Số thang", String(R.thang_may.length)), fact("Tần suất", r.tan_suat_bao_tri_thang ? r.tan_suat_bao_tri_thang + " lần/tháng" : "—", r.sla_phan_hoi_gio ? "SLA " + r.sla_phan_hoi_gio + " giờ" : null)];
+        facts = [fact("Giá trị", fmtM(r.gia_tri), fmtN(r.gia_tri) + " VND"), countdown("Hết hạn sau", r.ngay_het_han, 365), fact("Số thang", String(R.thang_may.length)), fact("Chu kỳ bảo trì", r.chu_ky_bao_tri_thang ? (Number(r.chu_ky_bao_tri_thang) === 1 ? "Hằng tháng" : "Mỗi " + r.chu_ky_bao_tri_thang + " tháng") : "—", r.ngay_ky ? "Ký ngày " + fmtD(r.ngay_ky) : null)];
         extra = [R.site ? relList("Công trình", "cong_trinh", [R.site], function (s) { return [s.name, s.dia_chi || "", null]; }) : null, relList("Thang máy trong hợp đồng", "thang_may", R.thang_may, function (u) { return [u.name, u.vi_tri || "", chip(opt("unitStatus", u.trang_thai))]; }), R.du_an.length ? relList("Dự án", "du_an", R.du_an, function (p) { return [p.name, "", chip(opt("projectStage", p.giai_doan), "info")]; }) : null, relList("Phiếu dịch vụ", "phieu", R.phieu, ordLine)];
       } else if (type === "du_an") {
         chipsTop = [chip(opt("projectStage", r.giai_doan), "info")];
@@ -676,7 +720,7 @@
   }
   function createSiteForm() { form("Thêm công trình", [{ k: "name", label: "Tên công trình" }, { k: "dia_chi", label: "Địa chỉ" }, { k: "tinh_thanh", label: "Tỉnh/Thành" }, { k: "loai_cong_trinh", label: "Loại công trình", t: "select", options: M.options.siteType }, { k: "so_tang", label: "Số tầng", t: "number" }, { k: "ten_chu_dau_tu", label: "Chủ đầu tư" }, { k: "nguoi_lien_he", label: "Người liên hệ" }, { k: "sdt_lien_he", label: "SĐT liên hệ", t: "tel" }], function (v) { return post("/api/site", v); }, "Lưu", "Đã thêm công trình"); }
   function createUnitForm(siteId) { getList("cong_trinh").then(function (sites) { form("Thêm thang máy", [{ k: "name", label: "Mã thang (vd ELX-HP-0001)" }, { k: "cong_trinh_id", label: "Công trình", t: "select", options: optsOf(sites), v: siteId }, { k: "vi_tri", label: "Vị trí (khối/lối)" }, { k: "loai", label: "Loại thang", t: "select", options: M.options.unitType, v: "hanh_khach" }, { k: "hang", label: "Hãng", v: "ELUX" }, { k: "model", label: "Model" }, { k: "so_serial", label: "Số serial" }, { k: "tai_trong_kg", label: "Tải trọng (kg)", t: "number" }, { k: "so_diem_dung", label: "Số điểm dừng", t: "number" }, { k: "ngay_ban_giao", label: "Ngày bàn giao (nếu đã bàn giao)", t: "date" }, { k: "bao_hanh_thang", label: "Bảo hành (tháng)", t: "number", v: 12 }, { k: "chu_ky_kiem_dinh_thang", label: "Chu kỳ kiểm định (tháng)", t: "number", v: 12 }, { k: "ngay_kiem_dinh_ke_tiep", label: "Kiểm định kế tiếp", t: "date" }], function (v) { return post("/api/unit", v); }, "Lưu", "Đã thêm thang"); }); }
-  function createContractForm() { Promise.all([getList("cong_trinh"), getList("thang_may")]).then(function (a) { form("Thêm hợp đồng", [{ k: "name", label: "Số hợp đồng" }, { k: "loai", label: "Loại", t: "select", options: M.options.contractType }, { k: "ten_khach_hang", label: "Khách hàng" }, { k: "cong_trinh_id", label: "Công trình", t: "select", options: optsOf(a[0]) }, { k: "thang_may_ids", label: "Thang trong hợp đồng", t: "multi", options: optsOf(a[1], function (u) { return u.name + (u.site ? " — " + u.site : "") + (u.hop_dong ? " (đã có HĐ " + u.hop_dong + ")" : ""); }) }, { k: "gia_tri", label: "Giá trị (VND)", t: "number" }, { k: "ngay_hieu_luc", label: "Hiệu lực từ", t: "date", v: M.today }, { k: "ngay_het_han", label: "Hết hạn", t: "date" }, { k: "pham_vi_bao_tri", label: "Phạm vi bảo trì", t: "select", options: M.options.contractScope }, { k: "tan_suat_bao_tri_thang", label: "Tần suất bảo trì (lần/tháng)", t: "number", v: 1 }, { k: "sla_phan_hoi_gio", label: "SLA phản hồi (giờ)", t: "number" }, { k: "ngay_du_kien_ban_giao", label: "Dự kiến bàn giao (hợp đồng lắp đặt)", t: "date" }], function (v) { return post("/api/contract", v); }, "Lưu", function (r) { return r.projectId ? "Đã tạo hợp đồng + dự án" : "Đã tạo hợp đồng"; }); }); }
+  function createContractForm() { Promise.all([getList("cong_trinh"), getList("thang_may")]).then(function (a) { form("Thêm hợp đồng", [{ k: "name", label: "Số hợp đồng" }, { k: "loai", label: "Loại", t: "select", options: M.options.contractType }, { k: "ten_khach_hang", label: "Khách hàng" }, { k: "sdt_thong_bao", label: "SĐT nhận thông báo (Zalo)", t: "tel" }, { k: "cong_trinh_id", label: "Công trình", t: "select", options: optsOf(a[0]) }, { k: "thang_may_ids", label: "Thang trong hợp đồng", t: "multi", options: optsOf(a[1], function (u) { return u.name + (u.site ? " — " + u.site : "") + (u.hop_dong ? " (đã có HĐ " + u.hop_dong + ")" : ""); }) }, { k: "gia_tri", label: "Giá trị (VND)", t: "number" }, { k: "ngay_ky", label: "Ngày ký", t: "date" }, { k: "ngay_hieu_luc", label: "Hiệu lực từ", t: "date", v: M.today }, { k: "ngay_het_han", label: "Hết hạn", t: "date" }, { k: "pham_vi_bao_tri", label: "Phạm vi bảo trì", t: "select", options: M.options.contractScope }, { k: "chu_ky_bao_tri_thang", label: "Chu kỳ bảo trì (tháng giữa 2 lần: 1 = hằng tháng, 3 = mỗi quý)", t: "number", v: 1 }, { k: "ngay_du_kien_ban_giao", label: "Dự kiến bàn giao (hợp đồng lắp đặt)", t: "date" }], function (v) { return post("/api/contract", v); }, "Lưu", function (r) { return r.projectId ? "Đã tạo hợp đồng + dự án" : "Đã tạo hợp đồng"; }); }); }
   function generateForm(c) { form("Sinh phiếu bảo trì định kỳ — " + c.name, [{ k: "from", label: "Từ ngày", t: "date", v: M.today }, { k: "months", label: "Số tháng", t: "number", v: 3 }], function (v) { return post("/api/contract/generate", { id: c.id, from: v.from, months: Number(v.months) }); }, "Sinh phiếu", function (r) { return "Đã tạo " + r.created + " phiếu" + (r.remaining ? " — còn " + r.remaining + ", bấm lại để tiếp tục" : ""); }); }
   function scheduleForm(u) { form("Lên lịch kiểm định — " + u.name, [{ k: "ngay", label: "Ngày kiểm định", t: "date" }, { k: "don_vi_kiem_dinh", label: "Đơn vị kiểm định" }], function (v) { return post("/api/inspection/schedule", { unitId: u.id, ngay: v.ngay, don_vi_kiem_dinh: v.don_vi_kiem_dinh }); }, "Lên lịch", "Đã lên lịch kiểm định"); }
   function inspectionForm(k) { form("Ghi kết quả kiểm định — " + k.name, [{ k: "ngay_kiem_dinh", label: "Ngày kiểm định", t: "date", v: k.ngay_kiem_dinh || M.today }, { k: "ket_qua", label: "Kết quả", t: "select", options: M.options.inspectionResult }, { k: "ghi_chu", label: "Ghi chú", t: "textarea" }], function (v) { return post("/api/inspection/record", Object.assign({ id: k.id }, v)); }, "Lưu", function (r) { return r.next ? "Đã ghi — kiểm định kế tiếp " + fmtD(r.next) : "Đã ghi"; }); }

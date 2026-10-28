@@ -20,31 +20,38 @@ export function daysBetween(a, b) { const x = parse(a), y = parse(b); if (!x || 
 export const monthKey = (s) => String(s || "").slice(0, 7);
 
 // --- bảo trì định kỳ ------------------------------------------------------------------------------------
-// Từ 1 hợp đồng bảo trì + các thang nó phủ → danh sách phiếu CẦN tạo trong cửa sổ [from, from+months). Mỗi (hợp
-// đồng, thang, tháng, lần) có 1 "khoá sinh" cố định nên gọi lại nhiều lần không tạo trùng (đã có khoá → bỏ qua).
-// Tần suất = lần/tháng (mặc định 1): n lần/tháng chia đều trong tháng. Ngày hẹn bám ngày hiệu lực của hợp đồng.
+// Từ 1 hợp đồng bảo trì + các thang nó phủ → danh sách phiếu CẦN tạo trong cửa sổ [from, from+months). Chu kỳ = số THÁNG giữa
+// 2 lần bảo trì (1 = hằng tháng, 3 = mỗi quý...), tính từ tháng hiệu lực của hợp đồng; ngày hẹn bám ngày hiệu lực. Mỗi (hợp đồng,
+// thang, tháng) có 1 "khoá sinh" cố định nên gọi lại nhiều lần không tạo trùng (đã có khoá → bỏ qua).
+export const maintenanceCycle = (contract) => Math.max(1, Math.min(12, Math.round(Number(contract.chu_ky_bao_tri_thang) || 1)));
 export function planMaintenance({ contract, unitIds, from, months, existingKeys = new Set() }) {
   const out = [];
   const start = contract.ngay_hieu_luc, end = contract.ngay_het_han;
-  const freq = Math.max(1, Math.min(4, Math.round(Number(contract.tan_suat_bao_tri_thang) || 1)));
-  const anchorDay = parse(start)?.d || 1;
+  const cycle = maintenanceCycle(contract);
+  const anchor = parse(isDate(start) ? start : from);
   const fromP = parse(from); if (!fromP) throw new Error("Ngày bắt đầu không hợp lệ");
   for (let i = 0; i < months; i++) {
     const first = addMonths(toStr({ ...fromP, d: 1 }), i); const fp = parse(first);
-    for (let k = 0; k < freq; k++) {
-      const day = Math.min(daysInMonth(fp.y, fp.m), Math.min(28, anchorDay) + Math.floor((k * 28) / freq));
-      const date = toStr({ y: fp.y, m: fp.m, d: Math.min(day, daysInMonth(fp.y, fp.m)) });
-      if (date < from) continue;
-      if (isDate(start) && date < start) continue;
-      if (isDate(end) && date > end) continue;
-      for (const unitId of unitIds) {
-        const key = `PM:${contract.id}:${unitId}:${monthKey(date)}${freq > 1 ? `#${k + 1}` : ""}`;
-        if (existingKeys.has(key)) continue;
-        out.push({ key, unitId, date });
-      }
+    if ((((fp.y * 12 + fp.m) - (anchor.y * 12 + anchor.m)) % cycle + cycle) % cycle !== 0) continue; // không đúng tháng của chu kỳ
+    let date = toStr({ y: fp.y, m: fp.m, d: Math.min(daysInMonth(fp.y, fp.m), Math.min(28, anchor.d)) });
+    if (isDate(start) && date < start && monthKey(date) === monthKey(start)) date = start; // ngày hiệu lực 29–31: tháng đầu hẹn đúng ngày hiệu lực, không bị bỏ sót
+    if (date < from) continue;
+    if (isDate(start) && date < start) continue;
+    if (isDate(end) && date > end) continue;
+    for (const unitId of unitIds) {
+      const key = `PM:${contract.id}:${unitId}:${monthKey(date)}`;
+      if (existingKeys.has(key)) continue;
+      out.push({ key, unitId, date });
     }
   }
   return out;
+}
+
+// SĐT Việt Nam → dạng quốc tế (+84…) để GHL nhận diện/gộp contact; không hợp lệ thì trả null.
+export function toE164VN(p) {
+  const d = String(p || "").replace(/[^\d+]/g, "").replace(/^\+/, "");
+  const n = d.startsWith("84") ? d.slice(2) : d.startsWith("0") ? d.slice(1) : d;
+  return /^\d{8,10}$/.test(n) ? "+84" + n : null;
 }
 
 // --- kiểm định ------------------------------------------------------------------------------------------

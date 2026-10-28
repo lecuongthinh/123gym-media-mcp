@@ -13,6 +13,9 @@ import { OPTIONS, THRESHOLDS } from "./schema.mjs";
 import { createGhl } from "./ghl.mjs";
 import { todayVN, qrSign, qrVerify, makeLimiter, cleanText, flat } from "./logic.mjs";
 import * as svc from "./service.mjs";
+import * as notify from "./notify.mjs";
+
+let notifyStore; const store = () => (notifyStore ||= notify.dbStore());
 
 const APP = "service";
 const PAGE = new URL("./page.html", import.meta.url);
@@ -139,6 +142,16 @@ fetch(location.pathname.replace(/\\/q$/,"")+"/q/submit",{method:"POST",body:JSON
         return j({ ok: true, name: r.name });
       }
 
+      // --- Webhook thông báo: workflow contact của GHL gọi vào (khoá riêng từng sub-account trong URL) ---------------------
+      if (req.method === "POST" && sub === "/webhooks/notify") {
+        const loc = u.searchParams.get("loc");
+        if (!loc || !notify.notifyKeyValid(loc, u.searchParams.get("k"))) return j({ error: "Sai khoá hoặc trung tâm" }, 401);
+        if (!(await installed(loc))) return j({ ok: false, permanent: true, error: "Sub-account chưa cài app" });
+        let payload; try { payload = JSON.parse(await readBody(req)); } catch { return j({ ok: false, permanent: true, error: "invalid json" }); }
+        const r = await notify.handleNotify({ loc, payload, ghl: ghlFor(loc), store: store(), sendZns: notify.defaultSendZns });
+        return j(r.body, r.http);
+      }
+
       // --- Custom Page -----------------------------------------------------------------------------------------
       if (req.method === "GET" && (sub === "/" || sub === "/page")) {
         let page; try { page = fs.readFileSync(PAGE, "utf8"); } catch { return html(res, 500, shell("Lỗi", "Thiếu page.html")), true; }
@@ -188,6 +201,10 @@ fetch(location.pathname.replace(/\\/q$/,"")+"/q/submit",{method:"POST",body:JSON
             const sig = qrSign(qrSecret(), sess.locationId, id);
             return j({ url: `${publicModuleUrl(req, u)}/q?l=${encodeURIComponent(sess.locationId)}&u=${encodeURIComponent(id)}&s=${sig}` });
           }
+          if (sub === "/api/notify/templates") {
+            adminOnly();
+            return j({ templates: await notify.effectiveTemplates(store(), sess.locationId), subjects: notify.SUBJECTS, statuses: OPTIONS.orderStatus, webhookUrl: `${publicModuleUrl(req, u)}/webhooks/notify?loc=${encodeURIComponent(sess.locationId)}&k=${notify.notifyKey(sess.locationId)}` });
+          }
           if (sub === "/api/health") return j({ ok: true, pendingRelations: svc.pendingRelations() });
         }
         if (req.method === "POST") {
@@ -202,6 +219,10 @@ fetch(location.pathname.replace(/\\/q$/,"")+"/q/submit",{method:"POST",body:JSON
           if (sub === "/api/contract/generate") { adminOnly(); return j(await svc.generateMaintenance(ghl, cleanText(b.id, 40), b, today)); }
           if (sub === "/api/inspection/schedule") { adminOnly(); return j(await svc.scheduleInspection(ghl, cleanText(b.unitId, 40), b)); }
           if (sub === "/api/inspection/record") { adminOnly(); return j(await svc.recordInspection(ghl, cleanText(b.id, 40), b)); }
+          if (sub === "/api/notify/template") {
+            adminOnly(); let t; try { t = notify.validateTemplate(b); } catch (e) { throw new svc.UserError(e.message, e.status || 400); }
+            await store().save(sess.locationId, t); return j({ ok: true, template: t });
+          }
           if (sub === "/api/refresh") { ghl.invalidate(); return j({ ok: true }); }
         }
       }

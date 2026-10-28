@@ -2,7 +2,7 @@
 // kiểm định...) và kiểm tra đầu vào. Không đụng HTTP — index.mjs lo phần đó. Mọi giá trị ghi xuống GHL đều đi qua
 // các hàm kiểm tra ở đây (liệt kê cố định các field cho phép, enum chỉ nhận key hợp lệ).
 import { OBJ, OPTIONS, isOption, ORDER_CLOSED, INSPECTION_OPEN } from "./schema.mjs";
-import { flat, computeDashboard, computeCharts, computeSales, planMaintenance, nextInspectionDate, isDate, cleanText, orderNumber, addMonths } from "./logic.mjs";
+import { flat, computeDashboard, computeCharts, computeSales, planMaintenance, nextInspectionDate, isDate, cleanText, orderNumber, addMonths, toE164VN } from "./logic.mjs";
 
 export class UserError extends Error { constructor(m, status = 400) { super(m); this.status = status; } }
 const need = (cond, msg, status = 400) => { if (!cond) throw new UserError(msg, status); };
@@ -26,6 +26,8 @@ export async function getSales(ghl, today) {
 }
 
 const by = (arr) => new Map(arr.map((x) => [x.id, x]));
+// Các thang thuộc 1 hợp đồng: suy từ id hợp đồng ghi trên thang (hợp đồng bảo trì → hop_dong_bao_tri_id, hợp đồng lắp đặt → hop_dong_lap_dat_id).
+const unitsOf = (units, c) => units.filter((u) => (c.loai === "bao_tri" ? u.hop_dong_bao_tri_id : u.hop_dong_lap_dat_id) === c.id);
 const label = (group, key) => (OPTIONS[group].find(([k]) => k === key) || [])[1] || key || "";
 
 // Danh sách theo loại, đã gắn tên cha (công trình/thang) để hiển thị không cần gọi thêm.
@@ -35,7 +37,7 @@ export async function list(ghl, type) {
   switch (type) {
     case "thang_may": return d.units.map((u) => ({ ...u, site: S.get(u.cong_trinh_id)?.name || "", hop_dong: C.get(u.hop_dong_bao_tri_id)?.name || "", openOrders: d.orders.filter((o) => o.thang_may_id === u.id && !ORDER_CLOSED.includes(o.trang_thai)).length })).sort((a, b) => a.name.localeCompare(b.name));
     case "cong_trinh": return d.sites.map((s) => ({ ...s, units: d.units.filter((u) => u.cong_trinh_id === s.id).length })).sort((a, b) => a.name.localeCompare(b.name));
-    case "hop_dong": return d.contracts.map((c) => ({ ...c, site: S.get(c.cong_trinh_id)?.name || "", unitCount: String(c.thang_may_ids || "").split(",").filter(Boolean).length })).sort(byDate("ngay_het_han"));
+    case "hop_dong": return d.contracts.map((c) => ({ ...c, site: S.get(c.cong_trinh_id)?.name || "", unitCount: unitsOf(d.units, c).length })).sort(byDate("ngay_het_han"));
     case "phieu": return d.orders.map((o) => ({ ...o, unit: U.get(o.thang_may_id)?.name || "", site: S.get(o.cong_trinh_id)?.name || "" })).sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
     case "du_an": return d.projects.map((p) => ({ ...p, site: S.get(p.cong_trinh_id)?.name || "", hop_dong: C.get(p.hop_dong_id)?.name || "" })).sort(byDate("ngay_du_kien_ban_giao"));
     case "kiem_dinh": return d.inspections.map((k) => ({ ...k, unit: U.get(k.thang_may_id)?.name || "" })).sort(byDate("ngay_kiem_dinh"));
@@ -55,8 +57,7 @@ export async function detail(ghl, type, id) {
   } else if (type === "cong_trinh") {
     out.related = { thang_may: d.units.filter((u) => u.cong_trinh_id === id), hop_dong: d.contracts.filter((c) => c.cong_trinh_id === id), du_an: d.projects.filter((p) => p.cong_trinh_id === id), phieu: sortNew(d.orders.filter((o) => o.cong_trinh_id === id)).slice(0, 30) };
   } else if (type === "hop_dong") {
-    const ids = String(rec.thang_may_ids || "").split(",").filter(Boolean);
-    out.related = { site: S.get(rec.cong_trinh_id) || null, thang_may: ids.map((i) => U.get(i)).filter(Boolean), phieu: sortNew(d.orders.filter((o) => o.hop_dong_id === id)).slice(0, 60), du_an: d.projects.filter((p) => p.hop_dong_id === id) };
+    out.related = { site: S.get(rec.cong_trinh_id) || null, thang_may: unitsOf(d.units, rec), phieu: sortNew(d.orders.filter((o) => o.hop_dong_id === id)).slice(0, 60), du_an: d.projects.filter((p) => p.hop_dong_id === id) };
   } else if (type === "phieu") {
     out.related = { thang_may: U.get(rec.thang_may_id) || null, site: S.get(rec.cong_trinh_id) || null, hop_dong: C.get(rec.hop_dong_id) || null };
   } else if (type === "du_an") {
@@ -69,17 +70,23 @@ export async function detail(ghl, type, id) {
 
 // --- liên kết GHL (best-effort, không chặn thao tác: trường id đã là nguồn chính cho app) --------------------
 const bgQueue = []; let bgRunning = false;
-export function relateLater(ghl, assocKey, ids, extra) {
-  bgQueue.push({ ghl, assocKey, ids, extra });
+function runLater(label, run) {
+  bgQueue.push({ label, run });
   if (bgRunning) return; bgRunning = true;
   (async () => {
     while (bgQueue.length) {
       const j = bgQueue.shift();
-      try { await j.ghl.relate(j.assocKey, j.ids, j.extra); } catch (e) { console.error(`[service] relate ${j.assocKey} lỗi:`, e.message); }
+      try { await j.run(); } catch (e) { console.error(`[service] ${j.label} lỗi:`, e.message); }
       await new Promise((r) => setTimeout(r, 250));
     }
     bgRunning = false;
   })();
+}
+export const relateLater = (ghl, assocKey, ids, extra) => runLater(`relate ${assocKey}`, () => ghl.relate(assocKey, ids, extra));
+// Tìm-hoặc-tạo contact theo SĐT rồi liên kết với bản ghi (để workflow chăm sóc của GHL chạy được trên contact). SĐT không hợp lệ thì bỏ qua.
+export function contactLater(ghl, assocKey, selfObject, selfId, { name, phone }) {
+  const p = toE164VN(phone); if (!p) return;
+  runLater(`contact ${assocKey}`, async () => { const cid = await ghl.upsertContact({ name, phone: p }); await ghl.relate(assocKey, { [selfObject]: selfId, contact: cid }); });
 }
 export const pendingRelations = () => bgQueue.length;
 
@@ -121,22 +128,25 @@ export async function createContract(ghl, i, today) {
   if (ngayHL && ngayHH) need(ngayHH >= ngayHL, "Ngày hết hạn phải sau ngày hiệu lực");
   if (loai === "bao_tri") need(unitIds.length > 0 && ngayHL && ngayHH, "Hợp đồng bảo trì cần chọn thang + ngày hiệu lực + ngày hết hạn");
   const status = opt("contractStatus", i.trang_thai, "Trạng thái") || "hieu_luc";
+  const cycle = loai === "bao_tri" ? (num(i.chu_ky_bao_tri_thang, "Chu kỳ bảo trì") ?? 1) : undefined;
+  if (cycle !== undefined) need(Number.isInteger(cycle) && cycle >= 1 && cycle <= 12, "Chu kỳ bảo trì từ 1 đến 12 tháng");
   if (loai === "bao_tri" && status === "hieu_luc") for (const u of units) if (u.hop_dong_bao_tri_id) { const old = d.contracts.find((c) => c.id === u.hop_dong_bao_tri_id); if (old && old.trang_thai === "hieu_luc") throw new UserError(`Thang ${u.name} đã thuộc hợp đồng bảo trì ${old.name} đang hiệu lực`); }
   const rec = await ghl.createRecord(OBJ.contract, clean({
     name, loai, trang_thai: status, gia_tri: num(i.gia_tri, "Giá trị"), ngay_hieu_luc: ngayHL, ngay_het_han: ngayHH,
-    pham_vi_bao_tri: opt("contractScope", i.pham_vi_bao_tri, "Phạm vi"), tan_suat_bao_tri_thang: num(i.tan_suat_bao_tri_thang, "Tần suất"), sla_phan_hoi_gio: num(i.sla_phan_hoi_gio, "SLA"),
-    ten_khach_hang: str(i.ten_khach_hang, 150), cong_trinh_id: site?.id, thang_may_ids: unitIds.join(","), so_hoa_don_ghl: str(i.so_hoa_don_ghl, 60),
+    ngay_ky: date(i.ngay_ky, "Ngày ký"), pham_vi_bao_tri: opt("contractScope", i.pham_vi_bao_tri, "Phạm vi"), chu_ky_bao_tri_thang: cycle,
+    ten_khach_hang: str(i.ten_khach_hang, 150), sdt_thong_bao: str(i.sdt_thong_bao, 30), cong_trinh_id: site?.id,
   }));
+  if (i.sdt_thong_bao) contactLater(ghl, "hop_dong_nguoi_ky", OBJ.contract, rec.id, { name: str(i.ten_khach_hang, 150), phone: i.sdt_thong_bao });
   if (site) relateLater(ghl, "hop_dong_cong_trinh", { [OBJ.contract]: rec.id, [OBJ.site]: site.id });
   for (const u of units) {
     relateLater(ghl, "hop_dong_thang_may", { [OBJ.contract]: rec.id, [OBJ.unit]: u.id });
     if (loai === "bao_tri" && status === "hieu_luc") await ghl.updateRecord(OBJ.unit, u.id, { hop_dong_bao_tri_id: rec.id, trang_thai: "dang_bao_tri" });
+    else if (loai === "mua_ban_lap_dat") await ghl.updateRecord(OBJ.unit, u.id, { hop_dong_lap_dat_id: rec.id });
   }
   let projectId = null;
   if (loai === "mua_ban_lap_dat" && i.tao_du_an !== false) {
     const p = await ghl.createRecord(OBJ.project, clean({ name: `Lắp đặt — ${name}`, giai_doan: "ky_hd", ngay_du_kien_ban_giao: date(i.ngay_du_kien_ban_giao, "Ngày dự kiến bàn giao"), quan_ly_du_an: str(i.quan_ly_du_an, 100), cong_trinh_id: site?.id, hop_dong_id: rec.id }));
     projectId = p.id; relateLater(ghl, "du_an_hop_dong", { [OBJ.project]: p.id, [OBJ.contract]: rec.id });
-    if (site) relateLater(ghl, "du_an_cong_trinh", { [OBJ.project]: p.id, [OBJ.site]: site.id });
   }
   return { id: rec.id, projectId };
 }
@@ -153,6 +163,7 @@ export async function createOrder(ghl, i, { today, source = "ung_dung", actor = 
   }));
   relateLater(ghl, "phieu_thang_may", { [OBJ.order]: rec.id, [OBJ.unit]: unit.id });
   if (unit.hop_dong_bao_tri_id) relateLater(ghl, "phieu_hop_dong", { [OBJ.order]: rec.id, [OBJ.contract]: unit.hop_dong_bao_tri_id });
+  if (i.sdt_nguoi_bao) contactLater(ghl, "phieu_nguoi_bao", OBJ.order, rec.id, { name: str(i.nguoi_bao, 100) || actor, phone: i.sdt_nguoi_bao });
   return { id: rec.id, name: rec.properties?.name };
 }
 
@@ -192,7 +203,7 @@ export async function handoverProject(ghl, id, { ngay, bao_hanh_thang }, today) 
   const p = d.projects.find((x) => x.id === id); need(p, "Không tìm thấy dự án", 404);
   const c = d.contracts.find((x) => x.id === p.hop_dong_id); need(c, "Dự án chưa gắn hợp đồng");
   const handDate = date(ngay, "Ngày bàn giao") || today; const months = num(bao_hanh_thang, "Bảo hành (tháng)") ?? 12;
-  const unitIds = String(c.thang_may_ids || "").split(",").filter(Boolean); need(unitIds.length, "Hợp đồng chưa chọn thang nào");
+  const unitIds = unitsOf(d.units, c).map((u) => u.id); need(unitIds.length, "Hợp đồng chưa chọn thang nào");
   let n = 0;
   for (const uid of unitIds) {
     const u = d.units.find((x) => x.id === uid); if (!u) continue;
@@ -213,7 +224,7 @@ export async function generateMaintenance(ghl, contractId, { from, months }, tod
   need(c.loai === "bao_tri", "Chỉ hợp đồng bảo trì mới sinh phiếu định kỳ"); need(c.trang_thai === "hieu_luc", "Hợp đồng chưa hiệu lực");
   const m = Math.round(Number(months) || 3); need(m >= 1 && m <= 12, "Số tháng từ 1 đến 12");
   const start = date(from, "Từ ngày") || today;
-  const unitIds = String(c.thang_may_ids || "").split(",").filter((id) => d.units.some((u) => u.id === id));
+  const unitIds = unitsOf(d.units, c).map((u) => u.id);
   need(unitIds.length, "Hợp đồng chưa có thang hợp lệ");
   const existing = new Set(d.orders.map((o) => o.khoa_sinh).filter(Boolean));
   const plan = planMaintenance({ contract: c, unitIds, from: start, months: m, existingKeys: existing });

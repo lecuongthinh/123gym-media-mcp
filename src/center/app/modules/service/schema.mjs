@@ -18,7 +18,7 @@ export const OPTIONS = {
   orderSource: [["ung_dung", "Nhân viên nhập"], ["qr", "Quét QR"], ["dien_thoai", "Điện thoại"], ["dinh_ky", "Tự sinh định kỳ"]],
   siteType: [["chung_cu", "Chung cư"], ["van_phong", "Văn phòng"], ["khach_san", "Khách sạn"], ["benh_vien", "Bệnh viện"], ["nha_may", "Nhà máy"], ["trung_tam_thuong_mai", "Trung tâm thương mại"], ["nha_o", "Nhà ở"], ["khac", "Khác"]],
   unitType: [["hanh_khach", "Hành khách"], ["hang", "Chở hàng"], ["gia_dinh", "Gia đình"], ["thang_cuon", "Thang cuốn"], ["khac", "Khác"]],
-  unitStatus: [["chua_ban_giao", "Chưa bàn giao"], ["dang_bao_hanh", "Đang bảo hành"], ["dang_bao_tri", "Đang bảo trì"], ["het_hop_dong", "Hết hợp đồng"], ["ngung_hoat_dong", "Ngừng hoạt động"]],
+  unitStatus: [["chua_ban_giao", "Chưa bàn giao"], ["dang_bao_hanh", "Đang bảo hành"], ["dang_bao_tri", "Đang bảo trì"], ["ngoai_bao_hanh", "Ngoài bảo hành"], ["ngung_hoat_dong", "Ngừng hoạt động"]],
   contractType: [["mua_ban_lap_dat", "Mua bán - lắp đặt"], ["bao_tri", "Bảo trì"], ["cai_tao", "Cải tạo"], ["sua_chua", "Sửa chữa"]],
   contractScope: [["full", "Bảo trì toàn diện"], ["kiem_tra_boi_tron", "Kiểm tra và bôi trơn"]],
   contractStatus: [["du_thao", "Dự thảo"], ["hieu_luc", "Hiệu lực"], ["het_han", "Hết hạn"], ["huy", "Hủy"]],
