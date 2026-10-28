@@ -83,10 +83,15 @@ function runLater(label, run) {
   })();
 }
 export const relateLater = (ghl, assocKey, ids, extra) => runLater(`relate ${assocKey}`, () => ghl.relate(assocKey, ids, extra));
-// Tìm-hoặc-tạo contact theo SĐT rồi liên kết với bản ghi (để workflow chăm sóc của GHL chạy được trên contact). SĐT không hợp lệ thì bỏ qua.
-export function contactLater(ghl, assocKey, selfObject, selfId, { name, phone }) {
+// Gắn contact CÓ SẴN trong CRM (tìm theo SĐT) vào bản ghi, để workflow chăm sóc của GHL chạy được trên contact. Không tạo contact mới:
+// khách thường đã có từ lúc còn là cơ hội bán hàng; chưa có thì bỏ qua (nhân viên tạo trong CRM rồi gắn tay).
+export function linkContactLater(ghl, assocKey, selfObject, selfId, phone) {
   const p = toE164VN(phone); if (!p) return;
-  runLater(`contact ${assocKey}`, async () => { const cid = await ghl.upsertContact({ name, phone: p }); await ghl.relate(assocKey, { [selfObject]: selfId, contact: cid }); });
+  runLater(`contact ${assocKey}`, async () => {
+    const cid = await ghl.findContactByPhone(p);
+    if (!cid) { console.log(`[service] ${assocKey}: chưa có contact cho SĐT …${p.slice(-3)} trong CRM — bỏ qua`); return; }
+    await ghl.relate(assocKey, { [selfObject]: selfId, contact: cid });
+  });
 }
 export const pendingRelations = () => bgQueue.length;
 
@@ -136,7 +141,7 @@ export async function createContract(ghl, i, today) {
     ngay_ky: date(i.ngay_ky, "Ngày ký"), pham_vi_bao_tri: opt("contractScope", i.pham_vi_bao_tri, "Phạm vi"), chu_ky_bao_tri_thang: cycle,
     ten_khach_hang: str(i.ten_khach_hang, 150), sdt_thong_bao: str(i.sdt_thong_bao, 30), cong_trinh_id: site?.id,
   }));
-  if (i.sdt_thong_bao) contactLater(ghl, "hop_dong_nguoi_ky", OBJ.contract, rec.id, { name: str(i.ten_khach_hang, 150), phone: i.sdt_thong_bao });
+  if (i.sdt_thong_bao) linkContactLater(ghl, "hop_dong_nguoi_ky", OBJ.contract, rec.id, i.sdt_thong_bao);
   if (site) relateLater(ghl, "hop_dong_cong_trinh", { [OBJ.contract]: rec.id, [OBJ.site]: site.id });
   for (const u of units) {
     relateLater(ghl, "hop_dong_thang_may", { [OBJ.contract]: rec.id, [OBJ.unit]: u.id });
@@ -163,7 +168,6 @@ export async function createOrder(ghl, i, { today, source = "ung_dung", actor = 
   }));
   relateLater(ghl, "phieu_thang_may", { [OBJ.order]: rec.id, [OBJ.unit]: unit.id });
   if (unit.hop_dong_bao_tri_id) relateLater(ghl, "phieu_hop_dong", { [OBJ.order]: rec.id, [OBJ.contract]: unit.hop_dong_bao_tri_id });
-  if (i.sdt_nguoi_bao) contactLater(ghl, "phieu_nguoi_bao", OBJ.order, rec.id, { name: str(i.nguoi_bao, 100) || actor, phone: i.sdt_nguoi_bao });
   return { id: rec.id, name: rec.properties?.name };
 }
 

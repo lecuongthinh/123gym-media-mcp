@@ -6,7 +6,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function createGhl({ locationId, getToken, fetchImpl = globalThis.fetch, cacheMs = 15000, now = () => Date.now() }) {
   const cache = new Map(); // objectKey -> { at, rows }
-  let assocCache = null; const contactCache = new Map();
+  let assocCache = null;
 
   async function call(method, path, body, tries = 4) {
     let last;
@@ -111,12 +111,10 @@ export function createGhl({ locationId, getToken, fetchImpl = globalThis.fetch, 
       if (!f || !s) throw new Error(`Thiếu id cho ${assocKey}`);
       return call("POST", "/associations/relations", { locationId, associationId: a.id, firstRecordId: f, secondRecordId: s, ...extra });
     },
-    // Tìm-hoặc-tạo contact theo SĐT (GHL gộp theo số nên gọi lại không tạo trùng). Trả id contact; nhớ trong bộ nhớ để khỏi gọi lại.
-    async upsertContact({ name, phone }) {
-      if (contactCache.has(phone)) return contactCache.get(phone);
-      const j = await call("POST", "/contacts/upsert", { locationId, phone, ...(name ? { name } : {}) });
-      const id = j.contact?.id; if (!id) throw new Error("GHL không trả về contact");
-      contactCache.set(phone, id); return id;
+    // Tìm contact CÓ SẴN theo SĐT (chỉ đọc — không tạo). Trả id hoặc null. Cần scope contacts.readonly.
+    async findContactByPhone(phone) {
+      const j = await call("GET", `/contacts/lookup?locationId=${locationId}&phone=${encodeURIComponent(phone)}&limit=1`, undefined, 1);
+      return j.contacts?.[0]?.id || null;
     },
     // Danh sách nhân viên GHL của sub-account (để giao việc). Có thể thiếu scope users.readonly → trả [] chứ không làm hỏng app.
     async users() {
