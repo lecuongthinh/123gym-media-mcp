@@ -112,7 +112,7 @@ export function createGhl({ locationId, getToken, fetchImpl = globalThis.fetch, 
   return {
     locationId,
     listAll, pipelines, opportunities, uploadMedia,
-    async deleteMedia(id) { await call("DELETE", `/medias/${encodeURIComponent(id)}?altType=location&altId=${locationId}`, undefined, 1); },
+    async deleteMedia(id) { await call("DELETE", `/medias/${encodeURIComponent(id)}?altType=location`, undefined, 1); },
     async getRecord(objectKey, id) { return (await call("GET", `/objects/${objectKey}/records/${id}`)).record; },
     async createRecord(objectKey, properties) {
       const j = await call("POST", `/objects/${objectKey}/records`, { locationId, properties });
