@@ -61,7 +61,8 @@ export async function detail(ghl, type, id) {
   } else if (type === "hop_dong") {
     out.related = { site: S.get(rec.cong_trinh_id) || null, thang_may: unitsOf(d.units, rec), phieu: sortNew(d.orders.filter((o) => o.hop_dong_id === id)).slice(0, 60), du_an: d.projects.filter((p) => p.hop_dong_id === id) };
   } else if (type === "phieu") {
-    out.related = { thang_may: U.get(rec.thang_may_id) || null, site: S.get(rec.cong_trinh_id) || null, hop_dong: C.get(rec.hop_dong_id) || null };
+    out.related = { thang_may: U.get(rec.thang_may_id) || null, site: S.get(rec.cong_trinh_id) || null, hop_dong: C.get(rec.hop_dong_id) || null,
+      lich_su: sortNew(d.orders.filter((o) => o.thang_may_id === rec.thang_may_id && o.id !== id)).slice(0, 3) }; // 3 phiếu gần nhất của chính thang này
   } else if (type === "du_an") {
     const tasks = await loadTasks(ghl), mine = tasks ? sortTasks(tasks.filter((t) => t.du_an_id === id)) : [];
     out.related = { site: S.get(rec.cong_trinh_id) || null, hop_dong: C.get(rec.hop_dong_id) || null, tasks: mine, tasksAvailable: !!tasks, ...projectView(rec, tasks ? mine : null) };
@@ -175,10 +176,12 @@ export async function createOrder(ghl, i, { today, source = "ung_dung", actor = 
 }
 
 // Quyền cập nhật phiếu: quản trị sửa mọi thứ; nhân viên thường chỉ sửa phiếu của mình hoặc phiếu chưa ai nhận (để nhận việc).
+export async function getOrder(ghl, id) { const o = (await ghl.listAll(OBJ.order)).map(flat).find((x) => x.id === id); need(o, "Không tìm thấy phiếu", 404); return o; }
+// Phiếu của mình hoặc chưa ai nhận (để nhận việc).
+export const canWorkOn = (o, { isAdmin, me }) => isAdmin || !o.nguoi_phu_trach || (me.email && String(o.nguoi_phu_trach).toLowerCase().includes(me.email.toLowerCase())) || (me.name && String(o.nguoi_phu_trach).toLowerCase().includes(me.name.toLowerCase()));
 export async function updateOrder(ghl, id, patch, { today, isAdmin, me }) {
-  const cur = (await ghl.listAll(OBJ.order)).map(flat).find((o) => o.id === id); need(cur, "Không tìm thấy phiếu", 404);
-  const mine = !cur.nguoi_phu_trach || (me.email && String(cur.nguoi_phu_trach).toLowerCase().includes(me.email.toLowerCase())) || (me.name && String(cur.nguoi_phu_trach).toLowerCase().includes(me.name.toLowerCase()));
-  if (!isAdmin) need(mine, "Phiếu này đã giao cho người khác", 403);
+  const cur = await getOrder(ghl, id);
+  if (!isAdmin) need(canWorkOn(cur, { isAdmin, me }), "Phiếu này đã giao cho người khác", 403);
   const set = {};
   if (patch.trang_thai !== undefined) {
     set.trang_thai = opt("orderStatus", patch.trang_thai, "Trạng thái"); need(set.trang_thai, "Trạng thái không hợp lệ");
@@ -235,10 +238,13 @@ export async function generateMaintenance(ghl, contractId, { from, months }, tod
   need(unitIds.length, "Hợp đồng chưa có thang hợp lệ");
   const existing = new Set(d.orders.map((o) => o.khoa_sinh).filter(Boolean));
   const plan = planMaintenance({ contract: c, unitIds, from: start, months: m, existingKeys: existing });
+  return createPmOrders(ghl, d, plan.map((p) => ({ ...p, contract: c })), today);
+}
+async function createPmOrders(ghl, d, plan, today) {
   const batch = plan.slice(0, MAX_GENERATE); let created = 0; const failed = [];
   for (let i = 0; i < batch.length; i += 3) {
     await Promise.all(batch.slice(i, i + 3).map(async (p) => {
-      const u = d.units.find((x) => x.id === p.unitId);
+      const u = d.units.find((x) => x.id === p.unitId), c = p.contract;
       try {
         const rec = await ghl.createRecord(OBJ.order, clean({
           name: orderNumber(today), loai: "bao_tri_dinh_ky", uu_tien: "binh_thuong", trang_thai: "moi", nguon: "dinh_ky", ngay_hen: p.date, khoa_sinh: p.key,
@@ -250,6 +256,23 @@ export async function generateMaintenance(ghl, contractId, { from, months }, tod
     }));
   }
   return { created, remaining: plan.length - batch.length + failed.length, planned: plan.length, failed };
+}
+// Phiếu bảo trì SẮP ĐẾN KỲ (trong `days` ngày tới) mà chưa được tạo — để quản lý tạo hết bằng 1 chạm thay vì đi từng hợp đồng.
+function pmDuePlan(d, today, days) {
+  const end = new Date(Date.parse(today + "T00:00:00Z") + days * 86400000).toISOString().slice(0, 10);
+  const existing = new Set(d.orders.map((o) => o.khoa_sinh).filter(Boolean)); const plan = [];
+  for (const c of d.contracts.filter((x) => x.loai === "bao_tri" && x.trang_thai === "hieu_luc")) {
+    const unitIds = unitsOf(d.units, c).map((u) => u.id); if (!unitIds.length) continue;
+    for (const p of planMaintenance({ contract: c, unitIds, from: today, months: 3, existingKeys: existing })) if (p.date <= end) plan.push({ ...p, contract: c });
+  }
+  return plan.sort((a, b) => a.date.localeCompare(b.date));
+}
+export async function maintenanceDue(ghl, today, { days = 45 } = {}) {
+  const plan = pmDuePlan(await loadAll(ghl), today, days);
+  return { orders: plan.length, contracts: new Set(plan.map((p) => p.contract.id)).size, firstDate: plan[0]?.date || null };
+}
+export async function generateAllDue(ghl, today, { days = 45 } = {}) {
+  const d = await loadAll(ghl); return createPmOrders(ghl, d, pmDuePlan(d, today, days), today);
 }
 
 // Kiểm định: lên lịch / ghi kết quả. Kết quả đạt → tự tính ngày kiểm định kế tiếp theo chu kỳ riêng của thang.

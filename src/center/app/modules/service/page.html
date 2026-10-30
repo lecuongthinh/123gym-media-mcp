@@ -192,6 +192,22 @@
   tr.phase td { background:var(--surface2); font-weight:700; font-size:12.5px; } tr.phase .pc { float:right; color:var(--mut); font-weight:600; }
   .ga { position:absolute; top:24px; height:4px; border-radius:2px; background:var(--goodtx); } .ga.over { background:var(--badtx); }
   .gn { position:absolute; top:8px; font-size:11px; color:var(--mut); white-space:nowrap; pointer-events:none; }
+
+  .btn.sos { background:var(--bad); border-color:transparent; color:#fff; } .btn.sos:hover { background:var(--bad); filter:brightness(1.08); }
+  .navlab { margin:14px 12px 4px; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:#8d9bd0; }
+  .me[title] { cursor:pointer; }
+  .vai { display:grid; gap:10px; } .vai .opt { display:flex; gap:12px; align-items:center; padding:14px; border:1.5px solid var(--line2); border-radius:14px; cursor:pointer; background:var(--surface); } .vai .opt:hover { border-color:var(--acc); } .vai .opt.on { border-color:var(--acc); background:var(--accbg); } .vai .opt b { display:block; } .vai .opt small { color:var(--mut); }
+  .guide { margin:0; padding-left:20px; display:grid; gap:6px; line-height:1.5; }
+  .pk { display:grid; gap:6px; } .pkl { border:1px solid var(--line2); border-radius:11px; overflow:hidden; } .pko { padding:11px 12px; cursor:pointer; border-bottom:1px solid var(--line); } .pko:last-child { border-bottom:0; } .pko:hover { background:var(--accbg); } .pko.none { color:var(--mut); cursor:default; } .pkv { display:flex; align-items:center; gap:8px; justify-content:space-between; padding:9px 12px; border-radius:11px; background:var(--accbg); } .pkv:empty { display:none; }
+  .bigsearch { width:100%; box-sizing:border-box; font-size:18px; padding:16px 18px; border-radius:14px; border:2px solid var(--line2); background:var(--surface); color:var(--ink); } .bigsearch:focus { outline:none; border-color:var(--acc); }
+  .asg { display:flex; gap:6px; align-items:center; } .asg select { max-width:190px; }
+  .rp { display:grid; gap:14px; } .ck { padding:11px 0; border-bottom:1px solid var(--line); } .ck:last-child { border-bottom:0; } .ckg { margin:12px 0 0; font-size:12px; letter-spacing:.06em; text-transform:uppercase; color:var(--mut); font-weight:700; }
+  .ckb { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:8px; } .ckb button { min-height:46px; border-radius:12px; border:1.5px solid var(--line2); background:var(--surface); font-weight:700; font-size:14.5px; color:var(--ink2); cursor:pointer; } .ckb button.on.dat { background:var(--goodbg); border-color:var(--good); color:var(--goodtx); } .ckb button.on.khong_dat { background:var(--badbg); border-color:var(--bad); color:var(--badtx); } .ckb button.on.na { background:var(--surface2); border-color:var(--mut); color:var(--ink); }
+  .ck input.note { width:100%; box-sizing:border-box; margin-top:8px; }
+  .phs { display:flex; flex-wrap:wrap; gap:8px; } .ph { position:relative; width:92px; height:92px; border-radius:12px; overflow:hidden; background:var(--surface2); border:1px solid var(--line2); } .ph img { width:100%; height:100%; object-fit:cover; display:block; } .ph button { position:absolute; top:3px; right:3px; width:26px; height:26px; border-radius:50%; border:0; background:rgba(0,0,0,.65); color:#fff; cursor:pointer; line-height:1; }
+  .sigpad { width:100%; height:150px; border:1.5px dashed var(--line2); border-radius:12px; background:#fff; touch-action:none; display:block; }
+  .rpmiss { background:var(--warnbg); color:var(--warntx); border-radius:12px; padding:10px 14px; font-size:13.5px; } .rpmiss ul { margin:4px 0 0; padding-left:18px; } .rpok { background:var(--goodbg); color:var(--goodtx); border-radius:12px; padding:10px 14px; font-weight:650; }
+  .doc .photos { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:12px; } .doc .photos img { width:100%; border:1px solid #bbb; } .doc .sigimg { max-height:90px; max-width:100%; } .doc table.chk td { font-size:13px; padding:5px 8px; } .doc h2 { font-size:14px; margin:16px 0 6px; }
 </style>
 </head>
 <body>
@@ -271,9 +287,9 @@
       .then(function (j) { if (!j.token) throw new Error(j.error || "Không đăng nhập được"); return j; });
   }
   function boot() {
-    var go = function (j) { token = j.token; return api("/api/meta").then(function (m) { M = m; if (!/^#\/\w+/.test(location.hash)) view = { tab: M.role === "admin" ? "sales" : "my" }; mount(); render(); }); };
+    var go = function (j) { token = j.token; return api("/api/meta").then(function (m) { M = m; if (!/^#\/\w+/.test(location.hash)) view = { tab: homeTab() }; mount(); render(); if (isAdmin() && !vai()) vaiSheet(true); }); };
     if (window.__DEMO_API) {
-      var enter = function (role) { return api("/api/dev-login", { method: "POST", body: JSON.stringify({ role: role }) }).then(function (j) { token = j.token; return api("/api/meta"); }).then(function (m) { M = m; cache = {}; view = { tab: m.role === "admin" ? "sales" : "my" }; mount(); render(); }); };
+      var enter = function (role) { return api("/api/dev-login", { method: "POST", body: JSON.stringify({ role: role }) }).then(function (j) { token = j.token; return api("/api/meta"); }).then(function (m) { M = m; cache = {}; view = { tab: homeTab() }; mount(); render(); }); };
       window.__demoEnter = enter;
       gate([logoBlock(), h("h1", {}, "ELUX — Quản lý dự án & dịch vụ"), h("p", {}, "Bản demo với dữ liệu mẫu. Chọn vai trò để xem:"), h("button", { class: "btn primary", onclick: function () { enter("admin"); } }, "Quản lý / văn phòng"), h("button", { class: "btn", onclick: function () { enter("user"); } }, "Kỹ thuật viên (trên điện thoại)")]);
       return;
@@ -284,10 +300,42 @@
   }
   var isAdmin = function () { return M.role === "admin"; };
 
+  /* ===== vai xem: chỉ đổi màn hình đầu + menu cho gọn, KHÔNG phải phân quyền (quyền vẫn là quản trị / kỹ thuật) ===== */
+  var fold = function (s) { return String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").replace(/Đ/g, "d").toLowerCase(); };
+  var lsGet = function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } };
+  var lsSet = function (k, v) { try { localStorage.setItem(k, v); } catch (e) {} };
+  var VAI = [["dieu_phoi", "Điều phối", "Nhận cuộc gọi, tạo phiếu, giao thợ"], ["sales", "Kinh doanh", "Cơ hội, hợp đồng, gia hạn bảo trì"], ["quan_ly", "Quản lý", "Việc cần xử lý, dự án, kiểm định"], ["ky_thuat", "Kỹ thuật", "Nhận việc và làm tại hiện trường"]];
+  var VAI_ICON = { dieu_phoi: "phone", sales: "sales", quan_ly: "dash", ky_thuat: "wrench" };
+  var VAI_HOME = { dieu_phoi: "dp", sales: "sales", quan_ly: "dash", ky_thuat: "my" };
+  var VAI_TABS = { dieu_phoi: ["dp", "phieu", "thang_may", "cong_trinh", "hop_dong"], sales: ["sales", "hop_dong", "thang_may", "cong_trinh", "du_an"], quan_ly: ["dash", "du_an", "phieu", "hop_dong", "kiem_dinh", "thang_may", "cong_trinh"], ky_thuat: ["my", "phieu", "thang_may", "du_an"] };
+  var VAI_BOTTOM = { dieu_phoi: ["dp", "phieu", "thang_may", "hop_dong"], sales: ["sales", "hop_dong", "thang_may", "du_an"], quan_ly: ["dash", "phieu", "du_an", "kiem_dinh"], ky_thuat: ["my", "phieu", "thang_may", "du_an"] };
+  var vai = function () { if (!isAdmin()) return "ky_thuat"; var v = lsGet("svc.vai"); return VAI.some(function (x) { return x[0] === v; }) ? v : null; };
+  var curVai = function () { return vai() || "quan_ly"; };
+  var vaiLabel = function () { return VAI.filter(function (x) { return x[0] === curVai(); })[0][1]; };
+  var homeTab = function () { return VAI_HOME[curVai()]; };
+  var GUIDE = {
+    dieu_phoi: ["Có cuộc gọi: gõ mã thang hoặc tên tòa nhà vào ô tìm, rồi bấm “Báo sự cố”.", "Giao thợ ngay ở mục “Chưa giao”: chọn người, bấm Giao.", "Phiếu khẩn hoặc quá hạn nằm ở mục đỏ — xử lý trước."],
+    ky_thuat: ["Bấm “Nhận việc” ở phiếu được giao.", "Đến nơi bấm “Đã đến, bắt đầu”.", "Làm xong từng mục checklist, chụp ảnh, nhờ khách ký.", "Bấm “Hoàn thành” — kết quả tự ghi theo checklist."],
+    sales: ["Mở “Việc hôm nay”: cơ hội chờ ký, cơ hội đứng im, thang hết bảo hành.", "Cơ hội chờ ký: bấm vào dòng để lập hợp đồng (đã điền sẵn).", "Thang hết bảo hành: bấm vào dòng để lập hợp đồng bảo trì."],
+    quan_ly: ["Đọc thẻ trên cùng: có sự cố khẩn hoặc phiếu quá hạn không.", "Bấm vào dòng trong mục “Cần chú ý” để xử lý ngay.", "Thẻ “Phiếu bảo trì sắp đến kỳ”: bấm một lần để tạo hết.", "Dự án trễ: mở dự án xem việc quá hạn."],
+  };
+  function guideCard(v) {
+    if (lsGet("svc.guide." + v) === "1") return null;
+    var c = card("Cách làm việc — " + VAI.filter(function (x) { return x[0] === v; })[0][1], null, h("ol", { class: "guide" }, GUIDE[v].map(function (t) { return h("li", {}, t); })), h("button", { class: "btn sm", onclick: function () { lsSet("svc.guide." + v, "1"); c.remove(); } }, "Đã hiểu"));
+    return c;
+  }
+  function vaiSheet(first) {
+    var modal = h("div", { class: "modal", onclick: function (e) { if (!first && e.target === modal) modal.remove(); } });
+    modal.appendChild(h("div", { class: "box" }, [h("h2", {}, first ? "Bạn thường làm việc gì?" : "Đổi vai làm việc"), h("div", { class: "sub", style: "color:var(--mut)" }, "Chỉ đổi màn hình đầu và menu cho gọn, không đổi quyền. Đổi lại bất cứ lúc nào."),
+      h("div", { class: "vai" }, VAI.map(function (x) { return h("div", { class: "opt" + (vai() === x[0] ? " on" : ""), role: "button", tabindex: "0", onclick: function () { lsSet("svc.vai", x[0]); modal.remove(); nav({ tab: VAI_HOME[x[0]] }); } }, [h("span", { class: "ico" }, icon(VAI_ICON[x[0]], 20)), h("div", {}, [h("b", {}, x[1]), h("small", {}, x[2])])]); })),
+      first ? null : h("button", { class: "btn ghost sm", onclick: function () { VAI.forEach(function (x) { lsSet("svc.guide." + x[0], "0"); }); modal.remove(); render(); toast("Đã bật lại hướng dẫn"); } }, "Hiện lại hướng dẫn")]));
+    document.body.appendChild(modal);
+  }
+
   /* ===== điều hướng + khung ===== */
-  var TABS = [["sales", "Kinh doanh", "sales"], ["dash", "Vận hành", "dash"], ["my", "Việc của tôi", "my"], ["phieu", "Phiếu dịch vụ", "phieu"], ["thang_may", "Thang máy", "thang_may"], ["cong_trinh", "Công trình", "cong_trinh"], ["hop_dong", "Hợp đồng", "hop_dong"], ["du_an", "Dự án", "du_an"], ["kiem_dinh", "Kiểm định", "kiem_dinh"], ["tasktpl", "Mẫu công việc", "du_an"], ["notify", "Mẫu tin", "bell"]];
-  var tabsFor = function () { return TABS.filter(function (t) { return isAdmin() || (t[0] !== "sales" && t[0] !== "notify" && t[0] !== "tasktpl"); }); };
-  var bottomFor = function () { return isAdmin() ? ["sales", "dash", "phieu", "thang_may"] : ["my", "phieu", "thang_may", "dash"]; };
+  var TABS = [["dp", "Điều phối", "phone"], ["sales", "Kinh doanh", "sales"], ["dash", "Vận hành", "dash"], ["my", "Việc của tôi", "my"], ["phieu", "Phiếu dịch vụ", "phieu"], ["thang_may", "Thang máy", "thang_may"], ["cong_trinh", "Công trình", "cong_trinh"], ["hop_dong", "Hợp đồng", "hop_dong"], ["du_an", "Dự án", "du_an"], ["kiem_dinh", "Kiểm định", "kiem_dinh"], ["tasktpl", "Mẫu công việc", "du_an"], ["cktpl", "Mẫu checklist", "check"], ["notify", "Mẫu tin", "bell"]];
+  var tabsFor = function () { return TABS.filter(function (t) { return isAdmin() || ["sales", "notify", "tasktpl", "cktpl", "dp"].indexOf(t[0]) < 0; }); };
+  var bottomFor = function () { var ok = tabsFor().map(function (t) { return t[0]; }); return VAI_BOTTOM[curVai()].filter(function (id) { return ok.indexOf(id) >= 0; }); };
   function nav(v) { view = v; location.hash = v.id ? "#/" + v.tab + "/" + v.id : "#/" + v.tab; render(); window.scrollTo(0, 0); }
   window.addEventListener("hashchange", function () { var m = /^#\/(\w+)(?:\/(\w+))?/.exec(location.hash); if (m && M && (m[1] !== view.tab || m[2] !== view.id)) { view = { tab: m[1], id: m[2] }; render(); } });
   var shell = {};
@@ -304,36 +352,44 @@
     document.addEventListener("keydown", function (e) { if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") { e.preventDefault(); inp.focus(); } });
     var demoBtn = M.demo ? h("button", { class: "btn sm", onclick: function () { window.__demoEnter(M.role === "admin" ? "user" : "admin"); } }, [icon("swap", 15), h("span", { class: "lb" }, M.role === "admin" ? "Xem như KTV" : "Xem như quản lý")]) : null;
     var side = h("aside", { class: "side" }, [h("div", { class: "logo" }, [h("i", {}, "EL"), h("div", {}, [h("b", {}, (M.brand || "ELUX").split(" · ")[0]), h("small", {}, "Quản lý dự án & dịch vụ")])]), shell.nav,
-      h("div", { class: "me" }, [h("div", { class: "av" }, initials(M.me.name)), h("div", {}, [h("b", {}, person(M.me.name) || "—"), h("small", {}, isAdmin() ? "Quản lý" : "Kỹ thuật viên")])])]);
-    var top = h("div", { class: "top" }, [shell.title, h("div", { class: "sp" }), h("div", { class: "search" }, [h("span", { class: "sico" }, icon("search", 16)), inp, h("kbd", {}, "⌘K"), shell.results]), demoBtn, h("button", { class: "btn ghost", title: "Làm mới dữ liệu", "aria-label": "Làm mới", onclick: function () { post("/api/refresh").then(function () { cache = {}; render(); toast("Đã làm mới"); }); } }, icon("refresh", 17))]);
+      h("div", { class: "me", title: isAdmin() ? "Đổi vai làm việc" : null, onclick: function () { if (isAdmin()) vaiSheet(); } }, [h("div", { class: "av" }, initials(M.me.name)), h("div", {}, [h("b", {}, person(M.me.name) || "—"), h("small", {}, vaiLabel() + (isAdmin() ? " · đổi" : ""))])])]);
+    var sosBtn = h("button", { class: "btn sos", "aria-label": "Báo sự cố", onclick: function () { createOrderForm(); } }, [icon("alert", 16), h("span", { class: "lb" }, "Báo sự cố")]);
+    var top = h("div", { class: "top" }, [shell.title, h("div", { class: "sp" }), sosBtn, h("div", { class: "search" }, [h("span", { class: "sico" }, icon("search", 16)), inp, h("kbd", {}, "⌘K"), shell.results]), demoBtn, h("button", { class: "btn ghost", title: "Làm mới dữ liệu", "aria-label": "Làm mới", onclick: function () { post("/api/refresh").then(function () { cache = {}; render(); toast("Đã làm mới"); }); } }, icon("refresh", 17))]);
     app.replaceChildren(h("div", { class: "app" }, [side, h("div", { class: "content" }, [M.demo ? h("div", { class: "demo" }, "BẢN DEMO — dữ liệu mẫu, thao tác chỉ lưu tạm trong trình duyệt và mất khi tải lại trang") : null, top, shell.main])]), shell.bnav);
   }
   function renderNav() {
-    shell.nav.replaceChildren.apply(shell.nav, tabsFor().map(function (t) { return h("a", { class: view.tab === t[0] ? "on" : "", onclick: function () { nav({ tab: t[0] }); } }, [icon(t[2], 18), t[1], t[0] === "my" && badge ? h("span", { class: "n" }, badge) : null]); }));
+    var allowed = tabsFor().map(function (t) { return t[0]; }), prim = VAI_TABS[curVai()].filter(function (id) { return allowed.indexOf(id) >= 0; });
+    var cfg = ["tasktpl", "cktpl", "notify"].filter(function (id) { return allowed.indexOf(id) >= 0 && prim.indexOf(id) < 0; });
+    var rest = allowed.filter(function (id) { return prim.indexOf(id) < 0 && cfg.indexOf(id) < 0 && id !== "dp"; });
+    var link = function (id) { var t = TABS.filter(function (x) { return x[0] === id; })[0]; return h("a", { class: view.tab === id ? "on" : "", onclick: function () { nav({ tab: id }); } }, [icon(t[2], 18), t[1], id === "my" && badge ? h("span", { class: "n" }, badge) : null]); };
+    var kids = prim.map(link);
+    if (rest.length) kids = kids.concat([h("div", { class: "navlab" }, "Khác")], rest.map(link));
+    if (cfg.length) kids = kids.concat([h("div", { class: "navlab" }, "Cấu hình")], cfg.map(link));
+    shell.nav.replaceChildren.apply(shell.nav, kids);
     var BOTTOM = bottomFor();
     var items = BOTTOM.map(function (id) { var t = TABS.filter(function (x) { return x[0] === id; })[0]; return h("a", { class: view.tab === id ? "on" : "", onclick: function () { nav({ tab: id }); } }, [icon(t[2], 21), t[1].replace("Phiếu dịch vụ", "Phiếu").replace("Việc của tôi", "Việc"), id === "my" && badge ? h("span", { class: "n" }, badge) : null]); });
     items.push(h("a", { class: BOTTOM.indexOf(view.tab) < 0 ? "on" : "", onclick: moreSheet }, [icon("more", 21), "Thêm"]));
     shell.bnav.replaceChildren.apply(shell.bnav, items);
   }
   function moreSheet() {
-    var modal = h("div", { class: "modal", onclick: function (e) { if (e.target === modal) modal.remove(); } }, h("div", { class: "box" }, [h("h2", {}, "Thêm")].concat(tabsFor().filter(function (t) { return bottomFor().indexOf(t[0]) < 0; }).map(function (t) { return h("div", { class: "it", onclick: function () { modal.remove(); nav({ tab: t[0] }); } }, [h("span", { class: "ico" }, icon(t[2], 18)), h("div", { class: "t" }, t[1])]); }))));
+    var modal = h("div", { class: "modal", onclick: function (e) { if (e.target === modal) modal.remove(); } }, h("div", { class: "box" }, [h("h2", {}, "Thêm"), isAdmin() ? h("div", { class: "it", onclick: function () { modal.remove(); vaiSheet(); } }, [h("span", { class: "ico" }, icon("user", 18)), h("div", { class: "t" }, "Đổi vai: " + vaiLabel())]) : null].concat(tabsFor().filter(function (t) { return bottomFor().indexOf(t[0]) < 0; }).map(function (t) { return h("div", { class: "it", onclick: function () { modal.remove(); nav({ tab: t[0] }); } }, [h("span", { class: "ico" }, icon(t[2], 18)), h("div", { class: "t" }, t[1])]); }))));
     document.body.appendChild(modal);
   }
   function runSearch(q) {
-    q = String(q || "").trim().toLowerCase(); var R = shell.results; if (!q) { R.style.display = "none"; return; }
+    q = fold(String(q || "").trim()); var R = shell.results; if (!q) { R.style.display = "none"; return; }
     var types = [["thang_may", "Thang máy", function (r) { return [r.name, r.site || ""]; }], ["cong_trinh", "Công trình", function (r) { return [r.name, r.dia_chi || ""]; }], ["hop_dong", "Hợp đồng", function (r) { return [r.name, r.ten_khach_hang || ""]; }], ["phieu", "Phiếu dịch vụ", function (r) { return [r.name, (r.unit || "") + " · " + (r.mo_ta || "").slice(0, 50)]; }]];
     Promise.all(types.map(function (t) { return getList(t[0]); })).then(function (all) {
-      var out = []; types.forEach(function (t, i) { var hits = all[i].filter(function (r) { return JSON.stringify(r).toLowerCase().indexOf(q) >= 0; }).slice(0, 4); if (hits.length) { out.push(h("div", { class: "grp" }, t[1])); hits.forEach(function (r) { var l = t[2](r); out.push(h("a", { onclick: function () { R.style.display = "none"; shell.input.value = ""; nav({ tab: t[0], id: r.id }); } }, [h("span", { class: "ico" }, icon(t[0], 16)), h("div", {}, [h("div", {}, l[0]), h("small", {}, l[1])])])); }); } });
+      var out = []; types.forEach(function (t, i) { var hits = all[i].filter(function (r) { return fold(JSON.stringify(r)).indexOf(q) >= 0; }).slice(0, 4); if (hits.length) { out.push(h("div", { class: "grp" }, t[1])); hits.forEach(function (r) { var l = t[2](r); out.push(h("a", { onclick: function () { R.style.display = "none"; shell.input.value = ""; nav({ tab: t[0], id: r.id }); } }, [h("span", { class: "ico" }, icon(t[0], 16)), h("div", {}, [h("div", {}, l[0]), h("small", {}, l[1])])])); }); } });
       R.replaceChildren.apply(R, out.length ? out : [h("div", { class: "empty" }, "Không có kết quả cho “" + q + "”")]); R.style.display = "";
     });
   }
-  var TITLE = { sales: "Kinh doanh", dash: "Vận hành & dịch vụ", my: "Việc của tôi", phieu: "Phiếu dịch vụ", thang_may: "Thang máy", cong_trinh: "Công trình", hop_dong: "Hợp đồng", du_an: "Dự án thi công", kiem_dinh: "Kiểm định", notify: "Mẫu tin tự động (Zalo ZNS)", tasktpl: "Mẫu công việc (tiến độ dự án)" };
+  var TITLE = { sales: "Kinh doanh", dash: "Vận hành & dịch vụ", my: "Việc của tôi", phieu: "Phiếu dịch vụ", thang_may: "Thang máy", cong_trinh: "Công trình", hop_dong: "Hợp đồng", du_an: "Dự án thi công", kiem_dinh: "Kiểm định", notify: "Mẫu tin tự động (Zalo ZNS)", tasktpl: "Mẫu công việc (tiến độ dự án)", dp: "Điều phối", cktpl: "Mẫu checklist (biên bản làm việc)" };
   function skeleton() { return [h("div", { class: "skel", style: "height:190px" }), h("div", { class: "g g4" }, [1, 2, 3, 4].map(function () { return h("div", { class: "skel", style: "height:116px" }); })), h("div", { class: "g g21" }, [h("div", { class: "skel", style: "height:300px" }), h("div", { class: "skel", style: "height:300px" })])]; }
   function render() {
     if (!M) return; hideTip(); renderNav(); shell.title.textContent = TITLE[view.tab] || "";
     shell.main.replaceChildren.apply(shell.main, skeleton());
     var p;
-    if (view.id) p = detailView(view.tab, view.id); else if (view.tab === "sales" && isAdmin()) p = salesView(); else if (view.tab === "dash") p = dashView(); else if (view.tab === "my") p = myView(); else if (view.tab === "du_an") p = projectsView(); else if (view.tab === "notify" && isAdmin()) p = notifyView(); else if (view.tab === "tasktpl" && isAdmin()) p = taskTplView(); else p = listView(view.tab);
+    if (view.id) p = detailView(view.tab, view.id); else if (view.tab === "sales" && isAdmin()) p = salesView(); else if (view.tab === "dash") p = dashView(); else if (view.tab === "my") p = myView(); else if (view.tab === "du_an") p = projectsView(); else if (view.tab === "notify" && isAdmin()) p = notifyView(); else if (view.tab === "tasktpl" && isAdmin()) p = taskTplView(); else if (view.tab === "dp" && isAdmin()) p = dpView(); else if (view.tab === "cktpl" && isAdmin()) p = ckTplView(); else p = listView(view.tab);
     var ver = (render.v = (render.v || 0) + 1);
     p.then(function (el) { if (ver !== render.v) return; shell.main.replaceChildren.apply(shell.main, [].concat(el).filter(Boolean)); renderNav(); }).catch(function (e) { if (ver === render.v) shell.main.replaceChildren(h("div", { class: "card err" }, e.message)); });
   }
@@ -410,8 +466,8 @@
   var KIND_IC = { kiem_dinh: ["kiem_dinh", ""], bao_hanh: ["box", "warn"], hop_dong: ["hop_dong", "warn"], phieu: ["phieu", ""], du_an: ["du_an", ""] };
   var KIND_LB = { kiem_dinh: "Kiểm định", bao_hanh: "Bảo hành", hop_dong: "Hợp đồng", phieu: "Phiếu", du_an: "Dự án" };
   function dashView() {
-    return cached("dash", function () { return api("/api/dashboard"); }).then(function (d) {
-      var K = d.kpi, C = d.charts, go = function (t, id) { return function () { nav({ tab: t, id: id }); }; };
+    return Promise.all([cached("dash", function () { return api("/api/dashboard"); }), isAdmin() ? api("/api/maintenance/due").catch(function () { return null; }) : Promise.resolve(null)]).then(function (rs) {
+      var d = rs[0], due = rs[1], K = d.kpi, C = d.charts, go = function (t, id) { return function () { nav({ tab: t, id: id }); }; };
       badge = (d.urgent.length + d.overdueOrders.length) || null;
       var weeks = C.weekly, wk = function (f) { return weeks.map(f); };
       var pmv = K.pmRate == null ? 0 : K.pmRate, ins30 = d.inspectionsDue.filter(function (x) { return x.daysLeft <= 30; }).length;
@@ -457,7 +513,7 @@
         section("Cơ hội bán bảo trì", d.maintenanceUpsell, "Mọi thang hết bảo hành đều đã có hợp đồng", "money", "ok", function (x) { nav({ tab: "thang_may", id: x.id }); }, function (x) { return [x.name + (x.site ? " · " + x.site : ""), "Hết bảo hành " + fmtD(x.het_bao_hanh), chip(x.daysLeft < 0 ? "đã hết " + -x.daysLeft + " ngày" : "còn " + x.daysLeft + " ngày", x.daysLeft < 0 ? "bad" : "warn")]; }),
         section("Hợp đồng bảo trì sắp hết hạn", d.contractsExpiring, "Chưa có hợp đồng nào sắp hết hạn", "hop_dong", "warn", function (x) { nav({ tab: "hop_dong", id: x.id }); }, function (x) { return [x.name + (x.khach ? " · " + x.khach : ""), "Hết hạn " + fmtD(x.ngay_het_han) + " · " + fmtM(x.gia_tri), chip("còn " + x.daysLeft + " ngày", x.daysLeft < 30 ? "bad" : "warn")]; }),
         section("Dự án trễ bàn giao", d.projectsLate, "Không có dự án trễ", "du_an", "bad", function (x) { nav({ tab: "du_an", id: x.id }); }, function (x) { return [x.name, opt("projectStage", x.giai_doan), chip("trễ " + x.daysLate + " ngày", "bad")]; })]);
-      return [dashSwitch("dash"), hero, kpis, h("div", { class: "g g21" }, [trend, mix]), h("div", { class: "g g12" }, [cal, work]), h("div", { class: "g g3" }, [fleet, proj, rev]), h("h2", { style: "margin:6px 2px -6px" }, "Cần chú ý"), alerts];
+      return [guideCard(vai() === "ky_thuat" ? "ky_thuat" : "quan_ly"), dashSwitch("dash"), pmCard(due), hero, kpis, h("div", { class: "g g21" }, [trend, mix]), h("div", { class: "g g12" }, [cal, work]), h("div", { class: "g g3" }, [fleet, proj, rev]), h("h2", { style: "margin:6px 2px -6px" }, "Cần chú ý"), alerts];
     });
   }
   function section(title, items, emptyMsg, ic, tone, onClickFn, line) {
@@ -465,7 +521,23 @@
       items.length ? h("div", { class: "list" }, items.slice(0, 5).map(function (x) { var l = line(x); return h("div", { class: "it", onclick: function () { onClickFn(x); } }, [h("div", { style: "min-width:0" }, [h("div", { class: "t" }, l[0]), h("div", { class: "d" }, l[1])]), h("div", { class: "r" }, l[2])]); }).concat(items.length > 5 ? [h("div", { class: "d", style: "padding:8px 6px;color:var(--mut)" }, "… và " + (items.length - 5) + " mục nữa")] : [])) : h("div", { class: "d", style: "color:var(--mut);padding:2px 0" }, emptyMsg)]);
   }
 
+
+  // Phiếu bảo trì định kỳ sắp đến kỳ mà chưa tạo: tạo hết bằng một chạm (không phải đi từng hợp đồng).
+  function pmCard(due) {
+    if (!due) return null;
+    if (!due.orders) return card("Phiếu bảo trì định kỳ", null, h("div", { class: "rpok" }, "Đã tạo đủ phiếu cho 45 ngày tới"));
+    return card("Phiếu bảo trì sắp đến kỳ", "Trong 45 ngày tới", h("div", { style: "display:flex;gap:14px;align-items:center;flex-wrap:wrap;justify-content:space-between" }, [h("div", {}, [h("b", {}, due.orders + " phiếu"), " thuộc " + due.contracts + " hợp đồng chưa được tạo. Phiếu đầu tiên đến hạn " + fmtD(due.firstDate) + "."]), h("button", { class: "btn primary", onclick: function () { act(function () { return post("/api/maintenance/generate-all"); }, function (r) { return "Đã tạo " + r.created + " phiếu" + (r.remaining ? " — còn " + r.remaining + ", bấm lại để tiếp tục" : ""); }); } }, [icon("wrench", 16), "Tạo tất cả"])]), null, "hot");
+  }
   /* ===== Dashboard KINH DOANH ===== */
+  // Việc hôm nay của sales: mọi dòng bấm vào là làm được việc (lập hợp đồng điền sẵn), không phải đọc biểu đồ rồi tự suy ra.
+  function salesTodo(d, dash) {
+    var closing = section("Chờ ký — chốt ngay", d.closing, "Chưa có cơ hội ở giai đoạn cuối", "money", "ok", function (o) { createContractForm({ title: "Lập hợp đồng — " + o.name, loai: "mua_ban_lap_dat", ten_khach_hang: o.contact, gia_tri: o.value || undefined }); }, function (o) { return [o.name, (o.contact || "—") + " · " + fmtM(o.value), chip("Lập hợp đồng", "ok")]; });
+    var stalled = section("Đứng im từ 14 ngày — gọi lại", d.stalled, "Không có cơ hội nào đứng im", "clock", "warn", function (o) { toast("Gọi lại " + (o.contact || o.name) + ", rồi cập nhật cơ hội trong GHL"); }, function (o) { return [o.name, (o.contact || "—") + " · " + fmtM(o.value), chip(o.days + " ngày", o.days > 30 ? "bad" : "warn")]; });
+    var up = dash ? section("Thang hết bảo hành, chưa có hợp đồng bảo trì", dash.maintenanceUpsell, "Mọi thang hết bảo hành đều đã có hợp đồng", "money", "ok", function (x) { createContractForm({ title: "Hợp đồng bảo trì — " + x.name, loai: "bao_tri", thang_may_ids: [x.id] }); }, function (x) { return [x.name + (x.site ? " · " + x.site : ""), "Hết bảo hành " + fmtD(x.het_bao_hanh), chip(x.daysLeft < 0 ? "đã hết " + -x.daysLeft + " ngày" : "còn " + x.daysLeft + " ngày", x.daysLeft < 0 ? "bad" : "warn")]; }) : null;
+    var exp = dash ? section("Hợp đồng bảo trì sắp hết hạn — gia hạn", dash.contractsExpiring, "Chưa có hợp đồng nào sắp hết hạn", "hop_dong", "warn", function (x) { nav({ tab: "hop_dong", id: x.id }); }, function (x) { return [x.name + (x.khach ? " · " + x.khach : ""), "Hết hạn " + fmtD(x.ngay_het_han) + " · " + fmtM(x.gia_tri), chip("còn " + x.daysLeft + " ngày", x.daysLeft < 30 ? "bad" : "warn")]; }) : null;
+    return [h("h2", { style: "margin:2px 2px -6px" }, "Việc hôm nay"), h("div", { class: "g g2" }, [closing, stalled]), up && exp ? h("div", { class: "g g2" }, [up, exp]) : null, h("h2", { style: "margin:10px 2px -6px" }, "Số liệu kinh doanh")];
+  }
+
   function dashSwitch(cur) {
     if (!isAdmin()) return null;
     return h("div", { class: "seg", role: "tablist", "aria-label": "Chọn dashboard" }, [["sales", "Kinh doanh", "sales"], ["dash", "Vận hành & dịch vụ", "dash"]].map(function (x) { return h("button", { role: "tab", "aria-selected": cur === x[0], class: cur === x[0] ? "on" : "", onclick: function () { if (cur !== x[0]) nav({ tab: x[0] }); } }, [icon(x[2], 16), x[1]]); }));
@@ -494,8 +566,8 @@
   }
   function dealRow(o, extra) { return h("div", { class: "it", onclick: function () { toast("Mở cơ hội trong GHL → Opportunities để xử lý: " + o.name); } }, [h("span", { class: "ico" }, icon("sales", 16)), h("div", { style: "min-width:0" }, [h("div", { class: "t" }, o.name), h("div", { class: "d" }, [o.stage || "", o.contact ? " · " + o.contact : "", o.form ? " · " + o.form : ""])]), h("div", { class: "r" }, [h("b", {}, fmtM(o.value)), extra || null])]); }
   function salesView() {
-    return cached("sales", function () { return api("/api/sales"); }).then(function (d) {
-      var T = d.totals, M12 = d.monthly, main = d.main;
+    return Promise.all([cached("sales", function () { return api("/api/sales"); }), cached("dash", function () { return api("/api/dashboard"); }).catch(function () { return null; })]).then(function (rs) {
+      var d = rs[0], dash = rs[1], T = d.totals, M12 = d.monthly, main = d.main;
       var heroNum = h("span", {}, "0"), wpct = T.openValue ? Math.round(T.weighted / T.openValue * 100) : 0;
       var hero = h("div", { class: "card hero" }, [h("div", { class: "hi" }, greet() + ", " + firstName(M.me.name)),
         h("h2", {}, T.openCount ? T.openCount + " cơ hội đang mở · dự báo chốt " + fmtM(T.weighted) : "Chưa có cơ hội nào đang mở"),
@@ -521,9 +593,39 @@
       var stalled = card("Cơ hội đứng im ≥ 14 ngày", "Cần liên hệ lại hoặc chuyển giai đoạn", d.stalled.length ? h("div", { class: "list" }, d.stalled.slice(0, 6).map(function (o) { return dealRow(o, chip(o.days + " ngày", o.days > 30 ? "bad" : "warn")); })) : empty("Không có cơ hội nào đứng im", "check"));
       var closing = card("Chờ ký & tạm ứng", "Ở giai đoạn cuối pipeline — ưu tiên chốt", d.closing.length ? h("div", { class: "list" }, d.closing.map(function (o) { return dealRow(o, chip("sắp chốt", "ok")); })) : empty("Chưa có cơ hội ở giai đoạn cuối", "sales"));
       var wins = card("Vừa chốt gần đây", "5 hợp đồng mới nhất", d.recentWins.length ? h("div", { class: "list" }, d.recentWins.map(function (o) { return h("div", { class: "it" }, [h("span", { class: "ico ok" }, icon("check", 16)), h("div", {}, [h("div", { class: "t" }, o.name), h("div", { class: "d" }, "Ký ngày " + fmtD(o.at))]), h("div", { class: "r" }, h("b", {}, fmtM(o.value)))]); })) : empty("Chưa có cơ hội đã chốt", "sales"));
-      return [dashSwitch("sales"), d.warning ? h("div", { class: "card", style: "border-color:var(--warn)" }, h("div", { class: "err" }, d.warning)) : null, hero, kpis, h("div", { class: "g g21" }, [book, funnel]), h("div", { class: "g g12" }, [wl, pipes]),
+      return [guideCard("sales"), dashSwitch("sales")].concat(salesTodo(d, dash), [d.warning ? h("div", { class: "card", style: "border-color:var(--warn)" }, h("div", { class: "err" }, d.warning)) : null, hero, kpis, h("div", { class: "g g21" }, [book, funnel]), h("div", { class: "g g12" }, [wl, pipes]),
         h("div", { class: "g g3" }, [mk("Hình thức mua", "Cơ hội đang mở", d.byForm), mk("Đối thủ gặp nhiều nhất", "Trong cơ hội đang mở và đã mất", d.competitors), mk("Nguồn cơ hội", "6 tháng gần nhất", d.bySource)]),
-        h("div", { class: "g g2" }, [dealsC, stalled]), h("div", { class: "g g2" }, [closing, wins])];
+        h("div", { class: "g g2" }, [dealsC, stalled]), h("div", { class: "g g2" }, [closing, wins])]);
+    });
+  }
+
+
+  /* ===== Điều phối: nhận cuộc gọi → tìm thang → báo sự cố → giao thợ ===== */
+  var isOpenOrder = function (o) { return ["hoan_thanh", "huy"].indexOf(o.trang_thai) < 0; };
+  function dpView() {
+    return Promise.all([getList("thang_may"), getList("phieu")]).then(function (res) {
+      var units = res[0], orders = res[1], openO = orders.filter(isOpenOrder), users = userOptions(orders);
+      var unassigned = openO.filter(function (o) { return !o.nguoi_phu_trach; });
+      var hot = openO.filter(function (o) { return o.uu_tien === "khan_cap" || (o.ngay_hen && o.ngay_hen < M.today); });
+      var todayO = openO.filter(function (o) { return o.ngay_hen === M.today && hot.indexOf(o) < 0; });
+      var stop = function (fn) { return function (ev) { ev.stopPropagation(); fn(ev); }; };
+      var results = h("div", { class: "list" });
+      var paint = function () {
+        var k = fold(q.value); if (!k) { results.replaceChildren(); return; }
+        var hits = units.filter(function (u) { return fold([u.name, u.site, u.vi_tri].join(" ")).indexOf(k) >= 0; }).slice(0, 6);
+        results.replaceChildren.apply(results, hits.length ? hits.map(function (u) { return h("div", { class: "it", onclick: function () { nav({ tab: "thang_may", id: u.id }); } }, [h("div", { style: "min-width:0" }, [h("div", { class: "t" }, u.name), h("div", { class: "d" }, [u.site, u.vi_tri].filter(Boolean).join(" · "))]), h("div", { class: "r" }, [u.openOrders ? chip(u.openOrders + " phiếu mở", "warn") : null, h("button", { class: "btn sos sm", onclick: stop(function () { createOrderForm(u.id); }) }, [icon("alert", 14), "Báo sự cố"])])]); }) : [h("div", { class: "d", style: "padding:10px 6px;color:var(--mut)" }, "Không có thang nào khớp — thử gõ ngắn hơn")]);
+      };
+      var q = h("input", { class: "bigsearch", placeholder: "Gõ mã thang, tên tòa nhà hoặc địa chỉ…", "aria-label": "Tìm thang", autocomplete: "off", oninput: paint });
+      var hero = h("div", { class: "card hero" }, [h("div", { class: "hi" }, greet() + ", " + firstName(M.me.name)), h("h2", {}, unassigned.length ? unassigned.length + " phiếu chưa có người nhận" : "Mọi phiếu đã có người nhận"), h("div", { style: "display:grid;gap:10px" }, [q, results])]);
+      var row = function (o, extra) { return h("div", { class: "it", onclick: function () { nav({ tab: "phieu", id: o.id }); } }, [h("div", { style: "min-width:0" }, [h("div", { class: "t" }, (o.unit || "—") + " · " + o.name), h("div", { class: "d" }, [o.site || "", o.mo_ta ? " · " + o.mo_ta.slice(0, 70) : "", o.ngay_hen ? " · hẹn " + fmtD(o.ngay_hen) : ""])]), h("div", { class: "r" }, extra || orderChips(o))]); };
+      var assign = function (o) {
+        if (!users.length) return row(o);
+        var sel = h("select", { "aria-label": "Giao cho", onclick: function (e) { e.stopPropagation(); } }, [h("option", { value: "" }, "— giao cho —")].concat(users.map(function (u) { return h("option", { value: u[0] }, u[1]); })));
+        var go = h("button", { class: "btn primary sm", onclick: stop(function () { if (!sel.value) { toast("Chọn người nhận trước", true); return; } act(function () { return post("/api/order/update", { id: o.id, patch: { nguoi_phu_trach: sel.value } }); }, "Đã giao " + o.name); }) }, "Giao");
+        return row(o, h("div", { class: "asg" }, [chip(opt("orderPriority", o.uu_tien), PRI[o.uu_tien]), sel, go]));
+      };
+      var list = function (title, sub, rows, mk, ic, tone, emptyMsg) { return h("div", { class: "card" }, [h("div", { class: "ch" }, [h("span", { class: "ico " + (rows.length ? tone : "ok") }, icon(rows.length ? ic : "check", 17)), h("div", {}, [h("h2", {}, title + (rows.length ? " (" + rows.length + ")" : "")), h("div", { class: "sub" }, rows.length ? sub : emptyMsg)])]), rows.length ? h("div", { class: "list" }, rows.slice(0, 12).map(mk).concat(rows.length > 12 ? [h("div", { class: "d", style: "padding:8px 6px;color:var(--mut)" }, "… và " + (rows.length - 12) + " phiếu nữa — xem tab Phiếu")] : [])) : null]); };
+      return [guideCard("dieu_phoi"), hero, list("Chưa giao", "Chọn người rồi bấm Giao", unassigned, assign, "user", "warn", "Không có phiếu nào chờ giao"), list("Khẩn & quá hạn", "Xử lý trước", hot, function (o) { return row(o); }, "alert", "bad", "Không có phiếu khẩn hoặc quá hạn"), list("Hẹn hôm nay", "Phiếu đến hạn hôm nay", todayO, function (o) { return row(o); }, "clock", "", "Hôm nay không có lịch hẹn nào khác")];
     });
   }
 
@@ -534,16 +636,103 @@
       var card1 = function (o, claim) {
         var b = []; var stop = function (fn) { return function (ev) { ev.stopPropagation(); fn(); }; };
         if (claim) b.push(h("button", { class: "btn primary", onclick: stop(function () { act(function () { return post("/api/order/update", { id: o.id, patch: { nguoi_phu_trach: M.me.name + (M.me.email ? " <" + M.me.email + ">" : "") } }); }, "Đã nhận việc"); }) }, [icon("check", 17), "Nhận việc"]));
-        else { if (o.trang_thai !== "dang_xu_ly") b.push(h("button", { class: "btn", onclick: stop(function () { act(function () { return post("/api/order/update", { id: o.id, patch: { trang_thai: "dang_xu_ly" } }); }, "Đã bắt đầu"); }) }, "Bắt đầu")); if (o.trang_thai !== "cho_vat_tu") b.push(h("button", { class: "btn", onclick: stop(function () { act(function () { return post("/api/order/update", { id: o.id, patch: { trang_thai: "cho_vat_tu" } }); }, "Đã chuyển chờ vật tư"); }) }, "Chờ vật tư")); b.push(h("button", { class: "btn primary", onclick: stop(function () { finishOrder(o); }) }, [icon("check", 17), "Hoàn thành"])); }
+        else { if (o.trang_thai !== "dang_xu_ly") b.push(h("button", { class: "btn", onclick: stop(function () { act(function () { return post("/api/order/update", { id: o.id, patch: { trang_thai: "dang_xu_ly" } }); }, "Đã ghi giờ bắt đầu"); }) }, "Đã đến, bắt đầu")); if (o.trang_thai !== "cho_vat_tu") b.push(h("button", { class: "btn", onclick: stop(function () { act(function () { return post("/api/order/update", { id: o.id, patch: { trang_thai: "cho_vat_tu" } }); }, "Đã chuyển chờ vật tư"); }) }, "Chờ vật tư")); b.push(h("button", { class: "btn primary", onclick: stop(function () { finishOrder(o); }) }, [icon("check", 17), "Hoàn thành"])); }
         if (o.sdt_nguoi_bao) b.push(h("a", { href: "tel:" + o.sdt_nguoi_bao, onclick: function (ev) { ev.stopPropagation(); }, style: "text-decoration:none;flex:1;display:flex" }, h("span", { class: "btn", style: "flex:1;justify-content:center;min-height:44px" }, [icon("phone", 16), "Gọi " + (o.nguoi_bao || "người báo")])));
         return h("div", { class: "card oc p-" + o.uu_tien, style: "cursor:pointer", onclick: function () { nav({ tab: "phieu", id: o.id }); } }, [h("div", { class: "row" }, [h("h3", {}, (o.unit || "—")), h("span", { class: "d", style: "color:var(--mut)" }, o.name), h("span", { style: "margin-left:auto;display:flex;gap:6px" }, orderChips(o))]), h("div", { class: "d", style: "color:var(--mut)" }, [o.site || "", o.ngay_hen ? " · hẹn " + fmtD(o.ngay_hen) : ""]), o.mo_ta ? h("div", {}, o.mo_ta.slice(0, 180)) : null, h("div", { class: "acts" }, b)]);
       };
       var head = h("div", { class: "card hero", style: "padding:20px 22px" }, [h("div", { class: "hi" }, greet() + ", " + firstName(M.me.name)), h("h2", { style: "margin-bottom:12px" }, r.mine.length ? "Bạn có " + r.mine.length + " việc đang mở" : "Bạn đã xử lý hết việc được giao"), h("div", { class: "pulse" }, [h("button", {}, [h("b", {}, r.mine.length), h("span", {}, "Đang làm")]), h("button", {}, [h("b", {}, r.doneToday), h("span", {}, "Xong hôm nay")]), h("button", {}, [h("b", {}, r.unassigned.length), h("span", {}, "Chờ nhận")])])]);
-      return [head, h("h2", { style: "margin:4px 2px -6px" }, "Việc của tôi (" + r.mine.length + ")")].concat(r.mine.length ? r.mine.map(function (o) { return card1(o, false); }) : [card("", null, empty("Không có việc nào đang mở", "check"))])
+      return [guideCard("ky_thuat"), head, h("h2", { style: "margin:4px 2px -6px" }, "Việc của tôi (" + r.mine.length + ")")].concat(r.mine.length ? r.mine.map(function (o) { return card1(o, false); }) : [card("", null, empty("Không có việc nào đang mở", "check"))])
         .concat([h("h2", { style: "margin:10px 2px -6px" }, "Chưa ai nhận (" + r.unassigned.length + ")")], r.unassigned.length ? r.unassigned.slice(0, 20).map(function (o) { return card1(o, true); }) : [card("", null, empty("Không có phiếu chờ nhận", "check"))]).concat(myTasksCard(tk));
     });
   }
-  function finishOrder(o) { form("Hoàn thành " + o.name, [{ k: "ket_qua", label: "Kết quả xử lý (bắt buộc)", t: "textarea", v: o.ket_qua || "" }], function (v) { return post("/api/order/update", { id: o.id, patch: { trang_thai: "hoan_thanh", ket_qua: v.ket_qua } }); }, "Hoàn thành", "Đã hoàn thành phiếu"); }
+  // Hoàn thành: thiếu checklist/ảnh/chữ ký thì báo đúng chỗ thiếu và đưa tới biên bản (quản trị được đóng kèm lý do).
+  function finishOrder(o) {
+    api("/api/report?phieuId=" + encodeURIComponent(o.id)).then(function (v) {
+      var miss = v.tpl ? v.missing : [];
+      if (miss.length && !isAdmin()) { toast("Chưa đủ biên bản: " + miss[0] + (miss.length > 1 ? " (và " + (miss.length - 1) + " mục nữa)" : ""), true); if (view.id !== o.id) nav({ tab: "phieu", id: o.id }); else { var c = document.getElementById("rp-card"); if (c) c.scrollIntoView({ behavior: "smooth" }); } return; }
+      var skip = miss.length > 0, needText = skip || !v.tpl;
+      form(skip ? "Đóng phiếu khi chưa đủ biên bản" : "Hoàn thành " + o.name, [{ k: "ket_qua", label: needText ? "Kết quả / lý do (bắt buộc)" : "Kết quả xử lý (để trống: tự ghi theo checklist)", t: "textarea", v: o.ket_qua || "" }], function (v2) { return post("/api/order/update", { id: o.id, patch: { trang_thai: "hoan_thanh", ket_qua: v2.ket_qua }, skipChecklist: skip }); }, "Hoàn thành", "Đã hoàn thành phiếu");
+    }).catch(function (e) { toast(e.message, true); });
+  }
+
+
+  /* ===== Biên bản làm việc: checklist theo mẫu + ảnh + chữ ký khách ===== */
+  var fileUrl = function (id) { return fetch(BASE + "/api/file?id=" + encodeURIComponent(id), { headers: { Authorization: "Bearer " + token } }).then(function (r) { if (!r.ok) throw new Error("Không tải được ảnh"); return r.blob(); }).then(function (b) { return URL.createObjectURL(b); }); };
+  var fmtTime = function (iso) { try { return new Date(iso).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" }); } catch (e) { return ""; } };
+  // Nén ảnh trên máy trước khi gửi: cạnh dài tối đa 1280px, JPEG ≤ ~110KB — nhanh hơn trên 4G và đỡ tốn bộ nhớ.
+  function compressImage(file) {
+    return new Promise(function (resolve, reject) {
+      var url = URL.createObjectURL(file), img = new Image();
+      img.onload = function () {
+        var sc = Math.min(1, 1280 / Math.max(img.width, img.height)), cv = document.createElement("canvas"); cv.width = Math.round(img.width * sc); cv.height = Math.round(img.height * sc);
+        cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height); URL.revokeObjectURL(url);
+        var q = 0.74, out = cv.toDataURL("image/jpeg", q); while (out.length * 0.75 > 110000 && q > 0.3) { q -= 0.08; out = cv.toDataURL("image/jpeg", q); }
+        if (out.length * 0.75 > 140000) { cv.width = Math.round(cv.width / 2); cv.height = Math.round(cv.height / 2); cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height); out = cv.toDataURL("image/jpeg", 0.6); }
+        resolve(out);
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); reject(new Error("Không đọc được ảnh")); }; img.src = url;
+    });
+  }
+  function reportCard(o) {
+    var body = h("div", { class: "rp" }), c = card("Biên bản làm việc", "Checklist, ảnh và chữ ký khách", body); c.id = "rp-card";
+    api("/api/report?phieuId=" + encodeURIComponent(o.id)).then(function (v) {
+      if (!v.tpl) { c.remove(); return; }
+      var tpl = v.tpl, R = v.report, can = v.canEdit, missing = v.missing, answers = tpl.items.map(function (_, i) { return R.answers[i] || {}; });
+      var status = h("small", { style: "color:var(--mut)" }), foot = h("div", {}), timer = null;
+      var setMissing = function (m) { missing = m; paintFoot(); };
+      var save = function () { clearTimeout(timer); status.textContent = "Đang lưu…"; timer = setTimeout(function () { post("/api/report/save", { phieuId: o.id, answers: answers }).then(function (r) { status.textContent = "Đã lưu"; setMissing(r.missing); }).catch(function (e) { status.textContent = ""; toast(e.message, true); }); }, 500); };
+      function paintFoot() {
+        if (!can) { foot.replaceChildren(); return; }
+        foot.replaceChildren(missing.length ? h("div", { class: "rpmiss" }, ["Còn thiếu:", h("ul", {}, missing.slice(0, 5).map(function (m) { return h("li", {}, m); })), missing.length > 5 ? "… và " + (missing.length - 5) + " mục nữa" : null]) : h("div", { class: "rpok" }, "Đã đủ biên bản" + (can ? " — bấm Hoàn thành" : "")),
+          can ? h("button", { class: "btn primary", style: "margin-top:10px;min-height:48px;width:100%;justify-content:center;font-size:16px", onclick: function () { finishOrder(o); } }, [icon("check", 18), "Hoàn thành phiếu"]) : null);
+      }
+      // checklist
+      var items = [], lastG = null;
+      tpl.items.forEach(function (x, i) {
+        if (x.g !== lastG) { lastG = x.g; items.push(h("div", { class: "ckg" }, x.g)); }
+        var a = answers[i], note = h("input", { class: "note", placeholder: "Ghi rõ vấn đề và cách xử lý (bắt buộc)", value: a.note || "", disabled: !can, oninput: function (e) { a.note = e.target.value; save(); } }), btns = {};
+        var sync = function () { Object.keys(btns).forEach(function (k) { btns[k].className = (a.r === k ? "on " : "") + k; }); note.style.display = a.r === "khong_dat" ? "" : "none"; };
+        var mk = function (k, lab) { btns[k] = h("button", { type: "button", disabled: !can, onclick: function () { a.r = a.r === k ? "" : k; if (a.r !== "khong_dat") a.note = a.r ? "" : a.note; sync(); save(); } }, lab); return btns[k]; };
+        items.push(h("div", { class: "ck" }, [h("div", {}, [x.t, x.req ? null : h("small", { style: "color:var(--mut)" }, " (tuỳ chọn)")]), h("div", { class: "ckb" }, [mk("dat", "Đạt"), mk("khong_dat", "Không đạt"), mk("na", "Không áp dụng")]), note])); sync();
+      });
+      // ảnh
+      var phs = h("div", { class: "phs" }), upl = h("small", { style: "color:var(--mut)" });
+      var addThumb = function (p) { var im = h("img", { alt: "Ảnh hiện trường" }), box = h("div", { class: "ph" }, [im, can ? h("button", { "aria-label": "Xoá ảnh", onclick: function () { post("/api/report/photo/delete", { phieuId: o.id, id: p.id }).then(function (r) { box.remove(); setMissing(r.missing); }).catch(function (e) { toast(e.message, true); }); } }, "×") : null]); phs.appendChild(box); if (p.url) im.src = p.url; else fileUrl(p.id).then(function (u) { im.src = u; }).catch(function () {}); };
+      R.photos.forEach(addThumb);
+      var pick = h("input", { type: "file", accept: "image/*", multiple: "multiple", style: "display:none", onchange: function (e) {
+        var files = [].slice.call(e.target.files); e.target.value = ""; var chain = Promise.resolve();
+        files.forEach(function (f) { chain = chain.then(function () { upl.textContent = "Đang tải ảnh lên…"; return compressImage(f).then(function (d) { return post("/api/report/photo", { phieuId: o.id, data: d }); }).then(function (r) { addThumb({ id: r.id, url: r.url }); setMissing(r.missing); }); }); });
+        chain.then(function () { upl.textContent = ""; }).catch(function (er) { upl.textContent = ""; toast(er.message, true); });
+      } });
+      var photoBox = h("div", { style: "display:grid;gap:8px" }, [h("div", { class: "ckg", style: "margin:0" }, "Ảnh hiện trường" + (tpl.min_photos ? " (tối thiểu " + tpl.min_photos + ")" : "")), phs, can ? h("div", { style: "display:flex;gap:10px;align-items:center" }, [h("button", { class: "btn", onclick: function () { pick.click(); } }, [icon("plus", 16), "Chụp / chọn ảnh"]), upl, pick]) : null]);
+      // chữ ký
+      var sigBox = h("div", { style: "display:grid;gap:8px" }), sigState = { signature: R.signature, no_sign: R.no_sign };
+      var paintSig = function () {
+        var kids = [h("div", { class: "ckg", style: "margin:0" }, "Chữ ký khách" + (tpl.need_signature ? "" : " (tuỳ chọn)"))];
+        if (sigState.signature) { var im = h("img", { alt: "Chữ ký", style: "max-height:110px;background:#fff;border-radius:10px;border:1px solid var(--line2);padding:6px;max-width:100%" }); fileUrl(sigState.signature.id).then(function (u) { im.src = u; }).catch(function () {}); kids.push(im, h("small", {}, "Người ký: " + (sigState.signature.signer || "—") + " · " + fmtTime(sigState.signature.at))); if (can) kids.push(h("div", {}, h("button", { class: "btn sm", onclick: function () { sigState.signature = null; paintSig(); } }, "Ký lại"))); }
+        else if (sigState.no_sign) { kids.push(h("div", { class: "chip warn" }, "Khách không có mặt" + (sigState.no_sign.reason ? ": " + sigState.no_sign.reason : ""))); if (can) kids.push(h("div", {}, h("button", { class: "btn sm", onclick: function () { post("/api/report/nosign", { phieuId: o.id, reason: null }).then(function (r) { sigState.no_sign = null; setMissing(r.missing); paintSig(); }).catch(function (e) { toast(e.message, true); }); } }, "Hoàn tác"))); }
+        else if (can) {
+          var cv = h("canvas", { class: "sigpad", width: 640, height: 240 }), ctx = cv.getContext("2d"), drawn = false, down = false;
+          ctx.lineWidth = 4; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.strokeStyle = "#111";
+          var pt = function (e) { var r = cv.getBoundingClientRect(); return [(e.clientX - r.left) * cv.width / r.width, (e.clientY - r.top) * cv.height / r.height]; };
+          cv.addEventListener("pointerdown", function (e) { down = true; cv.setPointerCapture(e.pointerId); var p = pt(e); ctx.beginPath(); ctx.moveTo(p[0], p[1]); ctx.lineTo(p[0] + .1, p[1] + .1); ctx.stroke(); drawn = true; e.preventDefault(); });
+          cv.addEventListener("pointermove", function (e) { if (!down) return; var p = pt(e); ctx.lineTo(p[0], p[1]); ctx.stroke(); });
+          ["pointerup", "pointercancel"].forEach(function (n) { cv.addEventListener(n, function () { down = false; }); });
+          var who = h("input", { placeholder: "Tên người ký" });
+          kids.push(cv, who, h("div", { style: "display:flex;gap:8px;flex-wrap:wrap" }, [
+            h("button", { class: "btn primary", onclick: function () { if (!drawn) { toast("Nhờ khách ký vào ô trên trước", true); return; } post("/api/report/signature", { phieuId: o.id, data: cv.toDataURL("image/png"), signer: who.value }).then(function (r) { sigState.signature = { id: r.id, signer: who.value, at: new Date().toISOString() }; setMissing(r.missing); paintSig(); }).catch(function (e) { toast(e.message, true); }); } }, "Lưu chữ ký"),
+            h("button", { class: "btn", onclick: function () { ctx.clearRect(0, 0, cv.width, cv.height); drawn = false; } }, "Ký lại"),
+            h("button", { class: "btn ghost", onclick: function () { var why = window.prompt("Vì sao khách không ký? (vd: khách đi vắng)", "Khách đi vắng"); if (why === null) return; post("/api/report/nosign", { phieuId: o.id, reason: why }).then(function (r) { sigState.no_sign = { reason: why }; setMissing(r.missing); paintSig(); }).catch(function (e) { toast(e.message, true); }); } }, "Khách không có mặt")]));
+        } else kids.push(h("small", { style: "color:var(--mut)" }, "Chưa có chữ ký"));
+        sigBox.replaceChildren.apply(sigBox, kids);
+      };
+      paintSig(); paintFoot();
+      var done = tpl.items.filter(function (x, i) { return answers[i].r; }).length;
+      body.replaceChildren.apply(body, [R.started_at ? h("div", {}, h("span", { class: "chip info" }, "Đã đến, bắt đầu lúc " + fmtTime(R.started_at))) : null, h("div", {}, [h("b", {}, tpl.label), " · ", h("small", { style: "color:var(--mut)" }, tpl.items.length + " mục"), " ", status]), h("div", {}, items), photoBox, sigBox, foot].filter(Boolean));
+      void done;
+    }).catch(function (e) { c.remove(); });
+    return c;
+  }
 
   /* ===== Danh sách ===== */
   var COLS = {
@@ -581,12 +770,29 @@
     document.body.appendChild(a); a.click(); setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500); toast("Đã xuất " + rows.length + " dòng");
   }
   var LOAI_PHIEU = { bao_tri_dinh_ky: "BIÊN BẢN BẢO TRÌ ĐỊNH KỲ", su_co: "BIÊN BẢN XỬ LÝ SỰ CỐ", sua_chua: "BIÊN BẢN SỬA CHỮA", bao_hanh: "BIÊN BẢN BẢO HÀNH" };
+  var RES_LAB = { dat: "Đạt", khong_dat: "Không đạt", na: "Không áp dụng" };
   function printOrder(o, R) {
+    api("/api/report?phieuId=" + encodeURIComponent(o.id)).catch(function () { return null; }).then(function (rp) {
+      rp = rp && rp.tpl ? rp : null; var ids = rp ? rp.report.photos.filter(function (x) { return !x.url; }).map(function (x) { return x.id; }).concat(rp.report.signature ? [rp.report.signature.id] : []) : [], imgs = {};
+      if (rp) rp.report.photos.forEach(function (x) { if (x.url) imgs[x.id] = x.url; });
+      return Promise.all(ids.map(function (id) { return fileUrl(id).then(function (u) { imgs[id] = u; }).catch(function () {}); })).then(function () { printOrderDoc(o, R, rp, imgs); });
+    });
+  }
+  function printOrderDoc(o, R, rp, imgs) {
+    var extra = [], rpt = rp && rp.report, custSig = [h("b", {}, "Đại diện khách hàng"), h("i", {}, "(ký, ghi rõ họ tên)")];
+    if (rp) {
+      extra.push(h("h2", {}, "Kết quả kiểm tra — " + rp.tpl.label));
+      extra.push(h("table", { class: "chk" }, rp.tpl.items.map(function (x, i) { var a = rpt.answers[i] || {}; return h("tr", {}, [h("td", {}, x.g), h("td", {}, x.t), h("td", {}, a.r ? RES_LAB[a.r] : "—"), h("td", {}, a.note || "")]); })));
+      if (rpt.photos.length) extra.push(h("div", { class: "photos" }, rpt.photos.map(function (x) { return imgs[x.id] ? h("img", { src: imgs[x.id], alt: "Ảnh hiện trường" }) : null; })));
+      if (rpt.started_at) extra.push(h("div", { class: "meta" }, "Bắt đầu làm lúc " + fmtTime(rpt.started_at)));
+      if (rpt.signature && imgs[rpt.signature.id]) custSig = [h("b", {}, "Đại diện khách hàng"), h("img", { class: "sigimg", src: imgs[rpt.signature.id], alt: "Chữ ký khách" }), h("i", {}, rpt.signature.signer || "")];
+      else if (rpt.no_sign) custSig = [h("b", {}, "Đại diện khách hàng"), h("i", {}, "Khách không có mặt" + (rpt.no_sign.reason ? ": " + rpt.no_sign.reason : ""))];
+    }
     var u = R.thang_may || {}, site = R.site || {}, c = R.hop_dong || {}, row = function (k, v) { return h("tr", {}, [h("td", { class: "k" }, k), h("td", {}, v == null || v === "" ? "—" : String(v))]); };
     var doc = h("div", { class: "doc" }, [h("div", { style: "display:flex;justify-content:space-between;font-size:12px;color:#555" }, [h("b", {}, (M.brand || "ELUX").split(" · ")[0]), h("span", {}, "Số: " + o.name)]), h("h1", {}, LOAI_PHIEU[o.loai] || "BIÊN BẢN DỊCH VỤ"), h("div", { class: "meta" }, "Ngày lập: " + fmtD(M.today)),
       h("table", {}, [row("Khách hàng", c.ten_khach_hang || site.ten_chu_dau_tu), row("Công trình", site.name), row("Địa chỉ", site.dia_chi), row("Thang máy", [u.name, u.vi_tri].filter(Boolean).join(" — ")), row("Hãng / model", [u.hang, u.model].filter(Boolean).join(" ")), row("Hợp đồng", c.name),
         row("Loại phiếu", opt("orderType", o.loai)), row("Mức ưu tiên", opt("orderPriority", o.uu_tien)), row("Ngày hẹn", fmtD(o.ngay_hen)), row("Người báo", [o.nguoi_bao, o.sdt_nguoi_bao].filter(Boolean).join(" · ")), row("Mô tả sự cố / công việc", o.mo_ta), row("Kết quả xử lý", o.ket_qua), row("Kỹ thuật viên", person(o.nguoi_phu_trach)), row("Ngày hoàn thành", o.ngay_hoan_thanh ? fmtD(o.ngay_hoan_thanh) : "")]),
-      h("div", { class: "sig" }, [h("div", {}, [h("b", {}, "Kỹ thuật viên"), h("i", {}, "(ký, ghi rõ họ tên)")]), h("div", {}, [h("b", {}, "Đại diện khách hàng"), h("i", {}, "(ký, ghi rõ họ tên)")])])]);
+      h("div", {}, extra), h("div", { class: "sig" }, [h("div", {}, [h("b", {}, "Kỹ thuật viên"), h("i", {}, person(o.nguoi_phu_trach) || "(ký, ghi rõ họ tên)")]), h("div", {}, custSig)])]);
     var modal = h("div", { class: "modal", onclick: function (e) { if (e.target === modal) modal.remove(); } }, h("div", { class: "box wide" }, [doc, h("div", { style: "display:flex;gap:8px" }, [h("button", { class: "btn primary", onclick: function () { window.print(); } }, [icon("print", 16), "In / lưu PDF"]), h("button", { class: "btn", onclick: function () { modal.remove(); } }, "Đóng")])]));
     document.body.appendChild(modal);
   }
@@ -807,6 +1013,23 @@
     });
   }
 
+
+  function ckTplView() {
+    return api("/api/checklists").then(function (d) {
+      function block(t, isNew) {
+        var key = h("input", { value: t.key, disabled: isNew ? null : "disabled", placeholder: "vd bao_tri_dinh_ky" }), lab = h("input", { value: t.label }), min = h("input", { type: "number", min: 0, max: 10, value: t.min_photos }), sig = h("input", { type: "checkbox", checked: t.need_signature, style: "width:auto" }), txt = h("textarea", { rows: 12, style: "font:12.5px ui-monospace,monospace" }), err = h("div", { class: "err" });
+        txt.value = t.text;
+        var types = M.options.orderType.map(function (o) { return { o: o, cb: h("input", { type: "checkbox", checked: t.types.indexOf(o[0]) >= 0, style: "width:auto" }) }; });
+        var ok = h("button", { class: "btn primary", onclick: function () { err.textContent = ""; ok.disabled = true; post("/api/checklist", { key: key.value.trim(), label: lab.value, types: types.filter(function (x) { return x.cb.checked; }).map(function (x) { return x.o[0]; }), min_photos: Number(min.value || 0), need_signature: sig.checked, text: txt.value }).then(function () { toast("Đã lưu mẫu"); cache = {}; render(); }).catch(function (e) { err.textContent = e.message; ok.disabled = false; }); } }, "Lưu mẫu");
+        return card(isNew ? "Thêm mẫu mới" : t.label, isNew ? null : t.count + " mục · khoá " + t.key, h("div", { style: "display:grid;gap:12px" }, [h("label", { class: "f" }, ["Khoá mẫu", key]), h("label", { class: "f" }, ["Tên mẫu", lab]),
+          h("div", { class: "f" }, ["Áp dụng cho loại phiếu", h("div", { style: "display:flex;gap:14px;flex-wrap:wrap" }, types.map(function (x) { return h("label", { style: "display:flex;gap:6px;align-items:center;font-weight:400" }, [x.cb, x.o[1]]); }))]),
+          h("label", { class: "f" }, ["Số ảnh tối thiểu", min]), h("label", { style: "display:flex;gap:8px;align-items:center" }, [sig, "Yêu cầu khách ký (hoặc ghi “khách không có mặt”)"]), h("label", { class: "f" }, ["Các mục kiểm tra (mỗi dòng một mục)", txt]), err, h("div", {}, ok)]));
+      }
+      var how = card("Cách dùng", "Kỹ thuật viên phải làm đủ biên bản mới hoàn thành được phiếu.", h("div", { class: "sub", style: "line-height:1.7" }, ["Mỗi dòng một mục theo dạng:  ", h("code", {}, "Nhóm | Nội dung | tuỳ chọn"), h("br"), "Để trống cột cuối = bắt buộc. Gõ ", h("code", {}, "tuỳ chọn"), " nếu không bắt buộc. Mục “Không đạt” luôn phải kèm ghi chú. Sửa mẫu không ảnh hưởng các biên bản đã làm; loại phiếu không có mẫu thì không bị chặn."]));
+      return [how].concat(d.templates.map(function (t) { return block(t, false); }), [block({ key: "", label: "", types: [], min_photos: 1, need_signature: true, text: "Nhóm 1 | Mục kiểm tra đầu tiên\nNhóm 1 | Mục không bắt buộc | tuỳ chọn", count: 0 }, true)]);
+    });
+  }
+
   /* ===== Chi tiết ===== */
   var LABEL = { dia_chi: "Địa chỉ", tinh_thanh: "Tỉnh/Thành", so_tang: "Số tầng", ten_chu_dau_tu: "Chủ đầu tư", nguoi_lien_he: "Người liên hệ", sdt_lien_he: "SĐT liên hệ", ghi_chu: "Ghi chú", hang: "Hãng", model: "Model", so_serial: "Số serial", vi_tri: "Vị trí", tai_trong_kg: "Tải trọng (kg)", so_diem_dung: "Số điểm dừng", toc_do_m_s: "Tốc độ (m/s)", ngay_ban_giao: "Ngày bàn giao", het_bao_hanh: "Hết bảo hành", chu_ky_kiem_dinh_thang: "Chu kỳ kiểm định (tháng)", ngay_kiem_dinh_ke_tiep: "Kiểm định kế tiếp", gia_tri: "Giá trị (VND)", ngay_hieu_luc: "Hiệu lực từ", ngay_het_han: "Hết hạn", chu_ky_bao_tri_thang: "Chu kỳ bảo trì (tháng)", ngay_ky: "Ngày ký", ten_khach_hang: "Khách hàng", sdt_thong_bao: "SĐT nhận thông báo", ngay_du_kien_ban_giao: "Dự kiến bàn giao", quan_ly_du_an: "Quản lý dự án", doi_thi_cong: "Đội thi công", ngay_hen: "Ngày hẹn", ngay_hoan_thanh: "Ngày hoàn thành", ket_qua: "Kết quả", nguoi_phu_trach: "Phụ trách", nguoi_bao: "Người báo", sdt_nguoi_bao: "SĐT người báo", ngay_kiem_dinh: "Ngày kiểm định", don_vi_kiem_dinh: "Đơn vị kiểm định", pham_vi_bao_tri: "Phạm vi bảo trì", loai_cong_trinh: "Loại công trình", loai: "Loại", trang_thai: "Trạng thái", uu_tien: "Ưu tiên", nguon: "Nguồn", giai_doan: "Giai đoạn" };
   var ENUM = { loai_cong_trinh: "siteType", uu_tien: "orderPriority", nguon: "orderSource", giai_doan: "projectStage", pham_vi_bao_tri: "contractScope" };
@@ -831,7 +1054,10 @@
         chipsTop = orderChips(r);
         acts.push(h("button", { class: "btn", onclick: function () { printOrder(r, R); } }, [icon("print", 16), "In biên bản"]));
         acts.push(h("button", { class: "btn", onclick: function () { orderEdit(r); } }, isAdmin() ? "Giao việc / sửa" : "Cập nhật"));
-        if (r.trang_thai !== "hoan_thanh" && r.trang_thai !== "huy") acts.push(h("button", { class: "btn primary", onclick: function () { finishOrder(r); } }, [icon("check", 16), "Hoàn thành"]));
+        var openOrd = r.trang_thai !== "hoan_thanh" && r.trang_thai !== "huy";
+        if (openOrd && !r.nguoi_phu_trach && !isAdmin()) acts.push(h("button", { class: "btn primary", onclick: function () { act(function () { return post("/api/order/update", { id: r.id, patch: { nguoi_phu_trach: M.me.name + (M.me.email ? " <" + M.me.email + ">" : "") } }); }, "Đã nhận việc"); } }, [icon("check", 16), "Nhận việc"]));
+        if (openOrd && ["moi", "da_giao", "cho_vat_tu"].indexOf(r.trang_thai || "moi") >= 0 && (r.nguoi_phu_trach || isAdmin())) acts.push(h("button", { class: "btn", onclick: function () { act(function () { return post("/api/order/update", { id: r.id, patch: { trang_thai: "dang_xu_ly" } }); }, "Đã ghi giờ bắt đầu"); } }, "Đã đến, bắt đầu"));
+        if (openOrd) acts.push(h("button", { class: "btn primary", onclick: function () { finishOrder(r); } }, [icon("check", 16), "Hoàn thành"]));
         facts = [fact("Ưu tiên", opt("orderPriority", r.uu_tien)), fact("Hẹn", fmtD(r.ngay_hen), r.ngay_hen && daysTo(r.ngay_hen) < 0 && r.trang_thai !== "hoan_thanh" ? "Quá hạn " + -daysTo(r.ngay_hen) + " ngày" : null), fact("Phụ trách", person(r.nguoi_phu_trach) || "Chưa giao"), fact("Nguồn", opt("orderSource", r.nguon))];
         extra = [R.thang_may ? relList("Thang máy", "thang_may", [R.thang_may], function (u) { return [u.name, u.vi_tri || "", null]; }) : null, R.hop_dong ? relList("Hợp đồng", "hop_dong", [R.hop_dong], function (c) { return [c.name, c.ten_khach_hang || "", null]; }) : null];
       } else if (type === "thang_may") {
@@ -865,7 +1091,7 @@
       }
       var story = type === "phieu" && (r.mo_ta || r.ket_qua) ? card("Nội dung", null, h("div", { style: "display:grid;gap:12px;white-space:pre-wrap" }, [r.mo_ta ? h("div", {}, [h("small", { style: "color:var(--mut);font-weight:700;text-transform:uppercase;letter-spacing:.05em;font-size:11.5px" }, "Mô tả"), h("div", {}, r.mo_ta)]) : null, r.ket_qua ? h("div", {}, [h("small", { style: "color:var(--mut);font-weight:700;text-transform:uppercase;letter-spacing:.05em;font-size:11.5px" }, "Kết quả xử lý"), h("div", {}, r.ket_qua)]) : null])) : null;
       return [h("div", {}, back), h("div", { class: "card banner" }, [h("span", { class: "ico" }, icon(type, 24)), h("div", {}, [h("h2", {}, r.name || "—"), h("div", { style: "display:flex;gap:6px;margin-top:6px;flex-wrap:wrap" }, chipsTop)]), h("div", { style: "margin-left:auto;display:flex;gap:8px;flex-wrap:wrap" }, acts)]),
-        h("div", { class: "facts" }, facts), story, type === "du_an" ? taskSection(r, R) : null, card("Thông tin", null, dl(type, r)), h("div", { class: "g g2" }, extra)];
+        h("div", { class: "facts" }, facts), story, type === "phieu" && R.lich_su && R.lich_su.length ? relList("Gần đây trên thang này", "phieu", R.lich_su, ordLine, "phieu") : null, type === "phieu" ? reportCard(r) : null, type === "du_an" ? taskSection(r, R) : null, card("Thông tin", null, dl(type, r)), h("div", { class: "g g2" }, extra)];
     });
   }
 
@@ -874,7 +1100,17 @@
     var vals = {}, err = h("div", { class: "err" }), box = h("div", { class: "box" });
     var inputs = fields.map(function (f) { var el;
       if (f.t === "select") el = h("select", { onchange: function (e) { vals[f.k] = e.target.value; } }, [h("option", { value: "" }, f.placeholder || "— chọn —")].concat(f.options.map(function (o) { return h("option", { value: o[0], selected: o[0] === f.v }, o[1]); })));
-      else if (f.t === "multi") el = h("div", { style: "max-height:190px;overflow:auto;border:1px solid var(--line2);border-radius:11px;padding:6px" }, f.options.map(function (o) { return h("label", { style: "display:flex;gap:10px;align-items:center;padding:5px 6px;font-weight:400;color:var(--ink);font-size:13.5px" }, [h("input", { type: "checkbox", style: "width:auto", onchange: function (e) { var a = vals[f.k] || []; vals[f.k] = e.target.checked ? a.concat(o[0]) : a.filter(function (x) { return x !== o[0]; }); } }), o[1]]); }));
+      else if (f.t === "pick") {
+        var shown = h("div", { class: "pkv" }), list = h("div", { class: "pkl" }), q = h("input", { placeholder: f.placeholder || "Gõ để tìm…", autocomplete: "off" }), hits = [];
+        var paint = function () { var k = fold(q.value); hits = f.options.filter(function (o) { return !k || fold(o[1]).indexOf(k) >= 0; }).slice(0, 8); list.replaceChildren.apply(list, hits.length ? hits.map(function (o) { return h("div", { class: "pko", onclick: function () { choose(o); } }, o[1]); }) : [h("div", { class: "pko none" }, "Không thấy — thử gõ ngắn hơn")]); };
+        var choose = function (o) { vals[f.k] = o[0]; shown.replaceChildren(h("b", {}, o[1]), h("button", { type: "button", class: "btn sm ghost", onclick: function (ev) { ev.preventDefault(); delete vals[f.k]; shown.replaceChildren(); q.style.display = ""; list.style.display = ""; q.value = ""; paint(); q.focus(); } }, "Đổi")); q.style.display = "none"; list.style.display = "none"; };
+        q.addEventListener("input", paint); q.addEventListener("keydown", function (e) { if (e.key === "Enter" && hits[0]) { e.preventDefault(); choose(hits[0]); } });
+        el = h("div", { class: "pk" }, [shown, q, list]); paint(); var pre = f.options.filter(function (o) { return o[0] === f.v; })[0]; if (pre) choose(pre);
+      }
+      else if (f.t === "multi") {
+        vals[f.k] = (f.v || []).slice(); var mrows = f.options.map(function (o) { return { o: o, el: h("label", { style: "display:flex;gap:10px;align-items:center;padding:5px 6px;font-weight:400;color:var(--ink);font-size:13.5px" }, [h("input", { type: "checkbox", style: "width:auto", checked: vals[f.k].indexOf(o[0]) >= 0, onchange: function (e) { var a = vals[f.k] || []; vals[f.k] = e.target.checked ? a.concat(o[0]) : a.filter(function (x) { return x !== o[0]; }); } }), o[1]]) }; });
+        el = h("div", {}, [f.options.length > 8 ? h("input", { placeholder: "Lọc danh sách…", style: "margin-bottom:6px", oninput: function (e) { var k = fold(e.target.value); mrows.forEach(function (r) { r.el.style.display = !k || fold(r.o[1]).indexOf(k) >= 0 ? "" : "none"; }); } }) : null, h("div", { style: "max-height:190px;overflow:auto;border:1px solid var(--line2);border-radius:11px;padding:6px" }, mrows.map(function (r) { return r.el; }))]);
+      }
       else if (f.t === "textarea") el = h("textarea", { value: f.v || "", oninput: function (e) { vals[f.k] = e.target.value; } });
       else el = h("input", { type: f.t || "text", value: f.v == null ? "" : f.v, oninput: function (e) { vals[f.k] = e.target.value; } });
       if (f.v != null && !vals[f.k]) vals[f.k] = f.v; return h("label", { class: "f" }, [f.label, el]); });
@@ -884,16 +1120,24 @@
     document.body.appendChild(modal); var first = box.querySelector("input,textarea,select"); if (first && window.innerWidth > 860) first.focus(); return modal;
   }
   var optsOf = function (rows, f) { return rows.map(function (r) { return [r.id, f ? f(r) : r.name]; }); };
-  function createOrderForm(unitId) { getList("thang_may").then(function (units) { form("Tạo phiếu dịch vụ", [{ k: "thang_may_id", label: "Thang máy", t: "select", options: optsOf(units, function (u) { return u.name + (u.site ? " — " + u.site : ""); }), v: unitId }, { k: "loai", label: "Loại phiếu", t: "select", options: M.options.orderType, v: "su_co" }, { k: "uu_tien", label: "Ưu tiên", t: "select", options: M.options.orderPriority, v: "binh_thuong" }, { k: "mo_ta", label: "Mô tả", t: "textarea" }, { k: "nguoi_bao", label: "Người báo" }, { k: "sdt_nguoi_bao", label: "SĐT người báo", t: "tel" }, { k: "ngay_hen", label: "Ngày hẹn", t: "date" }], function (v) { return post("/api/order", v); }, "Tạo phiếu", function (r) { return "Đã tạo " + r.name; }); }); }
+  var unitLabel = function (u) { return u.name + (u.site ? " — " + u.site : "") + (u.vi_tri ? " · " + u.vi_tri : ""); };
+  function createOrderForm(unitId) { getList("thang_may").then(function (units) { form("Báo sự cố / tạo phiếu", [{ k: "thang_may_id", label: "Thang máy (gõ mã hoặc tên tòa nhà)", t: "pick", options: optsOf(units, unitLabel), v: unitId }, { k: "mo_ta", label: "Mô tả", t: "textarea" }, { k: "loai", label: "Loại phiếu", t: "select", options: M.options.orderType, v: "su_co" }, { k: "uu_tien", label: "Ưu tiên", t: "select", options: M.options.orderPriority, v: "binh_thuong" }, { k: "nguoi_bao", label: "Người báo" }, { k: "sdt_nguoi_bao", label: "SĐT người báo", t: "tel" }, { k: "ngay_hen", label: "Ngày hẹn", t: "date" }], function (v) { return post("/api/order", v); }, "Tạo phiếu", function (r) { return "Đã tạo " + r.name; }); }); }
+  // Số việc đang mở của từng người → chọn người giao việc nhìn thấy ai đang rảnh.
+  function userOptions(rows) {
+    var open = rows.filter(function (r) { return ["hoan_thanh", "huy"].indexOf(r.trang_thai) < 0 && r.nguoi_phu_trach; });
+    return (M.users || []).map(function (u) { var val = u.name + (u.email ? " <" + u.email + ">" : ""), n = open.filter(function (r) { var p = String(r.nguoi_phu_trach).toLowerCase(); return (u.email && p.indexOf(u.email.toLowerCase()) >= 0) || (u.name && p.indexOf(u.name.toLowerCase()) >= 0); }).length; return [val, u.name + " · " + (n ? n + " việc đang mở" : "đang rảnh")]; });
+  }
   function orderEdit(o) {
-    var users = (M.users || []).map(function (u) { return [u.name + (u.email ? " <" + u.email + ">" : ""), u.name]; }), f = [];
-    if (isAdmin()) { f.push(users.length ? { k: "nguoi_phu_trach", label: "Người phụ trách", t: "select", options: users, v: o.nguoi_phu_trach || "" } : { k: "nguoi_phu_trach", label: "Người phụ trách (tên <email>)", v: o.nguoi_phu_trach || "" }); f.push({ k: "uu_tien", label: "Ưu tiên", t: "select", options: M.options.orderPriority, v: o.uu_tien }); f.push({ k: "ngay_hen", label: "Ngày hẹn", t: "date", v: o.ngay_hen || "" }); }
-    f.push({ k: "trang_thai", label: "Trạng thái", t: "select", options: M.options.orderStatus.filter(function (s) { return isAdmin() || s[0] !== "huy"; }), v: o.trang_thai || "moi" }, { k: "ket_qua", label: "Kết quả xử lý", t: "textarea", v: o.ket_qua || "" });
-    form("Cập nhật " + o.name, f, function (v) { var p = {}; Object.keys(v).forEach(function (k) { if (v[k] !== undefined && v[k] !== (o[k] || "") && !(k === "trang_thai" && v[k] === (o.trang_thai || "moi"))) p[k] = v[k]; }); return post("/api/order/update", { id: o.id, patch: p }); }, "Lưu", "Đã cập nhật");
+    getList("phieu").then(function (rows) {
+      var users = userOptions(rows), f = [];
+      if (isAdmin()) { f.push(users.length ? { k: "nguoi_phu_trach", label: "Người phụ trách", t: "select", options: users, v: o.nguoi_phu_trach || "" } : { k: "nguoi_phu_trach", label: "Người phụ trách (tên <email>)", v: o.nguoi_phu_trach || "" }); f.push({ k: "uu_tien", label: "Ưu tiên", t: "select", options: M.options.orderPriority, v: o.uu_tien }); f.push({ k: "ngay_hen", label: "Ngày hẹn", t: "date", v: o.ngay_hen || "" }); }
+      f.push({ k: "trang_thai", label: "Trạng thái", t: "select", options: M.options.orderStatus.filter(function (s) { return (isAdmin() || s[0] !== "huy") && s[0] !== "hoan_thanh"; }), v: o.trang_thai || "moi" }, { k: "ket_qua", label: "Ghi chú / kết quả", t: "textarea", v: o.ket_qua || "" });
+      form("Cập nhật " + o.name, f, function (v) { var p = {}; Object.keys(v).forEach(function (k) { if (v[k] !== undefined && v[k] !== (o[k] || "") && !(k === "trang_thai" && v[k] === (o.trang_thai || "moi"))) p[k] = v[k]; }); return post("/api/order/update", { id: o.id, patch: p }); }, "Lưu", "Đã cập nhật");
+    });
   }
   function createSiteForm() { form("Thêm công trình", [{ k: "name", label: "Tên công trình" }, { k: "dia_chi", label: "Địa chỉ" }, { k: "tinh_thanh", label: "Tỉnh/Thành" }, { k: "loai_cong_trinh", label: "Loại công trình", t: "select", options: M.options.siteType }, { k: "so_tang", label: "Số tầng", t: "number" }, { k: "ten_chu_dau_tu", label: "Chủ đầu tư" }, { k: "nguoi_lien_he", label: "Người liên hệ" }, { k: "sdt_lien_he", label: "SĐT liên hệ", t: "tel" }], function (v) { return post("/api/site", v); }, "Lưu", "Đã thêm công trình"); }
-  function createUnitForm(siteId) { getList("cong_trinh").then(function (sites) { form("Thêm thang máy", [{ k: "name", label: "Mã thang (vd ELX-HP-0001)" }, { k: "cong_trinh_id", label: "Công trình", t: "select", options: optsOf(sites), v: siteId }, { k: "vi_tri", label: "Vị trí (khối/lối)" }, { k: "loai", label: "Loại thang", t: "select", options: M.options.unitType, v: "hanh_khach" }, { k: "hang", label: "Hãng", v: "ELUX" }, { k: "model", label: "Model" }, { k: "so_serial", label: "Số serial" }, { k: "tai_trong_kg", label: "Tải trọng (kg)", t: "number" }, { k: "so_diem_dung", label: "Số điểm dừng", t: "number" }, { k: "ngay_ban_giao", label: "Ngày bàn giao (nếu đã bàn giao)", t: "date" }, { k: "bao_hanh_thang", label: "Bảo hành (tháng)", t: "number", v: 12 }, { k: "chu_ky_kiem_dinh_thang", label: "Chu kỳ kiểm định (tháng)", t: "number", v: 12 }, { k: "ngay_kiem_dinh_ke_tiep", label: "Kiểm định kế tiếp", t: "date" }], function (v) { return post("/api/unit", v); }, "Lưu", "Đã thêm thang"); }); }
-  function createContractForm() { Promise.all([getList("cong_trinh"), getList("thang_may")]).then(function (a) { form("Thêm hợp đồng", [{ k: "name", label: "Số hợp đồng" }, { k: "loai", label: "Loại", t: "select", options: M.options.contractType }, { k: "ten_khach_hang", label: "Khách hàng" }, { k: "sdt_thong_bao", label: "SĐT nhận thông báo (Zalo)", t: "tel" }, { k: "cong_trinh_id", label: "Công trình", t: "select", options: optsOf(a[0]) }, { k: "thang_may_ids", label: "Thang trong hợp đồng", t: "multi", options: optsOf(a[1], function (u) { return u.name + (u.site ? " — " + u.site : "") + (u.hop_dong ? " (đã có HĐ " + u.hop_dong + ")" : ""); }) }, { k: "gia_tri", label: "Giá trị (VND)", t: "number" }, { k: "ngay_ky", label: "Ngày ký", t: "date" }, { k: "ngay_hieu_luc", label: "Hiệu lực từ", t: "date", v: M.today }, { k: "ngay_het_han", label: "Hết hạn", t: "date" }, { k: "pham_vi_bao_tri", label: "Phạm vi bảo trì", t: "select", options: M.options.contractScope }, { k: "chu_ky_bao_tri_thang", label: "Chu kỳ bảo trì (tháng giữa 2 lần: 1 = hằng tháng, 3 = mỗi quý)", t: "number", v: 1 }, { k: "ngay_du_kien_ban_giao", label: "Dự kiến bàn giao (hợp đồng lắp đặt)", t: "date" }], function (v) { return post("/api/contract", v); }, "Lưu", function (r) { return r.projectId ? "Đã tạo hợp đồng + dự án" : "Đã tạo hợp đồng"; }); }); }
+  function createUnitForm(siteId) { getList("cong_trinh").then(function (sites) { form("Thêm thang máy", [{ k: "name", label: "Mã thang (vd ELX-HP-0001)" }, { k: "cong_trinh_id", label: "Công trình", t: "pick", options: optsOf(sites), v: siteId }, { k: "vi_tri", label: "Vị trí (khối/lối)" }, { k: "loai", label: "Loại thang", t: "select", options: M.options.unitType, v: "hanh_khach" }, { k: "hang", label: "Hãng", v: "ELUX" }, { k: "model", label: "Model" }, { k: "so_serial", label: "Số serial" }, { k: "tai_trong_kg", label: "Tải trọng (kg)", t: "number" }, { k: "so_diem_dung", label: "Số điểm dừng", t: "number" }, { k: "ngay_ban_giao", label: "Ngày bàn giao (nếu đã bàn giao)", t: "date" }, { k: "bao_hanh_thang", label: "Bảo hành (tháng)", t: "number", v: 12 }, { k: "chu_ky_kiem_dinh_thang", label: "Chu kỳ kiểm định (tháng)", t: "number", v: 12 }, { k: "ngay_kiem_dinh_ke_tiep", label: "Kiểm định kế tiếp", t: "date" }], function (v) { return post("/api/unit", v); }, "Lưu", "Đã thêm thang"); }); }
+  function createContractForm(pre) { pre = pre || {}; Promise.all([getList("cong_trinh"), getList("thang_may")]).then(function (a) { form(pre.title || "Thêm hợp đồng", [{ k: "name", label: "Số hợp đồng" }, { k: "loai", label: "Loại", t: "select", options: M.options.contractType, v: pre.loai }, { k: "ten_khach_hang", label: "Khách hàng", v: pre.ten_khach_hang }, { k: "sdt_thong_bao", label: "SĐT nhận thông báo (Zalo)", t: "tel" }, { k: "cong_trinh_id", label: "Công trình", t: "pick", options: optsOf(a[0]), v: pre.cong_trinh_id }, { k: "thang_may_ids", label: "Thang trong hợp đồng", t: "multi", v: pre.thang_may_ids, options: optsOf(a[1], function (u) { return u.name + (u.site ? " — " + u.site : "") + (u.hop_dong ? " (đã có HĐ " + u.hop_dong + ")" : ""); }) }, { k: "gia_tri", label: "Giá trị (VND)", t: "number", v: pre.gia_tri }, { k: "ngay_ky", label: "Ngày ký", t: "date" }, { k: "ngay_hieu_luc", label: "Hiệu lực từ", t: "date", v: M.today }, { k: "ngay_het_han", label: "Hết hạn", t: "date" }, { k: "pham_vi_bao_tri", label: "Phạm vi bảo trì", t: "select", options: M.options.contractScope }, { k: "chu_ky_bao_tri_thang", label: "Chu kỳ bảo trì (tháng giữa 2 lần: 1 = hằng tháng, 3 = mỗi quý)", t: "number", v: 1 }, { k: "ngay_du_kien_ban_giao", label: "Dự kiến bàn giao (hợp đồng lắp đặt)", t: "date" }], function (v) { return post("/api/contract", v); }, "Lưu", function (r) { return r.projectId ? "Đã tạo hợp đồng + dự án" : "Đã tạo hợp đồng"; }); }); }
   function generateForm(c) { form("Sinh phiếu bảo trì định kỳ — " + c.name, [{ k: "from", label: "Từ ngày", t: "date", v: M.today }, { k: "months", label: "Số tháng", t: "number", v: 3 }], function (v) { return post("/api/contract/generate", { id: c.id, from: v.from, months: Number(v.months) }); }, "Sinh phiếu", function (r) { return "Đã tạo " + r.created + " phiếu" + (r.remaining ? " — còn " + r.remaining + ", bấm lại để tiếp tục" : ""); }); }
   function scheduleForm(u) { form("Lên lịch kiểm định — " + u.name, [{ k: "ngay", label: "Ngày kiểm định", t: "date" }, { k: "don_vi_kiem_dinh", label: "Đơn vị kiểm định" }], function (v) { return post("/api/inspection/schedule", { unitId: u.id, ngay: v.ngay, don_vi_kiem_dinh: v.don_vi_kiem_dinh }); }, "Lên lịch", "Đã lên lịch kiểm định"); }
   function inspectionForm(k) { form("Ghi kết quả kiểm định — " + k.name, [{ k: "ngay_kiem_dinh", label: "Ngày kiểm định", t: "date", v: k.ngay_kiem_dinh || M.today }, { k: "ket_qua", label: "Kết quả", t: "select", options: M.options.inspectionResult }, { k: "ghi_chu", label: "Ghi chú", t: "textarea" }], function (v) { return post("/api/inspection/record", Object.assign({ id: k.id }, v)); }, "Lưu", function (r) { return r.next ? "Đã ghi — kiểm định kế tiếp " + fmtD(r.next) : "Đã ghi"; }); }

@@ -15,14 +15,16 @@ import { todayVN, qrSign, qrVerify, makeLimiter, cleanText, flat } from "./logic
 import * as svc from "./service.mjs";
 import * as notify from "./notify.mjs";
 import * as ttpl from "./templates.mjs";
+import * as rpt from "./reports.mjs";
 
 // Chạy thử cục bộ (SERVICE_DEV_LOCATION) dùng kho trong bộ nhớ, không đụng database.
 let notifyStore; const store = () => (notifyStore ||= (devLocation() ? notify.memoryStore() : notify.dbStore()));
+let reportStore; const repStore = () => (reportStore ||= (devLocation() ? rpt.memoryReportStore() : rpt.dbReportStore()));
 let taskTplStore; const tplStore = () => (taskTplStore ||= (devLocation() ? ttpl.memoryStore() : ttpl.dbStore()));
 
 const APP = "service";
 const PAGE = new URL("./page.html", import.meta.url);
-const readBody = async (req) => { let b = ""; for await (const ch of req) { b += ch; if (b.length > 200_000) throw new svc.UserError("Dữ liệu gửi lên quá lớn", 413); } return b; };
+const readBody = async (req, max = 200_000) => { let b = ""; for await (const ch of req) { b += ch; if (b.length > max) throw new svc.UserError("Dữ liệu gửi lên quá lớn", 413); } return b; };
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 const html = (res, code, body) => { res.writeHead(code, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" }); res.end(body); };
 const shell = (title, inner) => `<!doctype html><html lang="vi"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(title)}</title>
@@ -78,6 +80,12 @@ function decryptSso(encryptedData) {
 }
 const isAdminPayload = (p) => p.role === "admin" || p.type === "agency" || p.isAgencyOwner === true;
 
+// Ảnh lên Media Library nếu app đã có scope medias.write; gặp 401/403 thì tạm tắt 10 phút (ảnh tự về DB), tránh thử lại mỗi lần chụp.
+const mediaOff = new Map();
+const mediaFor = (ghl, loc) => (Date.now() < (mediaOff.get(loc) || 0) ? null : {
+  upload: async (f) => { try { return await ghl.uploadMedia(f); } catch (e) { if (e.status === 401 || e.status === 403) mediaOff.set(loc, Date.now() + 600_000); throw e; } },
+  remove: (id) => ghl.deleteMedia(id),
+});
 const pubLimit = makeLimiter(5, 3600_000), pubLimitUnit = makeLimiter(30, 3600_000);
 // Tiền tố đường dẫn: khi app bị gắn dưới 1 tiền tố (vd Express app.use("/center", ...) ở host gộp uplifting-social-ai), Express
 // cắt tiền tố khỏi req.url nhưng để lại ở req.baseUrl — mọi link/redirect tuyệt đối phải ghép lại, nếu không trỏ trật ra gốc domain.
@@ -186,7 +194,7 @@ fetch(location.pathname.replace(/\\/q$/,"")+"/q/submit",{method:"POST",body:JSON
         if (!sess) return j({ error: "Chưa đăng nhập" }, 401);
         const ghl = ghlFor(sess.locationId), today = todayVN(), isAdmin = sess.role === "admin", me = { email: sess.email || "", name: sess.name || "" };
         const adminOnly = (m = "Chỉ quản trị mới được thực hiện thao tác này") => { if (!isAdmin) throw new svc.UserError(m, 403); };
-        const body = async () => { try { return JSON.parse((await readBody(req)) || "{}"); } catch (e) { if (e instanceof svc.UserError) throw e; throw new svc.UserError("Dữ liệu không hợp lệ"); } };
+        const body = async (max) => { try { return JSON.parse((await readBody(req, max)) || "{}"); } catch (e) { if (e instanceof svc.UserError) throw e; throw new svc.UserError("Dữ liệu không hợp lệ"); } };
 
         if (req.method === "GET") {
           if (sub === "/api/meta") return j({ options: OPTIONS, thresholds: THRESHOLDS, role: sess.role, me, today, users: await ghl.users(), dev: !!devLocation() });
@@ -213,15 +221,53 @@ fetch(location.pathname.replace(/\\/q$/,"")+"/q/submit",{method:"POST",body:JSON
             adminOnly();
             return j({ templates: await notify.effectiveTemplates(store(), sess.locationId), subjects: notify.SUBJECTS, statuses: OPTIONS.orderStatus, webhookUrl: `${publicModuleUrl(req, u)}/webhooks/notify?loc=${encodeURIComponent(sess.locationId)}&k=${notify.notifyKey(sess.locationId)}` });
           }
+          if (sub === "/api/checklists") {
+            adminOnly(); const list = await rpt.effectiveChecklists(repStore(), sess.locationId);
+            return j({ templates: list.map((t) => ({ key: t.key, label: t.label, types: t.types, min_photos: t.min_photos, need_signature: t.need_signature, text: rpt.itemsToText(t.items), count: t.items.length })) });
+          }
+          if (sub === "/api/report") {
+            const order = await svc.getOrder(ghl, cleanText(u.searchParams.get("phieuId") ?? "", 40));
+            const v = await rpt.view({ store: repStore(), loc: sess.locationId, order, templates: await rpt.effectiveChecklists(repStore(), sess.locationId) });
+            return j({ ...v, canEdit: !["hoan_thanh", "huy"].includes(order.trang_thai) && svc.canWorkOn(order, { isAdmin, me }) });
+          }
+          if (sub === "/api/file") {
+            const f = await repStore().getFile(sess.locationId, cleanText(u.searchParams.get("id") ?? "", 60)); if (!f) return j({ error: "Không tìm thấy tệp" }, 404);
+            res.writeHead(200, { "Content-Type": f.mime, "Cache-Control": "private, max-age=86400", "Content-Length": f.bytes.length }); res.end(f.bytes); return true;
+          }
+          if (sub === "/api/maintenance/due") { adminOnly(); return j(await svc.maintenanceDue(ghl, today)); }
           if (sub === "/api/health") return j({ ok: true, pendingRelations: svc.pendingRelations() });
         }
         if (req.method === "POST") {
-          const b = await body();
+          const b = await body(sub === "/api/report/photo" || sub === "/api/report/signature" ? 300_000 : undefined);
+          if (sub.startsWith("/api/report/")) {
+            // Biên bản của phiếu: người làm được phiếu (hoặc quản trị) mới sửa; đã đóng phiếu thì khoá.
+            const order = await svc.getOrder(ghl, cleanText(b.phieuId, 40)); if (!svc.canWorkOn(order, { isAdmin, me })) throw new svc.UserError("Phiếu này đã giao cho người khác", 403);
+            const ctx = { store: repStore(), loc: sess.locationId, order, templates: await rpt.effectiveChecklists(repStore(), sess.locationId) };
+            if (sub === "/api/report/save") return j(await rpt.saveAnswers({ ...ctx, answers: b.answers }));
+            if (sub === "/api/report/photo") return j(await rpt.addPhoto({ ...ctx, dataUrl: b.data, media: mediaFor(ghl, sess.locationId) }));
+            if (sub === "/api/report/photo/delete") return j(await rpt.removePhoto({ ...ctx, id: cleanText(b.id, 60), media: mediaFor(ghl, sess.locationId) }));
+            if (sub === "/api/report/signature") return j(await rpt.setSignature({ ...ctx, dataUrl: b.data, signer: b.signer }));
+            if (sub === "/api/report/nosign") return j(await rpt.setNoSign({ ...ctx, reason: b.reason === null ? null : String(b.reason ?? "") }));
+          }
           if (sub === "/api/site") { adminOnly(); return j(await svc.createSite(ghl, b)); }
           if (sub === "/api/unit") { adminOnly(); return j(await svc.createUnit(ghl, b)); }
           if (sub === "/api/contract") { adminOnly(); return j(await svc.createContract(ghl, b, today)); }
           if (sub === "/api/order") return j(await svc.createOrder(ghl, b, { today, source: "ung_dung", actor: me.name }));
-          if (sub === "/api/order/update") return j(await svc.updateOrder(ghl, cleanText(b.id, 40), b.patch || {}, { today, isAdmin, me }));
+          if (sub === "/api/order/update") {
+            const id = cleanText(b.id, 40), patch = b.patch || {};
+            const needsGuard = patch.trang_thai === "hoan_thanh", starts = patch.trang_thai === "dang_xu_ly";
+            const order = needsGuard || starts ? await svc.getOrder(ghl, id) : null;
+            const templates = order ? await rpt.effectiveChecklists(repStore(), sess.locationId) : null;
+            if (needsGuard && svc.canWorkOn(order, { isAdmin, me })) await rpt.guardComplete({ store: repStore(), loc: sess.locationId, order, templates, patch, skip: isAdmin && b.skipChecklist === true });
+            const r = await svc.updateOrder(ghl, id, patch, { today, isAdmin, me });
+            if (starts && order.trang_thai !== "dang_xu_ly") await rpt.markStarted({ store: repStore(), loc: sess.locationId, order, templates }).catch((e) => console.error("[service] ghi giờ bắt đầu lỗi:", e.message));
+            return j(r);
+          }
+          if (sub === "/api/checklist") {
+            adminOnly(); let t; try { t = rpt.validateChecklist(b); } catch (e) { throw new svc.UserError(e.message, e.status || 400); }
+            await repStore().save(sess.locationId, t); return j({ ok: true });
+          }
+          if (sub === "/api/maintenance/generate-all") { adminOnly(); return j(await svc.generateAllDue(ghl, today)); }
           if (sub === "/api/project/stage") { adminOnly(); return j(await svc.setProjectStage(ghl, cleanText(b.id, 40), b.stage)); }
           if (sub === "/api/project/handover") { adminOnly(); return j(await svc.handoverProject(ghl, cleanText(b.id, 40), b, today)); }
           if (sub === "/api/contract/generate") { adminOnly(); return j(await svc.generateMaintenance(ghl, cleanText(b.id, 40), b, today)); }

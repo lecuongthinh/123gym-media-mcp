@@ -85,9 +85,34 @@ export function createGhl({ locationId, getToken, fetchImpl = globalThis.fetch, 
     oppCache = { at: now(), rows }; return rows;
   }
 
+  // --- Media Library (ảnh hiện trường). Cần scope medias.write; thiếu thì ném lỗi 401/403 để nơi gọi tự dự phòng. ---------------
+  // Ảnh vào thư mục riêng cho gọn (tạo 1 lần, nhớ id); không tạo/đọc được thư mục thì để ở gốc, không làm hỏng việc upload.
+  const FOLDER = "Phiếu dịch vụ"; let folderId;
+  async function mediaFolder() {
+    if (folderId !== undefined) return folderId;
+    folderId = null;
+    try {
+      const j = await call("GET", `/medias/files?altType=location&altId=${locationId}&type=folder&query=${encodeURIComponent(FOLDER)}&limit=50`, undefined, 1);
+      const hit = (j.files || []).find((f) => f.name === FOLDER); if (hit) return (folderId = hit._id || hit.id || null);
+      const c = await call("POST", "/medias/folder", { altType: "location", altId: locationId, name: FOLDER }, 1);
+      folderId = c._id || c.id || c.folder?._id || null;
+    } catch { folderId = null; }
+    return folderId;
+  }
+  async function uploadMedia({ bytes, mime, name }) {
+    const fd = new FormData(); fd.append("file", new Blob([bytes], { type: mime }), name); fd.append("name", name); fd.append("hosted", "false");
+    const pid = await mediaFolder(); if (pid) fd.append("parentId", pid);
+    const r = await fetchImpl(BASE + "/medias/upload-file", { method: "POST", headers: { Authorization: `Bearer ${await getToken()}`, Version: "2021-07-28", Accept: "application/json" }, body: fd });
+    const text = await r.text(); let j = {}; try { j = text ? JSON.parse(text) : {}; } catch { j = { raw: text }; }
+    if (!r.ok) { const e = new Error(`GHL POST /medias/upload-file → ${r.status}: ${String(j.message || j.error || text).slice(0, 200)}`); e.status = r.status; throw e; }
+    if (!j.fileId || !j.url) throw new Error("GHL không trả về fileId/url của ảnh");
+    return { id: j.fileId, url: j.url };
+  }
+
   return {
     locationId,
-    listAll, pipelines, opportunities,
+    listAll, pipelines, opportunities, uploadMedia,
+    async deleteMedia(id) { await call("DELETE", `/medias/${encodeURIComponent(id)}?altType=location&altId=${locationId}`, undefined, 1); },
     async getRecord(objectKey, id) { return (await call("GET", `/objects/${objectKey}/records/${id}`)).record; },
     async createRecord(objectKey, properties) {
       const j = await call("POST", `/objects/${objectKey}/records`, { locationId, properties });
