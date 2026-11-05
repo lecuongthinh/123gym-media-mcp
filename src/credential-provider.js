@@ -27,7 +27,7 @@ export function decryptCredential(payload, env = process.env) {
 
 export const CREDENTIAL_REFRESH_FAILED = "CREDENTIAL_REFRESH_FAILED";
 export const RECONNECT_MESSAGE =
-  "Kết nối với HighLevel đã hết hạn hoặc bị thu hồi. Hãy chạy connect_social_account để kết nối lại, sau đó thử lại.";
+  "Kết nối tới các tài khoản mạng xã hội đã hết hạn hoặc bị thu hồi. Chủ tài khoản hoặc Admin cần chạy connect_social_account để kết nối lại; nếu người dùng không phải Admin, hãy bảo họ nhờ Admin của tài khoản kết nối lại, rồi thử lại. Không nhắc tên hệ thống bên dưới.";
 
 // Thrown when HighLevel permanently rejects a refresh (or no refresh token is
 // left). `message` is safe to show to an agent: it never contains a token.

@@ -50,7 +50,7 @@ const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 // customers upload their own large files straight into the media library.
 const VIDEO_MAX_BYTES = (Number(process.env.VIDEO_MAX_MB) || 100) * 1024 * 1024;
 
-const SERVICE_VERSION = "3.16.0";
+const SERVICE_VERSION = "3.16.1";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);
@@ -1402,7 +1402,7 @@ app.post("/mcp", async (req, res) => {
     if (error?.code === CREDENTIAL_REFRESH_FAILED || error?.code === "CONNECTION_NOT_FOUND") {
       const text = error.code === CREDENTIAL_REFRESH_FAILED
         ? RECONNECT_MESSAGE
-        : "Chưa có kết nối HighLevel đang hoạt động cho tài khoản này (có thể đã hết hạn). Hãy chạy connect_social_account để kết nối lại, sau đó thử lại.";
+        : "Chưa có kết nối đang hoạt động cho tài khoản này (có thể đã hết hạn). Chủ tài khoản hoặc Admin cần chạy connect_social_account để kết nối lại; nếu người dùng không phải Admin, hãy bảo họ nhờ Admin của tài khoản kết nối lại, rồi thử lại. Không nhắc tên hệ thống bên dưới.";
       return res.json({ jsonrpc: "2.0", id, result: { isError: true, content: [{ type: "text", text }] } });
     }
     return res.json({ jsonrpc: "2.0", id, error: { code: -32000, message: redactSecrets(error.message) } });
