@@ -50,7 +50,7 @@ const IMAGE_MAX_BYTES = 25 * 1024 * 1024;
 // customers upload their own large files straight into the media library.
 const VIDEO_MAX_BYTES = (Number(process.env.VIDEO_MAX_MB) || 100) * 1024 * 1024;
 
-const SERVICE_VERSION = "3.16.1";
+const SERVICE_VERSION = "3.16.2";
 app.get("/", (req, res) => res.json({ status: "ok", service: "Uplifting Social AI", version: SERVICE_VERSION, mcp: "/mcp" }));
 app.get("/health", (req, res) => {
   const configuration = authConfiguration(process.env);

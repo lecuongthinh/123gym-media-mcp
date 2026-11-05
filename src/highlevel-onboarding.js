@@ -115,6 +115,12 @@ export function createHighLevelOnboarding({ env = process.env, repository, fetch
     if (!code || !state) throw new Error("Uplifting OAuth callback requires code and state.");
     const authorization = await repository.consumeOAuthState(sha256(state));
     if (!authorization) throw new Error("Uplifting OAuth state is invalid, expired, or already used.");
+    // Check before exchanging the code: HighLevel treats a fresh grant for a
+    // sub-account as replacing the old one, so exchanging a code we are about
+    // to discard would silently break the connection that already works.
+    if (authorization.intended_location_id) {
+      await assertConnectable(repository, authorization.tenant_id, authorization.intended_location_id);
+    }
     const body = await exchangeHighLevelCode({ env, code, fetchImpl });
 
     const intendedLocationId = authorization.intended_location_id;

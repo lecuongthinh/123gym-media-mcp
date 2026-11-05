@@ -289,9 +289,11 @@ test("HighLevel callback does not save when the sub-account was taken by another
     async findLocationOwnerTenantId() { return "99999999-0000-4000-8000-000000000000"; },
     async saveHighLevelOAuthConnection() { saved = true; }
   });
-  const fetchImpl = async () => new Response(JSON.stringify({
-    access_token: "a", refresh_token: "r", locationId: LOCATION_ID, expires_in: 86400
-  }), { status: 200 });
+  let exchanges = 0;
+  const fetchImpl = async () => {
+    exchanges += 1;
+    return new Response(JSON.stringify({ access_token: "a", refresh_token: "r", locationId: LOCATION_ID, expires_in: 86400 }), { status: 200 });
+  };
   const onboarding = createHighLevelOnboarding({ env: env(), repository: { ...repository, async findLocationOwnerTenantId() { return null; } }, fetchImpl });
   const started = await onboarding.start({ tenantId: TENANT_ID, userId: USER_ID, role: "tenant_owner" }, { locationId: LOCATION_ID });
   const state = new URL(started.authorizationUrl).searchParams.get("state");
@@ -299,4 +301,5 @@ test("HighLevel callback does not save when the sub-account was taken by another
   const racing = createHighLevelOnboarding({ env: env(), repository, fetchImpl });
   await assert.rejects(() => racing.callback({ code: "c", state }), ConnectionConflictError);
   assert.equal(saved, false);
+  assert.equal(exchanges, 0, "the code must not be exchanged: that would replace the working grant");
 });
