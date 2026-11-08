@@ -136,7 +136,8 @@ async function followInfo(ghl, type, id) {
 }
 export async function toggleFollow(ghl, type, id, me) {
   need(PEOPLE_OBJ[type], "Loại không hợp lệ");
-  const uid = await userIdOf(ghl, me.email || me.name); need(uid, "Tài khoản của bạn chưa khớp người dùng nào trong GHL", 400);
+  const uid = await userIdOf(ghl, me.email || me.name);
+  need(uid, `Tài khoản của bạn (${me.email || me.name || "?"}) chưa khớp người dùng nào trong GHL (đọc được ${(await ghl.users()).length} người dùng của sub-account)`, 400);
   const info = await followInfo(ghl, type, id); need(info, "Không tìm thấy", 404);
   const cur = info.followers.map((f) => f.id), on = cur.includes(uid);
   const next = on ? cur.filter((x) => x !== uid) : [...cur, uid]; need(next.length <= 10, "Mỗi bản ghi có tối đa 10 người theo dõi");
