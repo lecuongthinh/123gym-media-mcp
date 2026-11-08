@@ -1,7 +1,7 @@
 // Nghiệp vụ của module service: đọc/gộp dữ liệu từ GHL, các thao tác (tạo, giao việc, sinh phiếu bảo trì định kỳ,
 // kiểm định...) và kiểm tra đầu vào. Không đụng HTTP — index.mjs lo phần đó. Mọi giá trị ghi xuống GHL đều đi qua
 // các hàm kiểm tra ở đây (liệt kê cố định các field cho phép, enum chỉ nhận key hợp lệ).
-import { OBJ, OPTIONS, isOption, ORDER_CLOSED, INSPECTION_OPEN } from "./schema.mjs";
+import { OBJ, OPTIONS, isOption, ORDER_CLOSED, INSPECTION_OPEN, PEOPLE_ROLES, PEOPLE_OBJ, PEOPLE_KEYS } from "./schema.mjs";
 import { flat, todayVN, computeDashboard, computeCharts, computeSales, planMaintenance, nextInspectionDate, isDate, cleanText, orderNumber, addMonths, toE164VN, taskProgress, normalizeTaskPatch, planFromTemplate, projectLifecycle, projectHealth, LIFECYCLE } from "./logic.mjs";
 
 export class UserError extends Error { constructor(m, status = 400) { super(m); this.status = status; } }
@@ -69,7 +69,79 @@ export async function detail(ghl, type, id) {
   } else if (type === "kiem_dinh") {
     out.related = { thang_may: U.get(rec.thang_may_id) || null };
   }
+  // Người liên quan (contact/công ty) + người theo dõi: lỗi ở đây không được làm hỏng trang chi tiết.
+  const siteId = type === "cong_trinh" ? null : type === "kiem_dinh" ? U.get(rec.thang_may_id)?.cong_trinh_id : rec.cong_trinh_id;
+  try { out.people = await peopleOf(ghl, type, id, siteId); } catch (e) { out.people = []; out.peopleError = String(e.message).slice(0, 160); }
+  out.peopleRoles = PEOPLE_ROLES[type] || [];
+  try { out.follow = await followInfo(ghl, type, id); } catch { out.follow = null; }
   return out;
+}
+
+// --- người liên quan: đọc / thêm / gỡ ---------------------------------------------------------------------------
+// Đọc từ association của GHL (nhãn vai trò theo từng bản ghi). Bản ghi con thừa hưởng người của công trình (đánh dấu from).
+export async function peopleOf(ghl, type, id, siteId) {
+  const defs = await ghl.assocDefs();
+  const sources = [{ id, from: "" }]; if (siteId && siteId !== id) sources.push({ id: siteId, from: "Công trình" });
+  const found = [];
+  for (const src of sources) {
+    for (const r of await ghl.relationsOf(src.id)) {
+      if (!PEOPLE_KEYS.has(r.associationKey)) continue;
+      const a = defs[r.associationKey]; if (!a) continue;
+      const personSide = ["contact", "business"].includes(a.firstObjectKey) ? "first" : "second";
+      const kind = personSide === "first" ? a.firstObjectKey : a.secondObjectKey;
+      const personId = personSide === "first" ? r.firstRecordId : r.secondRecordId;
+      if (personId === src.id) continue;
+      found.push({ relationId: r.id, role: personSide === "first" ? a.firstObjectLabel : a.secondObjectLabel, roleKey: r.associationKey, kind, personId, from: src.from });
+    }
+  }
+  const seen = new Set(), uniq = found.filter((p) => { const k = `${p.kind}|${p.personId}|${p.roleKey}`; if (seen.has(k)) return false; seen.add(k); return true; });
+  const people = await Promise.all(uniq.map(async (p) => {
+    let who = null; try { who = p.kind === "contact" ? await ghl.contactById(p.personId) : await ghl.businessById(p.personId); } catch {}
+    return { ...p, name: who?.name || "(không đọc được tên)", phone: who?.phone || "", email: who?.email || "", company: who?.company || "" };
+  }));
+  return people.sort((a, b) => (a.from ? 1 : 0) - (b.from ? 1 : 0) || (a.kind === b.kind ? 0 : a.kind === "business" ? -1 : 1));
+}
+export async function searchPeople(ghl, kind, q) {
+  need(["contact", "business"].includes(kind), "Loại không hợp lệ");
+  const t = str(q, 60); need(t.length >= 2, "Gõ ít nhất 2 ký tự để tìm");
+  return kind === "contact" ? ghl.searchContacts(t) : ghl.searchBusinesses(t);
+}
+export async function addPerson(ghl, type, id, { role, personId }) {
+  const r = (PEOPLE_ROLES[type] || []).find((x) => x[0] === role); need(r, "Vai trò không hợp lệ");
+  const pid = str(personId, 60); need(pid, "Chọn người hoặc công ty");
+  try { await ghl.relate(role, { [PEOPLE_OBJ[type]]: id, [r[2]]: pid }); }
+  catch (e) { throw new UserError(/Không có association/.test(e.message) ? `Sub-account này chưa có liên kết "${r[1]}" — cần chạy bản cập nhật cấu hình dữ liệu` : "Không thêm được: " + String(e.message).slice(0, 140), 400); }
+  return { ok: true };
+}
+export async function removePerson(ghl, type, id, relationId) {
+  const rid = str(relationId, 60);
+  const own = (await ghl.relationsOf(id)).find((r) => r.id === rid && PEOPLE_KEYS.has(r.associationKey)); need(own, "Không tìm thấy liên kết này", 404);
+  await ghl.unrelate(rid); return { ok: true };
+}
+
+// --- người phụ trách (owner) & theo dõi (follower) của GHL, chạy song song với trường chữ nguoi_phu_trach --------
+// Khớp người dùng GHL theo email trong "Tên <email>" hoặc theo tên; không khớp thì bỏ qua (trường chữ vẫn là nguồn chính của app).
+export async function userIdOf(ghl, text) {
+  const t = String(text || "").toLowerCase(); if (!t) return null;
+  const users = await ghl.users();
+  const hit = users.find((u) => u.email && t.includes(u.email.toLowerCase())) || users.find((u) => u.name && t.includes(u.name.toLowerCase()));
+  return hit?.id || null;
+}
+const ownerExtra = async (ghl, text) => { try { if (!text) return { owners: [] }; const id = await userIdOf(ghl, text); return id ? { owners: [id] } : {}; } catch { return {}; } };
+async function followInfo(ghl, type, id) {
+  const raw = (await ghl.listAll(PEOPLE_OBJ[type])).find((r) => r.id === id); if (!raw) return null;
+  const users = await ghl.users(); const name = (uid) => users.find((u) => u.id === uid)?.name || "";
+  const ids = (raw.followers || []).map((f) => (typeof f === "string" ? f : f?.id)).filter(Boolean);
+  return { followers: ids.map((uid) => ({ id: uid, name: name(uid) || "(người dùng)" })), owner: (raw.owners || []).map((f) => (typeof f === "string" ? f : f?.id)).filter(Boolean).map((uid) => ({ id: uid, name: name(uid) })) };
+}
+export async function toggleFollow(ghl, type, id, me) {
+  need(PEOPLE_OBJ[type], "Loại không hợp lệ");
+  const uid = await userIdOf(ghl, me.email || me.name); need(uid, "Tài khoản của bạn chưa khớp người dùng nào trong GHL", 400);
+  const info = await followInfo(ghl, type, id); need(info, "Không tìm thấy", 404);
+  const cur = info.followers.map((f) => f.id), on = cur.includes(uid);
+  const next = on ? cur.filter((x) => x !== uid) : [...cur, uid]; need(next.length <= 10, "Mỗi bản ghi có tối đa 10 người theo dõi");
+  await ghl.updateRecord(PEOPLE_OBJ[type], id, {}, { followers: next });
+  return { ok: true, following: !on };
 }
 
 // --- liên kết GHL (best-effort, không chặn thao tác: trường id đã là nguồn chính cho app) --------------------
@@ -97,12 +169,22 @@ export function linkContactLater(ghl, assocKey, selfObject, selfId, phone) {
     await ghl.relate(assocKey, { [selfObject]: selfId, contact: cid });
   });
 }
+// Công ty CÓ SẴN trong CRM khớp đúng tên (không phân biệt hoa thường/dấu cách thừa) → gắn làm chủ đầu tư / khách hàng. Không tạo công ty mới.
+export function linkBusinessLater(ghl, assocKey, selfObject, selfId, companyName) {
+  const n = String(companyName || "").trim().toLowerCase().replace(/\s+/g, " "); if (n.length < 3) return;
+  runLater(`business ${assocKey}`, async () => {
+    const hit = (await ghl.searchBusinesses(n)).find((b) => String(b.name).trim().toLowerCase().replace(/\s+/g, " ") === n);
+    if (hit) await ghl.relate(assocKey, { [selfObject]: selfId, business: hit.id });
+  });
+}
 export const pendingRelations = () => bgQueue.length;
 
 // --- tạo mới --------------------------------------------------------------------------------------------
 export async function createSite(ghl, i) {
   const name = str(i.name, 150); need(name, "Cần tên công trình");
   const rec = await ghl.createRecord(OBJ.site, clean({ name, dia_chi: str(i.dia_chi), tinh_thanh: str(i.tinh_thanh, 60), loai_cong_trinh: opt("siteType", i.loai_cong_trinh, "Loại công trình"), so_tang: num(i.so_tang, "Số tầng"), ten_chu_dau_tu: str(i.ten_chu_dau_tu), nguoi_lien_he: str(i.nguoi_lien_he, 100), sdt_lien_he: str(i.sdt_lien_he, 30), ghi_chu: str(i.ghi_chu, 1000) }));
+  if (i.sdt_lien_he) linkContactLater(ghl, "cong_trinh_lien_he_chinh", OBJ.site, rec.id, i.sdt_lien_he);
+  linkBusinessLater(ghl, "cong_trinh_chu_dau_tu", OBJ.site, rec.id, i.ten_chu_dau_tu);
   return { id: rec.id };
 }
 
@@ -146,6 +228,7 @@ export async function createContract(ghl, i, today) {
     ten_khach_hang: str(i.ten_khach_hang, 150), sdt_thong_bao: str(i.sdt_thong_bao, 30), cong_trinh_id: site?.id,
   }));
   if (i.sdt_thong_bao) linkContactLater(ghl, "hop_dong_nguoi_ky", OBJ.contract, rec.id, i.sdt_thong_bao);
+  linkBusinessLater(ghl, "hop_dong_khach_hang", OBJ.contract, rec.id, i.ten_khach_hang);
   if (site) relateLater(ghl, "hop_dong_cong_trinh", { [OBJ.contract]: rec.id, [OBJ.site]: site.id });
   for (const u of units) {
     relateLater(ghl, "hop_dong_thang_may", { [OBJ.contract]: rec.id, [OBJ.unit]: u.id });
@@ -172,6 +255,7 @@ export async function createOrder(ghl, i, { today, source = "ung_dung", actor = 
   }));
   relateLater(ghl, "phieu_thang_may", { [OBJ.order]: rec.id, [OBJ.unit]: unit.id });
   if (unit.hop_dong_bao_tri_id) relateLater(ghl, "phieu_hop_dong", { [OBJ.order]: rec.id, [OBJ.contract]: unit.hop_dong_bao_tri_id });
+  if (i.sdt_nguoi_bao) linkContactLater(ghl, "phieu_nguoi_bao", OBJ.order, rec.id, i.sdt_nguoi_bao);
   return { id: rec.id, name: rec.properties?.name };
 }
 
@@ -194,7 +278,7 @@ export async function updateOrder(ghl, id, patch, { today, isAdmin, me }) {
   if (patch.ngay_hen !== undefined) { need(isAdmin, "Chỉ quản trị mới được đổi ngày hẹn", 403); set.ngay_hen = date(patch.ngay_hen, "Ngày hẹn"); }
   if (patch.uu_tien !== undefined) { need(isAdmin, "Chỉ quản trị mới được đổi mức ưu tiên", 403); set.uu_tien = opt("orderPriority", patch.uu_tien, "Ưu tiên"); }
   need(Object.keys(set).length, "Không có gì để cập nhật");
-  await ghl.updateRecord(OBJ.order, id, set);
+  await ghl.updateRecord(OBJ.order, id, set, set.nguoi_phu_trach !== undefined ? await ownerExtra(ghl, set.nguoi_phu_trach) : {});
   return { ok: true, set };
 }
 
@@ -355,7 +439,7 @@ export async function updateTask(ghl, id, patch, { today, isAdmin, me }) {
   const ns = checked.ngay_bat_dau_kh ?? cur.ngay_bat_dau_kh, ne = checked.ngay_ket_thuc_kh ?? cur.ngay_ket_thuc_kh;
   if (isDate(ns) && isDate(ne)) need(ne >= ns, "Ngày kết thúc phải sau ngày bắt đầu");
   const set = clean(normalizeTaskPatch(cur, checked, today));
-  await ghl.updateRecord(OBJ.task, id, set);
+  await ghl.updateRecord(OBJ.task, id, set, set.nguoi_phu_trach !== undefined ? await ownerExtra(ghl, set.nguoi_phu_trach) : {});
   // Việc đầu tiên bắt đầu → dự án chuyển "Chuẩn bị" → "Đang thực hiện" (không làm hỏng cập nhật việc nếu ghi dự án lỗi).
   if (["dang_lam", "cho_kiem_tra", "hoan_thanh"].includes(set.trang_thai) && cur.du_an_id) {
     try {

@@ -109,29 +109,38 @@ export function createGhl({ locationId, getToken, fetchImpl = globalThis.fetch, 
     return { id: j.fileId, url: j.url };
   }
 
+  async function assocDefs() {
+    if (!assocCache) { const j = await call("GET", `/associations/?locationId=${locationId}&skip=0&limit=100`); assocCache = Object.fromEntries((j.associations || []).map((a) => [a.key, a])); }
+    return assocCache;
+  }
+  // Tên người/công ty tra theo id, nhớ vài phút (trang chi tiết mở lại nhiều lần).
+  const named = new Map();
+  const memo = async (key, load) => { const h = named.get(key); if (h && now() - h.at < 300000) return h.v; const v = await load(); named.set(key, { at: now(), v }); return v; };
+  const personName = (c) => c.name || c.contactName || [c.firstName, c.lastName].filter(Boolean).join(" ") || c.companyName || c.email || c.phone || "";
+
   return {
     locationId,
     listAll, pipelines, opportunities, uploadMedia,
     async deleteMedia(id) { await call("DELETE", `/medias/${encodeURIComponent(id)}?altType=location`, undefined, 1); },
     async getRecord(objectKey, id) { return (await call("GET", `/objects/${objectKey}/records/${id}`)).record; },
-    async createRecord(objectKey, properties) {
-      const j = await call("POST", `/objects/${objectKey}/records`, { locationId, properties });
+    async createRecord(objectKey, properties, extra = {}) {
+      const j = await call("POST", `/objects/${objectKey}/records`, { locationId, properties, ...extra });
       const rec = j.record; if (!rec?.id) throw new Error("GHL không trả về bản ghi vừa tạo");
-      const full = { ...rec, properties: { ...(rec.properties || {}), ...properties } };
+      const full = { ...rec, ...extra, properties: { ...(rec.properties || {}), ...properties } };
       note(objectKey, rec.id, full, properties);
       patchCache(objectKey, (rows) => [full, ...rows.filter((r) => r.id !== rec.id)]);
       return rec;
     },
-    async updateRecord(objectKey, id, properties) {
-      await call("PUT", `/objects/${objectKey}/records/${id}?locationId=${locationId}`, { properties });
+    // extra = { owners: [userId] (tối đa 1), followers: [userId…] (tối đa 10) } — người phụ trách / người theo dõi kiểu GHL.
+    async updateRecord(objectKey, id, properties, extra = {}) {
+      await call("PUT", `/objects/${objectKey}/records/${id}?locationId=${locationId}`, { properties, ...extra });
       note(objectKey, id, null, properties);
-      patchCache(objectKey, (rows) => rows.map((r) => (r.id === id ? { ...r, properties: { ...(r.properties || {}), ...properties } } : r)));
+      patchCache(objectKey, (rows) => rows.map((r) => (r.id === id ? { ...r, ...extra, properties: { ...(r.properties || {}), ...properties } } : r)));
     },
     // Liên kết 2 bản ghi theo KHOÁ association (vd "phieu_thang_may"). GHL có thể đảo thứ tự first/second khi tạo
     // association → tra định nghĩa rồi xếp đúng thứ tự, truyền bản đồ {objectKey: recordId}.
     async relate(assocKey, idsByObject, extra = {}) {
-      if (!assocCache) { const j = await call("GET", `/associations/?locationId=${locationId}&skip=0&limit=100`); assocCache = Object.fromEntries((j.associations || []).map((a) => [a.key, a])); }
-      const a = assocCache[assocKey]; if (!a) throw new Error(`Không có association ${assocKey}`);
+      const a = (await assocDefs())[assocKey]; if (!a) throw new Error(`Không có association ${assocKey}`);
       const f = idsByObject[a.firstObjectKey], s = idsByObject[a.secondObjectKey];
       if (!f || !s) throw new Error(`Thiếu id cho ${assocKey}`);
       return call("POST", "/associations/relations", { locationId, associationId: a.id, firstRecordId: f, secondRecordId: s, ...extra });
@@ -145,6 +154,14 @@ export function createGhl({ locationId, getToken, fetchImpl = globalThis.fetch, 
     async users() {
       try { const j = await call("GET", `/users/?locationId=${locationId}`, undefined, 1); return (j.users || []).map((u) => ({ id: u.id, name: u.name || [u.firstName, u.lastName].filter(Boolean).join(" "), email: u.email })); } catch { return []; }
     },
+    assocDefs,
+    // Các liên kết hiện có của 1 bản ghi (đọc trực tiếp, luôn mới — không qua chỉ mục tìm kiếm).
+    async relationsOf(recordId) { const j = await call("GET", `/associations/relations/${encodeURIComponent(recordId)}?locationId=${locationId}&limit=100`, undefined, 1); return j.relations || []; },
+    async unrelate(relationId) { await call("DELETE", `/associations/relations/${encodeURIComponent(relationId)}?locationId=${locationId}`, undefined, 1); },
+    contactById: (id) => memo("c:" + id, async () => { const c = (await call("GET", `/contacts/${encodeURIComponent(id)}`, undefined, 1)).contact || {}; return { id, name: personName(c), phone: c.phone || "", email: c.email || "", company: c.companyName || "" }; }),
+    businessById: (id) => memo("b:" + id, async () => { const r = (await call("GET", `/objects/business/records/${encodeURIComponent(id)}?locationId=${locationId}`, undefined, 1)).record || {}; const p = r.properties || {}; return { id, name: p.name || p.business_name || p.company_name || "", phone: p.phone || "", email: p.email || "", company: "" }; }),
+    async searchContacts(q) { const j = await call("GET", `/contacts/?locationId=${locationId}&query=${encodeURIComponent(q)}&limit=10`, undefined, 1); return (j.contacts || []).map((c) => ({ id: c.id, name: personName(c), phone: c.phone || "", email: c.email || "", company: c.companyName || "" })); },
+    async searchBusinesses(q) { const j = await call("POST", `/objects/business/records/search`, { locationId, page: 1, pageLimit: 10, query: q }, 1); return (j.records || []).map((r) => { const p = r.properties || {}; return { id: r.id, name: p.name || p.business_name || p.company_name || "", phone: p.phone || "", email: p.email || "", company: "" }; }); },
     invalidate(objectKey) { if (objectKey) cache.delete(objectKey); else cache.clear(); },
   };
 }

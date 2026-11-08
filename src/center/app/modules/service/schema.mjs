@@ -11,6 +11,19 @@ export const OBJ = {
   task: "custom_objects.cong_viec",
 };
 
+// Người liên quan của từng loại bản ghi: [khoá association, nhãn vai trò, kind]. kind = "contact" (người) | "business" (công ty).
+// Vai trò nằm ở NHÃN liên kết theo từng bản ghi (cùng một người có thể là Kế toán ở hợp đồng này, Tư vấn ở công trình kia).
+export const PEOPLE_ROLES = {
+  cong_trinh: [["cong_trinh_chu_dau_tu", "Chủ đầu tư", "business"], ["cong_trinh_ban_quan_ly", "Ban quản lý", "business"], ["cong_trinh_chu_so_huu", "Chủ sở hữu", "business"], ["cong_trinh_lien_he_chinh", "Liên hệ chính", "contact"], ["cong_trinh_tu_van_thiet_ke", "Tư vấn thiết kế", "contact"], ["cong_trinh_tong_thau", "Tổng thầu", "contact"], ["cong_trinh_ky_su", "Kỹ sư công trình", "contact"], ["cong_trinh_ke_toan", "Kế toán", "contact"]],
+  hop_dong: [["hop_dong_khach_hang", "Khách hàng ký", "business"], ["hop_dong_nguoi_ky", "Người ký", "contact"], ["hop_dong_ke_toan", "Kế toán", "contact"]],
+  thang_may: [["thang_may_lien_he_van_hanh", "Liên hệ vận hành", "contact"]],
+  phieu: [["phieu_nguoi_bao", "Người báo", "contact"]],
+  du_an: [["du_an_chu_dau_tu", "Chủ đầu tư", "business"], ["du_an_tong_thau", "Tổng thầu", "contact"], ["du_an_giam_sat", "Tư vấn giám sát", "contact"], ["du_an_lien_he", "Liên hệ dự án", "contact"]],
+  kiem_dinh: [["kiem_dinh_don_vi", "Đơn vị kiểm định", "business"], ["kiem_dinh_lien_he", "Liên hệ tại công trình", "contact"]],
+};
+export const PEOPLE_OBJ = { cong_trinh: OBJ.site, hop_dong: OBJ.contract, thang_may: OBJ.unit, phieu: OBJ.order, du_an: OBJ.project, kiem_dinh: OBJ.inspection };
+export const PEOPLE_KEYS = new Set(Object.values(PEOPLE_ROLES).flat().map((r) => r[0]));
+
 // Lựa chọn (key lưu vào GHL → nhãn hiển thị). Server chỉ nhận key nằm trong danh sách này.
 export const OPTIONS = {
   orderType: [["bao_tri_dinh_ky", "Bảo trì định kỳ"], ["su_co", "Sự cố"], ["sua_chua", "Sửa chữa"], ["bao_hanh", "Bảo hành"]],

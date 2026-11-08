@@ -1046,6 +1046,34 @@
   function fact(label, value, sub, meterPct, cls) { return h("div", { class: "card fact" }, [h("small", {}, label), h("b", {}, value), sub ? h("small", {}, sub) : null, meterPct != null ? h("div", { class: "meter " + (cls || "") }, h("i", { style: "width:" + Math.max(3, Math.min(100, meterPct)) + "%" })) : null]); }
   function countdown(label, date, span) { var n = daysTo(date); if (n == null) return fact(label, "—", "Chưa có ngày"); return fact(label, n < 0 ? "quá " + -n + " ngày" : n + " ngày", fmtD(date), Math.max(0, Math.min(100, 100 - n / (span || 365) * 100)), n < 0 ? "bad" : n < 30 ? "warn" : ""); }
 
+  /* ===== người liên quan (contact / công ty) + người theo dõi ===== */
+  function peopleCard(type, id, d) {
+    var rows = (d.people || []).map(function (p) {
+      var sub = [p.company, p.phone, p.email].filter(Boolean).join(" · ");
+      return h("div", { class: "it", style: "cursor:default" }, [h("span", { class: "ico" }, icon(p.kind === "business" ? "cong_trinh" : "phone", 16)),
+        h("div", { style: "min-width:0" }, [h("div", { class: "t" }, p.name), h("div", { class: "d" }, [h("b", {}, p.role), p.from ? " · từ " + p.from : "", sub ? " · " + sub : ""])]),
+        h("div", { class: "r", style: "display:flex;gap:6px;align-items:center" }, [p.phone ? h("a", { href: "tel:" + p.phone, style: "text-decoration:none" }, h("span", { class: "btn sm" }, [icon("phone", 14), "Gọi"])) : null, isAdmin() && !p.from ? h("button", { class: "btn sm ghost", "aria-label": "Gỡ " + p.name, onclick: function () { if (confirm("Gỡ " + p.name + " (" + p.role + ") khỏi bản ghi này? Contact/công ty vẫn còn trong CRM.")) act(function () { return post("/api/person/remove", { type: type, id: id, relationId: p.relationId }); }, "Đã gỡ"); } }, "×") : null])]);
+    });
+    var body = h("div", { class: "list" }, rows.length ? rows : [h("div", { class: "empty" }, d.peopleError ? "Chưa đọc được: " + d.peopleError : "Chưa có ai. Thêm người liên hệ / công ty để gọi nhanh và để Workflow chăm sóc dùng.")]);
+    var f = d.follow, foot = null;
+    if (f) foot = h("div", { class: "sub", style: "display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 14px;border-top:1px solid var(--line2)" }, [h("span", {}, "Theo dõi: " + (f.followers.length ? f.followers.map(function (x) { return x.name; }).join(", ") : "chưa có ai")), f.owner && f.owner.length ? h("span", {}, "· Phụ trách (GHL): " + f.owner.map(function (x) { return x.name; }).join(", ")) : null, h("button", { class: "btn sm", onclick: function () { act(function () { return post("/api/follow", { type: type, id: id }); }, "Đã cập nhật theo dõi"); } }, "Theo dõi / bỏ theo dõi")]);
+    var add = isAdmin() && (d.peopleRoles || []).length ? h("button", { class: "btn sm primary", onclick: function () { addPersonForm(type, id, d.peopleRoles); } }, [icon("plus", 14), "Thêm"]) : null;
+    return card("Người liên quan", "Liên hệ, công ty và vai trò của họ ở bản ghi này", h("div", {}, [body, foot]), add);
+  }
+  function addPersonForm(type, id, roles) {
+    var role = roles[0], picked = null, err = h("div", { class: "err" }), list = h("div", { class: "pkl", style: "display:block;max-height:220px;overflow:auto" }), q = h("input", { placeholder: "Gõ tên hoặc số điện thoại…", autocomplete: "off" }), timer, shown = h("div", { class: "pkv" });
+    var kindOf = function () { return role[2]; };
+    var search = function () {
+      clearTimeout(timer); var t = q.value.trim(); if (t.length < 2) { list.replaceChildren(h("div", { class: "pko none" }, "Gõ ít nhất 2 ký tự")); return; }
+      timer = setTimeout(function () { api("/api/people/search?kind=" + kindOf() + "&q=" + encodeURIComponent(t)).then(function (r) { list.replaceChildren.apply(list, r.results.length ? r.results.map(function (x) { return h("div", { class: "pko", onclick: function () { picked = x; shown.replaceChildren(h("b", {}, x.name + (x.phone ? " · " + x.phone : ""))); q.style.display = "none"; list.style.display = "none"; } }, x.name + (x.phone ? " · " + x.phone : "") + (x.company ? " · " + x.company : "")); }) : [h("div", { class: "pko none" }, kindOf() === "business" ? "Không thấy công ty — tạo công ty trong CRM của GHL rồi tìm lại" : "Không thấy — tạo contact trong CRM của GHL rồi tìm lại")]); }).catch(function (e) { list.replaceChildren(h("div", { class: "pko none" }, e.message)); }); }, 300);
+    };
+    q.addEventListener("input", search);
+    var sel = h("select", { onchange: function (e) { role = roles.filter(function (r) { return r[0] === e.target.value; })[0]; picked = null; shown.replaceChildren(); q.style.display = ""; list.style.display = "block"; q.value = ""; list.replaceChildren(); } }, roles.map(function (r) { return h("option", { value: r[0] }, r[1] + (r[2] === "business" ? " (công ty)" : "")); }));
+    var ok = h("button", { class: "btn primary", onclick: function () { if (!picked) { err.textContent = "Chọn một kết quả tìm kiếm"; return; } ok.disabled = true; post("/api/person/add", { type: type, id: id, role: role[0], personId: picked.id }).then(function () { modal.remove(); cache = {}; toast("Đã thêm"); render(); }).catch(function (e) { err.textContent = e.message; ok.disabled = false; }); } }, "Thêm");
+    var box = h("div", { class: "box" }, [h("h2", {}, "Thêm người liên quan"), h("label", { class: "f" }, ["Vai trò", sel]), h("label", { class: "f" }, ["Tìm trong CRM", h("div", { class: "pk" }, [shown, q, list])]), err, h("div", { style: "display:flex;gap:8px" }, [ok, h("button", { class: "btn", onclick: function () { modal.remove(); } }, "Huỷ")])]);
+    var modal = h("div", { class: "modal", onclick: function (e) { if (e.target === modal) modal.remove(); } }, box); document.body.appendChild(modal); q.focus();
+  }
+
   function detailView(type, id) {
     return api("/api/detail?type=" + type + "&id=" + encodeURIComponent(id)).then(function (d) {
       var r = d.record, R = d.related, acts = [], extra = [], facts = [], chipsTop = [];
@@ -1091,7 +1119,7 @@
       }
       var story = type === "phieu" && (r.mo_ta || r.ket_qua) ? card("Nội dung", null, h("div", { style: "display:grid;gap:12px;white-space:pre-wrap" }, [r.mo_ta ? h("div", {}, [h("small", { style: "color:var(--mut);font-weight:700;text-transform:uppercase;letter-spacing:.05em;font-size:11.5px" }, "Mô tả"), h("div", {}, r.mo_ta)]) : null, r.ket_qua ? h("div", {}, [h("small", { style: "color:var(--mut);font-weight:700;text-transform:uppercase;letter-spacing:.05em;font-size:11.5px" }, "Kết quả xử lý"), h("div", {}, r.ket_qua)]) : null])) : null;
       return [h("div", {}, back), h("div", { class: "card banner" }, [h("span", { class: "ico" }, icon(type, 24)), h("div", {}, [h("h2", {}, r.name || "—"), h("div", { style: "display:flex;gap:6px;margin-top:6px;flex-wrap:wrap" }, chipsTop)]), h("div", { style: "margin-left:auto;display:flex;gap:8px;flex-wrap:wrap" }, acts)]),
-        h("div", { class: "facts" }, facts), story, type === "phieu" && R.lich_su && R.lich_su.length ? relList("Gần đây trên thang này", "phieu", R.lich_su, ordLine, "phieu") : null, type === "phieu" ? reportCard(r) : null, type === "du_an" ? taskSection(r, R) : null, card("Thông tin", null, dl(type, r)), h("div", { class: "g g2" }, extra)];
+        h("div", { class: "facts" }, facts), peopleCard(type, id, d), story, type === "phieu" && R.lich_su && R.lich_su.length ? relList("Gần đây trên thang này", "phieu", R.lich_su, ordLine, "phieu") : null, type === "phieu" ? reportCard(r) : null, type === "du_an" ? taskSection(r, R) : null, card("Thông tin", null, dl(type, r)), h("div", { class: "g g2" }, extra)];
     });
   }
 

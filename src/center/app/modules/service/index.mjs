@@ -197,6 +197,7 @@ fetch(location.pathname.replace(/\\/q$/,"")+"/q/submit",{method:"POST",body:JSON
         const body = async (max) => { try { return JSON.parse((await readBody(req, max)) || "{}"); } catch (e) { if (e instanceof svc.UserError) throw e; throw new svc.UserError("Dữ liệu không hợp lệ"); } };
 
         if (req.method === "GET") {
+          if (sub === "/api/people/search") return j({ results: await svc.searchPeople(ghl, u.searchParams.get("kind"), u.searchParams.get("q")) });
           if (sub === "/api/meta") return j({ options: OPTIONS, thresholds: THRESHOLDS, role: sess.role, me, today, users: await ghl.users(), dev: !!devLocation() });
           if (sub === "/api/dashboard") return j(await svc.getDashboard(ghl, today));
           if (sub === "/api/sales") return j(await svc.getSales(ghl, today));
@@ -273,6 +274,9 @@ fetch(location.pathname.replace(/\\/q$/,"")+"/q/submit",{method:"POST",body:JSON
           if (sub === "/api/contract/generate") { adminOnly(); return j(await svc.generateMaintenance(ghl, cleanText(b.id, 40), b, today)); }
           if (sub === "/api/inspection/schedule") { adminOnly(); return j(await svc.scheduleInspection(ghl, cleanText(b.unitId, 40), b)); }
           if (sub === "/api/inspection/record") { adminOnly(); return j(await svc.recordInspection(ghl, cleanText(b.id, 40), b)); }
+          if (sub === "/api/person/add") { adminOnly(); return j(await svc.addPerson(ghl, cleanText(b.type, 20), cleanText(b.id, 40), b)); }
+          if (sub === "/api/person/remove") { adminOnly(); return j(await svc.removePerson(ghl, cleanText(b.type, 20), cleanText(b.id, 40), b.relationId)); }
+          if (sub === "/api/follow") return j(await svc.toggleFollow(ghl, cleanText(b.type, 20), cleanText(b.id, 40), me));
           if (sub === "/api/task") { adminOnly(); return j(await svc.createTask(ghl, b, { today })); }
           if (sub === "/api/task/update") return j(await svc.updateTask(ghl, cleanText(b.id, 40), b.patch || {}, { today, isAdmin, me }));
           if (sub === "/api/tasks/generate") { adminOnly(); return j(await svc.generateTasks(ghl, cleanText(b.projectId, 40), b, today, await ttpl.effectiveTaskTemplates(tplStore(), sess.locationId))); }
