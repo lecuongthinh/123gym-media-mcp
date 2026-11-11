@@ -10,7 +10,7 @@ import CryptoJS from "crypto-js";
 import { getApp, appConfigured } from "../../marketplace-apps.mjs";
 import { buildAuthorizeUrl, handleInstall, isInstalled } from "../../ghl-apps.mjs";
 import { createModuleSession, getModuleSession } from "../../module-sessions.mjs";
-import { buildConnectUrl, handleConnectCallback, disconnect, handleZaloWebhook, handleGhlOutbound, validGhlSignature, getStats, getLogs, retryLog, handleZnsWebhook, znsKeyValid, znsWebhookUrl } from "../../zalo-oa.mjs";
+import { buildConnectUrl, handleConnectCallback, disconnect, handleZaloWebhook, handleGhlOutbound, validGhlSignature, getStats, getLogs, retryLog, handleZnsWebhook, znsKeyValid, znsWebhookUrl, getZnsTemplates, saveZnsTemplateNote } from "../../zalo-oa.mjs";
 
 const APP = "zalo";
 const PAGE = new URL("./page.html", import.meta.url);
@@ -114,12 +114,17 @@ ${err ? `<p style="background:#fde8e8;color:#c22;padding:10px 14px;border-radius
       const auth = req.headers["authorization"] || "";
       const sess = await getModuleSession(APP, auth.startsWith("Bearer ") ? auth.slice(7) : null);
       if (!sess) return json(res, { error: "Chưa đăng nhập" }, 401), true;
-      const adminOnly = ["/api/connect-url", "/api/disconnect", "/api/retry", "/api/zns-setup"].includes(sub);
+      const adminOnly = ["/api/connect-url", "/api/disconnect", "/api/retry", "/api/zns-setup", "/api/zns-template-note"].includes(sub);
       if (adminOnly && sess.role !== "admin") return json(res, { error: "Chỉ quản trị mới được thực hiện thao tác này" }, 403), true;
       try {
         if (sub === "/api/status") return json(res, await getStats(sess.locationId)), true;
         if (sub === "/api/zns-setup") return json(res, { url: znsWebhookUrl(sess.locationId) }), true;
         if (sub === "/api/logs") return json(res, await getLogs(sess.locationId, { status: u.searchParams.get("status") || undefined })), true;
+        if (sub === "/api/zns-templates") return json(res, await getZnsTemplates(sess.locationId)), true;
+        if (req.method === "POST" && sub === "/api/zns-template-note") {
+          let input; try { input = JSON.parse(await readBody(req)); } catch { return json(res, { error: "invalid json" }, 400), true; }
+          return json(res, await saveZnsTemplateNote(sess.locationId, input.templateId, input.note)), true;
+        }
         if (req.method === "POST" && sub === "/api/connect-url") return json(res, { url: await buildConnectUrl(sess.locationId) }), true;
         if (req.method === "POST" && sub === "/api/disconnect") { await disconnect(sess.locationId); return json(res, { ok: true }), true; }
         if (req.method === "POST" && sub === "/api/retry") {
