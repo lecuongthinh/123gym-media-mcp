@@ -138,7 +138,7 @@
           h("button", { disabled: busy === "zns", onclick: loadZns }, znsUrl ? "Làm mới" : "Lấy địa chỉ webhook")]),
         znsUrl ? h("div", { style: "margin-top:12px;display:grid;gap:8px" }, [
           h("input", { readonly: "readonly", value: znsUrl, style: "width:100%;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font:12px ui-monospace,monospace", onclick: function (e) { e.target.select(); } }),
-          h("div", { class: "muted", style: "font-size:13px" }, "Trong Workflow GHL thêm action “Webhook” (POST) với URL trên, rồi khai báo Custom Data: template_id = mã mẫu ZNS; template_data = JSON tham số của mẫu (ví dụ {\"customer_name\":\"{{contact.name}}\"}). Số điện thoại lấy từ contact. Muốn gửi theo Zalo UID thay vì số điện thoại, thêm send_by = uid. URL này chứa khoá riêng của trung tâm — đừng chia sẻ công khai."),
+          h("div", { class: "muted", style: "font-size:13px" }, "Trong Workflow GHL thêm action “Webhook” (POST) với URL trên, rồi khai báo Custom Data: template_id = mã mẫu ZNS; phone = số điện thoại người nhận (vd Contact.Phone); mỗi tham số của mẫu khai 1 dòng riêng, tên trùng đúng tên tham số Zalo đã duyệt (vd customer_name = Contact.Full Name) — không cần gói JSON tay. Muốn gửi theo Zalo UID thay vì số điện thoại, thêm send_by = uid. URL này chứa khoá riêng của trung tâm — đừng chia sẻ công khai."),
         ]) : null,
       ]);
       app.appendChild(znsBox);

@@ -584,12 +584,23 @@ async function postZalo(url, token, body) {
 // Nhận payload của Webhook action trong GHL: contact_id/phone/location phẳng ở gốc, dữ liệu mình truyền nằm ở `customData`
 // (hoặc gốc nếu workflow đặt phẳng). Trả { http, body } để route trả đúng mã cho GHL: 200 (xong hoặc lỗi vĩnh viễn — thử lại
 // vô ích), 502 (lỗi mạng/tạm thời — GHL tự thử lại).
+// Các key Custom Data đã có nghĩa riêng — không được gộp vào tham số mẫu lúc nhận dạng "khai phẳng" bên dưới.
+const ZNS_RESERVED_KEYS = new Set(["template_id", "templateId", "template_data", "templateData", "params", "contact_id", "contactId", "send_by", "sendBy", "phone", "number", "zalo_uid", "uid"]);
+
 export async function handleZnsWebhook(locationId, payload) {
   const cd = payload.customData || {};
   const pick = (...k) => { for (const x of k) { const v = cd[x] ?? payload[x]; if (v !== undefined && v !== null && v !== "") return v; } };
   const templateId = String(pick("template_id", "templateId") || "");
   let data = pick("template_data", "templateData", "params");
   if (typeof data === "string") { try { data = JSON.parse(data); } catch { data = null; } }
+  // Không bắt buộc gói tham số mẫu vào 1 field JSON "template_data" (dễ gõ sai tay trong GHL) — nếu field đó
+  // không có, nhận luôn mọi field phẳng còn lại trong Custom Data làm tham số, giống quy ước webhook ZNS cũ
+  // của 123gym-server (vd Custom Data: template_id, phone, customer_name — không có "template_data").
+  if (!data || typeof data !== "object") {
+    const flat = {};
+    for (const [k, v] of Object.entries(cd)) if (!ZNS_RESERVED_KEYS.has(k) && v !== undefined && v !== null && v !== "") flat[k] = v;
+    if (Object.keys(flat).length) data = flat;
+  }
   const contactId = pick("contact_id", "contactId");
   const sendBy = String(pick("send_by", "sendBy") || "phone").toLowerCase();
   if (!templateId || !data || typeof data !== "object") {
