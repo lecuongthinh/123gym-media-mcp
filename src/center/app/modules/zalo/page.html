@@ -45,6 +45,7 @@
   // tự tính tiền tố từ chính URL đang chạy thay vì hardcode "/apps/zalo", để không bị gọi API trật ra gốc domain.
   var BASE = location.pathname.replace(/\/apps\/zalo\/?$/, "") + "/apps/zalo";
   var token = null, role = "user", st = null, logs = [], only = "", busy = "", err = "", znsUrl = "";
+  var znsTemplates = [], tplDraft = {}, newTplId = "", newTplNote = "";
   var KIND = { user_send_text:"Khách nhắn", user_send_image:"Khách gửi ảnh", user_send_sticker:"Khách gửi sticker", user_send_file:"Khách gửi tệp", user_send_gif:"Khách gửi GIF", user_send_audio:"Khách gửi thoại", user_send_location:"Khách gửi vị trí", oa_send_text:"Nhân viên nhắn (Web OA)", ghl_reply:"Trả lời từ GHL", follow:"Khách theo dõi OA", unfollow:"Bỏ theo dõi", retry:"Gửi lại", zns:"Gửi ZNS", connect:"Kết nối", disconnect:"Ngắt kết nối", uid_field:"Tạo trường Zalo UID", profile:"Đọc hồ sơ Zalo" };
 
   function h(tag, attrs, kids) {
@@ -99,7 +100,12 @@
     return Promise.all([
       api("/api/status"),
       api("/api/logs" + (only ? "?status=" + only : "")),
-    ]).then(function (r) { st = r[0]; logs = r[1]; render(); }).catch(function (e) { err = e.message; render(); });
+      api("/api/zns-templates"),
+    ]).then(function (r) {
+      st = r[0]; logs = r[1]; znsTemplates = r[2];
+      tplDraft = {}; znsTemplates.forEach(function (t) { tplDraft[t.templateId] = t.note; });
+      render();
+    }).catch(function (e) { err = e.message; render(); });
   }
 
   function statCard(label, value, sub) { return h("div", { class: "card stat" }, [h("div", { class: "l" }, label), h("div", { class: "v" }, value), h("div", { class: "muted" }, sub)]); }
@@ -142,6 +148,34 @@
         ]) : null,
       ]);
       app.appendChild(znsBox);
+
+      var tplRows = znsTemplates.map(function (t) {
+        return h("tr", {}, [
+          h("td", {}, t.templateId),
+          h("td", {}, h("input", {
+            value: tplDraft[t.templateId] != null ? tplDraft[t.templateId] : t.note,
+            placeholder: "VD: Chúc mừng sinh nhật",
+            style: "width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--ink)",
+            oninput: function (e) { tplDraft[t.templateId] = e.target.value; },
+          })),
+          h("td", {}, String(t.sent30)),
+          h("td", {}, h("button", { disabled: busy === "tpl" + t.templateId, onclick: function () { saveTplNote(t.templateId); } }, "Lưu")),
+        ]);
+      });
+      var addRow = h("tr", {}, [
+        h("td", {}, h("input", { value: newTplId, placeholder: "Mã mới", style: "width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--ink)", oninput: function (e) { newTplId = e.target.value; } })),
+        h("td", {}, h("input", { value: newTplNote, placeholder: "Thêm template chưa gửi lần nào", style: "width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--ink)", oninput: function (e) { newTplNote = e.target.value; } })),
+        h("td", {}, "—"),
+        h("td", {}, h("button", { disabled: busy === "tpladd", onclick: addTplNote }, "Thêm")),
+      ]);
+      app.appendChild(h("div", { class: "card" }, [
+        h("h3", {}, "Ghi chú nội dung template ZNS"),
+        h("div", { class: "muted", style: "font-size:13px;margin:4px 0 10px" }, "Ghi chú hiện ở dòng đầu tin ZNS trong Conversation của GHL (VD “📩 ZNS: Chúc mừng sinh nhật (mẫu 398076)”) để nhân viên biết đó là tin gì. Chỉ áp dụng cho tin gửi sau khi lưu; để trống rồi lưu = xoá ghi chú."),
+        h("div", { class: "tbl" }, h("table", {}, [
+          h("thead", {}, h("tr", {}, ["Template", "Ghi chú nội dung", "Đã gửi (30 ngày)", ""].map(function (t) { return h("th", {}, t); }))),
+          h("tbody", {}, tplRows.concat([addRow])),
+        ])),
+      ]));
     }
 
     app.appendChild(h("div", { class: "stats" }, [
@@ -199,6 +233,19 @@
   function retry(id) {
     busy = "r" + id; err = ""; render();
     post("/api/retry", { id: id }).then(load).catch(function (e) { err = e.message; }).then(function () { busy = ""; render(); });
+  }
+  function saveTplNote(templateId) {
+    busy = "tpl" + templateId; err = ""; render();
+    post("/api/zns-template-note", { templateId: templateId, note: tplDraft[templateId] || "" })
+      .then(load).catch(function (e) { err = e.message; }).then(function () { busy = ""; render(); });
+  }
+  function addTplNote() {
+    if (!newTplId.trim()) { err = "Nhập mã mẫu trước."; render(); return; }
+    if (!newTplNote.trim()) { err = "Nhập ghi chú nội dung trước (để trống sẽ không lưu được)."; render(); return; }
+    busy = "tpladd"; err = ""; render();
+    post("/api/zns-template-note", { templateId: newTplId.trim(), note: newTplNote })
+      .then(function () { newTplId = ""; newTplNote = ""; return load(); })
+      .catch(function (e) { err = e.message; }).then(function () { busy = ""; render(); });
   }
 
   window.addEventListener("message", function (e) { if (e.data && typeof e.data === "object" && "zaloConnect" in e.data) load(); });

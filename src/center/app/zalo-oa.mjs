@@ -91,6 +91,10 @@ export function ensureZaloTables() {
       zalo_uid text, ghl_contact_id text, retry jsonb, resolved boolean not null default false
     )`);
     await platformQuery("create index if not exists zalo_sync_log_loc_at on platform.zalo_sync_log (location_id, at desc)");
+    await platformQuery(`create table if not exists platform.zns_template_notes (
+      location_id text not null, template_id text not null, note text not null,
+      updated_at timestamptz not null default now(), primary key (location_id, template_id)
+    )`);
   })();
   return ready;
 }
@@ -630,15 +634,52 @@ export async function handleZnsWebhook(locationId, payload) {
     return { http: permanent ? 200 : 502, body: { ok: false, permanent, error: znsErrText(e) } };
   }
   await logSync(locationId, { direction: "out", kind: "zns", status: "ok", detail: `Mẫu ${templateId} → ${who}`, uid: uid || undefined, contactId });
-  // Ghi ZNS vào Conversations của contact (best-effort — không làm hỏng việc đã gửi xong).
+  // Ghi ZNS vào Conversations của contact (best-effort — không làm hỏng việc đã gửi xong). Dòng đầu dùng ghi
+  // chú nội dung mẫu (nếu admin đã đặt qua trang "Ghi chú nội dung template ZNS") để nhân viên đọc hiểu ngay
+  // là tin gì, không chỉ thấy mã số mẫu.
   try {
     const cid = contactId || (phone ? await findContactByPhone(locationId, phone) : null);
     if (cid && providerConfigured()) {
       const lines = Object.entries(data).map(([k, v]) => `${k}: ${v}`).join("\n");
-      await pushToConversation(locationId, { contactId: cid, direction: "outbound", altId: `zns_${templateId}_${Date.now()}`, message: `📩 ZNS (mẫu ${templateId})\n${lines}` });
+      const note = (await q("select note from platform.zns_template_notes where location_id=$1 and template_id=$2", [locationId, templateId])).rows[0]?.note;
+      const head = note ? `📩 ZNS: ${note} (mẫu ${templateId})` : `📩 ZNS (mẫu ${templateId})`;
+      await pushToConversation(locationId, { contactId: cid, direction: "outbound", altId: `zns_${templateId}_${Date.now()}`, message: `${head}\n${lines}` });
     }
   } catch (e) { await logSync(locationId, { direction: "out", kind: "zns", status: "skipped", detail: `Đã gửi ZNS nhưng chưa ghi được vào Conversations: ${e.message}`, contactId }); }
   return { http: 200, body: { ok: true } };
+}
+
+// --- Ghi chú nội dung template ZNS (chỉ để hiển thị cho nhân viên, không ảnh hưởng việc gửi) ----------------
+// Admin đặt 1 lần/mẫu (vd "Chúc mừng sinh nhật") để dòng đầu tin ZNS trong Conversations dễ đọc hơn mã số mẫu
+// trần trụi. Danh sách mẫu hiển thị = hợp của (mẫu đã từng gửi trong 30 ngày qua, đếm từ zalo_sync_log) VÀ
+// (mẫu admin đã lỡ đặt ghi chú dù chưa gửi lần nào — qua nút "Thêm") — để không mất ghi chú đã đặt chỉ vì
+// 30 ngày qua chưa gửi lại mẫu đó.
+export async function getZnsTemplates(locationId) {
+  const sent = (await q(
+    `select substring(detail from 'Mẫu (\\S+)') as template_id, count(*)::int n
+     from platform.zalo_sync_log
+     where location_id=$1 and kind='zns' and status='ok' and direction='out' and at > now() - interval '30 days'
+     group by 1 having substring(detail from 'Mẫu (\\S+)') is not null`, [locationId])).rows;
+  const notes = (await q("select template_id, note from platform.zns_template_notes where location_id=$1", [locationId])).rows;
+  const byId = new Map();
+  for (const s of sent) byId.set(s.template_id, { templateId: s.template_id, sent30: s.n, note: "" });
+  for (const nRow of notes) {
+    const existing = byId.get(nRow.template_id);
+    if (existing) existing.note = nRow.note;
+    else byId.set(nRow.template_id, { templateId: nRow.template_id, sent30: 0, note: nRow.note });
+  }
+  return [...byId.values()].sort((a, b) => b.sent30 - a.sent30 || a.templateId.localeCompare(b.templateId));
+}
+export async function saveZnsTemplateNote(locationId, templateId, note) {
+  const id = String(templateId || "").trim();
+  if (!id) throw new Error("Cần mã mẫu");
+  const text = String(note || "").trim();
+  if (!text) { await q("delete from platform.zns_template_notes where location_id=$1 and template_id=$2", [locationId, id]); return { templateId: id, note: "" }; }
+  await q(
+    `insert into platform.zns_template_notes (location_id, template_id, note) values ($1,$2,$3)
+     on conflict (location_id, template_id) do update set note=excluded.note, updated_at=now()`,
+    [locationId, id, text]);
+  return { templateId: id, note: text };
 }
 
 // --- Dashboard -------------------------------------------------------------------------------------------
