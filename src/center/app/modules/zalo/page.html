@@ -55,6 +55,7 @@
       if (k === "class") e.className = attrs[k];
       else if (k.slice(0, 2) === "on") e.addEventListener(k.slice(2), attrs[k]);
       else if (k === "disabled") e.disabled = !!attrs[k];
+      else if (k === "checked") e.checked = !!attrs[k];
       else if (attrs[k] != null) e.setAttribute(k, attrs[k]);
     });
     (kids == null ? [] : [].concat(kids)).forEach(function (c) { if (c != null && c !== false) e.appendChild(typeof c === "string" || typeof c === "number" ? document.createTextNode(String(c)) : c); });
