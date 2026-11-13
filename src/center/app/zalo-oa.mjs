@@ -17,6 +17,7 @@ import { platformQuery } from "./db.mjs";
 import { encryptCredential, decryptCredential } from "./credential-crypto.mjs";
 import { publicBaseUrl } from "./marketplace-apps.mjs";
 import { getAppLocationToken } from "./ghl-apps.mjs";
+import { getHocVienBirthdaysToday } from "./ghl-write.mjs";
 
 const ENV_PATH = new URL("./.env", import.meta.url);
 const env = {
@@ -95,6 +96,14 @@ export function ensureZaloTables() {
       location_id text not null, template_id text not null, note text not null,
       updated_at timestamptz not null default now(), primary key (location_id, template_id)
     )`);
+    await platformQuery(`create table if not exists platform.zns_birthday_config (
+      location_id text primary key, enabled boolean not null default false, template_id text,
+      param_name text not null default 'customer_name', updated_at timestamptz not null default now()
+    )`);
+    // Đánh dấu đã quét sinh nhật ngày nào rồi — không có dịch vụ cron riêng, server tự hỏi "hôm nay chạy chưa"
+    // mỗi giờ (xem maybeRunBirthdayZnsToday); insert ... on conflict do nothing làm việc "nhận phiên chạy hôm
+    // nay" atomic, tránh chạy đúp nếu 2 lượt kiểm tra trùng thời điểm (vd server vừa khởi động lại).
+    await platformQuery(`create table if not exists platform.zns_birthday_runs (run_date date primary key, ran_at timestamptz not null default now())`);
   })();
   return ready;
 }
@@ -680,6 +689,86 @@ export async function saveZnsTemplateNote(locationId, templateId, note) {
      on conflict (location_id, template_id) do update set note=excluded.note, updated_at=now()`,
     [locationId, id, text]);
   return { templateId: id, note: text };
+}
+
+// --- ZNS chúc mừng sinh nhật học viên ---------------------------------------------------------------------
+// GHL Workflow có trigger "Contact gần sinh nhật" cho Contact, nhưng KHÔNG có trigger tương đương cho Custom
+// Object (Học Viên) dù field ngay_sinh là kiểu DATE — object chỉ bắt được sự kiện tạo/sửa, không có kiểu lặp
+// lại hàng năm theo field. Nên quét + gửi hoàn toàn ở server (đúng nguyên tắc "app sở hữu logic nghiệp vụ",
+// không ép GHL Workflow làm việc nó không làm được), không qua Webhook action nào của GHL cả.
+function todayVnDateStr() {
+  const d = new Date(Date.now() + 7 * 3600_000); // dịch epoch +7h rồi đọc field UTC = ngày giờ VN, không dùng
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`; // toISOString (lệch ngày ở UTC+7, xem bài học generateSessions)
+}
+export async function getBirthdayConfig(locationId) {
+  const r = (await q("select enabled, template_id, param_name from platform.zns_birthday_config where location_id=$1", [locationId])).rows[0];
+  return r ? { enabled: r.enabled, templateId: r.template_id || "", paramName: r.param_name } : { enabled: false, templateId: "", paramName: "customer_name" };
+}
+export async function saveBirthdayConfig(locationId, { enabled, templateId, paramName }) {
+  const pn = String(paramName || "customer_name").trim() || "customer_name";
+  await q(
+    `insert into platform.zns_birthday_config (location_id, enabled, template_id, param_name) values ($1,$2,$3,$4)
+     on conflict (location_id) do update set enabled=excluded.enabled, template_id=excluded.template_id, param_name=excluded.param_name, updated_at=now()`,
+    [locationId, Boolean(enabled), String(templateId || "").trim(), pn]);
+  return getBirthdayConfig(locationId);
+}
+
+// Gửi ZNS sinh nhật cho mọi Học Viên trùng sinh nhật HÔM NAY (giờ VN) của 1 trung tâm — gọi từ
+// maybeRunBirthdayZnsToday (quét hàng ngày, mọi trung tâm) hoặc nút "Gửi thử ngay" trên trang quản trị (1
+// trung tâm, bỏ qua việc đã quét hôm nay chưa — dùng để test). Chống gửi trùng trong CÙNG 1 ngày: kiểm tra
+// đã có log "ok" hôm nay cho đúng contact phụ huynh đó chưa trước khi gửi (không dựa vào mỗi cờ đã-quét-hôm-
+// nay ở tầng trên, vì nút test có thể bấm nhiều lần).
+export async function sendBirthdayZnsNow(locationId) {
+  const cfg = await getBirthdayConfig(locationId);
+  if (!cfg.enabled || !cfg.templateId) return { sent: 0, skipped: 0, total: 0, reason: "disabled_or_no_template" };
+  const conn = await getConnection(locationId);
+  if (!conn || conn.status === "disconnected") return { sent: 0, skipped: 0, total: 0, reason: "not_connected" };
+  const list = await getHocVienBirthdaysToday(locationId);
+  let sent = 0, skipped = 0;
+  for (const hv of list) {
+    const already = (await q(
+      "select 1 from platform.zalo_sync_log where location_id=$1 and kind='zns_birthday' and status='ok' and ghl_contact_id=$2 and (at at time zone 'Asia/Ho_Chi_Minh')::date = (now() at time zone 'Asia/Ho_Chi_Minh')::date",
+      [locationId, hv.contactId])).rowCount;
+    if (already) { skipped++; continue; }
+    let phone;
+    try {
+      const c = await ghlFetch(locationId, "GET", `/contacts/${hv.contactId}`);
+      phone = toZaloPhone(c.contact?.phone);
+    } catch (e) { await logSync(locationId, { direction: "out", kind: "zns_birthday", status: "failed", detail: `Không đọc được SĐT phụ huynh của ${hv.name}: ${e.message}`, contactId: hv.contactId }); continue; }
+    if (!phone) { await logSync(locationId, { direction: "out", kind: "zns_birthday", status: "failed", detail: `Phụ huynh của ${hv.name} chưa có số điện thoại`, contactId: hv.contactId }); continue; }
+    const data = { [cfg.paramName]: hv.name };
+    try {
+      const token = await getOaAccessToken(locationId);
+      await postZalo("https://business.openapi.zalo.me/message/template", token, { phone, template_id: cfg.templateId, template_data: data });
+    } catch (e) {
+      await logSync(locationId, { direction: "out", kind: "zns_birthday", status: "failed", detail: `Sinh nhật ${hv.name}: ${znsErrText(e)}`, contactId: hv.contactId });
+      continue;
+    }
+    await logSync(locationId, { direction: "out", kind: "zns_birthday", status: "ok", detail: `Sinh nhật ${hv.name} (mẫu ${cfg.templateId}) → ${maskPhone(phone)}`, contactId: hv.contactId });
+    try {
+      if (providerConfigured()) {
+        const note = (await q("select note from platform.zns_template_notes where location_id=$1 and template_id=$2", [locationId, cfg.templateId])).rows[0]?.note;
+        const head = note ? `📩 ZNS: ${note} (mẫu ${cfg.templateId})` : `📩 ZNS sinh nhật (mẫu ${cfg.templateId})`;
+        await pushToConversation(locationId, { contactId: hv.contactId, direction: "outbound", altId: `zns_birthday_${hv.hocVienId}_${Date.now()}`, message: `${head}\n${cfg.paramName}: ${hv.name}` });
+      }
+    } catch (e) { await logSync(locationId, { direction: "out", kind: "zns_birthday", status: "skipped", detail: `Đã gửi nhưng chưa ghi được vào Conversations: ${e.message}`, contactId: hv.contactId }); }
+    sent++;
+  }
+  return { sent, skipped, total: list.length };
+}
+
+// Quét MỌI trung tâm đã bật tính năng — gọi 1 lần/ngày từ server.mjs (setInterval mỗi giờ, tự kiểm tra qua
+// zns_birthday_runs nên gọi nhiều lần trong ngày vẫn an toàn, chỉ lần đầu trong ngày thực sự chạy).
+export async function maybeRunBirthdayZnsToday() {
+  const today = todayVnDateStr();
+  const claim = await q("insert into platform.zns_birthday_runs (run_date) values ($1) on conflict do nothing", [today]);
+  if (claim.rowCount === 0) return { ran: false }; // đã có lượt chạy khác nhận hôm nay rồi (hoặc đã chạy xong)
+  const rows = (await q("select location_id from platform.zns_birthday_config where enabled=true")).rows;
+  for (const r of rows) {
+    try { await sendBirthdayZnsNow(r.location_id); }
+    catch (e) { await logSync(r.location_id, { direction: "system", kind: "zns_birthday", status: "failed", detail: `Lỗi chạy quét sinh nhật hàng ngày: ${e.message}` }); }
+  }
+  return { ran: true, tenants: rows.length };
 }
 
 // --- Dashboard -------------------------------------------------------------------------------------------

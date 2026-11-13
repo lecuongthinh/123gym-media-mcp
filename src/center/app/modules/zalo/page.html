@@ -46,6 +46,7 @@
   var BASE = location.pathname.replace(/\/apps\/zalo\/?$/, "") + "/apps/zalo";
   var token = null, role = "user", st = null, logs = [], only = "", busy = "", err = "", znsUrl = "";
   var znsTemplates = [], tplDraft = {}, newTplId = "", newTplNote = "";
+  var bday = null, bdayDraft = null, bdayResult = null;
   var KIND = { user_send_text:"Khách nhắn", user_send_image:"Khách gửi ảnh", user_send_sticker:"Khách gửi sticker", user_send_file:"Khách gửi tệp", user_send_gif:"Khách gửi GIF", user_send_audio:"Khách gửi thoại", user_send_location:"Khách gửi vị trí", oa_send_text:"Nhân viên nhắn (Web OA)", ghl_reply:"Trả lời từ GHL", follow:"Khách theo dõi OA", unfollow:"Bỏ theo dõi", retry:"Gửi lại", zns:"Gửi ZNS", connect:"Kết nối", disconnect:"Ngắt kết nối", uid_field:"Tạo trường Zalo UID", profile:"Đọc hồ sơ Zalo" };
 
   function h(tag, attrs, kids) {
@@ -101,9 +102,11 @@
       api("/api/status"),
       api("/api/logs" + (only ? "?status=" + only : "")),
       api("/api/zns-templates"),
+      api("/api/birthday-config"),
     ]).then(function (r) {
-      st = r[0]; logs = r[1]; znsTemplates = r[2];
+      st = r[0]; logs = r[1]; znsTemplates = r[2]; bday = r[3];
       tplDraft = {}; znsTemplates.forEach(function (t) { tplDraft[t.templateId] = t.note; });
+      bdayDraft = { enabled: bday.enabled, templateId: bday.templateId, paramName: bday.paramName };
       render();
     }).catch(function (e) { err = e.message; render(); });
   }
@@ -176,6 +179,26 @@
           h("tbody", {}, tplRows.concat([addRow])),
         ])),
       ]));
+
+      app.appendChild(h("div", { class: "card" }, [
+        h("h3", {}, ["ZNS chúc mừng sinh nhật học viên", h("span", { class: "chip " + (bday && bday.enabled ? "ok" : "warn") }, bday && bday.enabled ? "Đang bật" : "Đang tắt")]),
+        h("div", { class: "muted", style: "font-size:13px;margin:4px 0 10px" }, "Mỗi ngày quét 1 lần, tìm học viên có ngày sinh (trường “ngày sinh” trên Học Viên) đúng hôm nay và gửi ZNS tới số điện thoại phụ huynh (contact liên kết). Cần một mẫu ZNS riêng cho sinh nhật học viên (khác mẫu sinh nhật phụ huynh) đã được Zalo duyệt."),
+        h("div", { style: "display:grid;gap:8px;max-width:420px" }, [
+          h("label", { class: "row", style: "gap:8px;align-items:center" }, [
+            h("input", { type: "checkbox", checked: bdayDraft.enabled, onchange: function (e) { bdayDraft.enabled = e.target.checked; render(); } }),
+            "Bật gửi tự động",
+          ]),
+          h("div", {}, [h("div", { class: "muted", style: "font-size:12px;margin-bottom:4px" }, "Mã mẫu ZNS"),
+            h("input", { value: bdayDraft.templateId, placeholder: "VD: 661192", style: "width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--ink)", oninput: function (e) { bdayDraft.templateId = e.target.value; } })]),
+          h("div", {}, [h("div", { class: "muted", style: "font-size:12px;margin-bottom:4px" }, "Tên tham số (tên học viên trong mẫu)"),
+            h("input", { value: bdayDraft.paramName, placeholder: "customer_name", style: "width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--ink)", oninput: function (e) { bdayDraft.paramName = e.target.value; } })]),
+          h("div", { class: "row", style: "gap:8px" }, [
+            h("button", { class: "primary", disabled: busy === "bday", onclick: saveBday }, "Lưu"),
+            h("button", { disabled: busy === "bdaysend" || !bdayDraft.templateId, onclick: sendBdayNow }, "Gửi thử ngay"),
+          ]),
+          bdayResult ? h("div", { class: "muted", style: "font-size:13px" }, bdayResult) : null,
+        ]),
+      ]));
     }
 
     app.appendChild(h("div", { class: "stats" }, [
@@ -246,6 +269,20 @@
     post("/api/zns-template-note", { templateId: newTplId.trim(), note: newTplNote })
       .then(function () { newTplId = ""; newTplNote = ""; return load(); })
       .catch(function (e) { err = e.message; }).then(function () { busy = ""; render(); });
+  }
+
+  function saveBday() {
+    busy = "bday"; err = ""; bdayResult = ""; render();
+    post("/api/birthday-config", bdayDraft).then(load).catch(function (e) { err = e.message; }).then(function () { busy = ""; render(); });
+  }
+  function sendBdayNow() {
+    busy = "bdaysend"; err = ""; bdayResult = ""; render();
+    post("/api/birthday-send-now", {}).then(function (j) {
+      bdayResult = j.reason === "disabled_or_no_template" ? "Chưa bật hoặc chưa nhập mã mẫu — lưu lại trước khi gửi thử."
+        : j.reason === "not_connected" ? "Zalo OA chưa kết nối."
+        : "Hôm nay có " + j.total + " học viên sinh nhật — đã gửi " + j.sent + ", bỏ qua " + j.skipped + " (đã gửi trước đó hoặc lỗi, xem Nhật ký đồng bộ).";
+      return load();
+    }).catch(function (e) { err = e.message; }).then(function () { busy = ""; render(); });
   }
 
   window.addEventListener("message", function (e) { if (e.data && typeof e.data === "object" && "zaloConnect" in e.data) load(); });
