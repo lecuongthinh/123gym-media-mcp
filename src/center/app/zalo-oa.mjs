@@ -17,7 +17,7 @@ import { platformQuery } from "./db.mjs";
 import { encryptCredential, decryptCredential } from "./credential-crypto.mjs";
 import { publicBaseUrl } from "./marketplace-apps.mjs";
 import { getAppLocationToken } from "./ghl-apps.mjs";
-import { getHocVienBirthdaysToday } from "./ghl-write.mjs";
+import { getHocVienBirthdaysToday, listHocVienWithContact } from "./ghl-write.mjs";
 
 const ENV_PATH = new URL("./.env", import.meta.url);
 const env = {
@@ -769,6 +769,40 @@ export async function maybeRunBirthdayZnsToday() {
     catch (e) { await logSync(r.location_id, { direction: "system", kind: "zns_birthday", status: "failed", detail: `Lỗi chạy quét sinh nhật hàng ngày: ${e.message}` }); }
   }
   return { ran: true, tenants: rows.length };
+}
+
+// Danh sách Học Viên cho dropdown "chọn học viên để test" trên trang quản trị.
+export async function listBirthdayTestStudents(locationId) {
+  return listHocVienWithContact(locationId);
+}
+
+// Gửi 1 tin ZNS sinh nhật THẬT cho 1 Học Viên được chọn tay (tên + SĐT phụ huynh lấy từ GHL) — để kiểm tra
+// mẫu + đường gửi hoạt động bằng dữ liệu thật, không cần sửa ngày sinh của ai cả. Không qua bước tìm theo
+// ngày sinh/chống gửi trùng của sendBirthdayZnsNow vì đây là gửi thủ công 1 lần, không phải quét theo lịch.
+export async function sendBirthdayZnsTest(locationId, hocVienId) {
+  const cfg = await getBirthdayConfig(locationId);
+  if (!cfg.templateId) throw new Error("Chưa nhập mã mẫu ZNS — nhập và Lưu trước khi gửi test.");
+  const conn = await getConnection(locationId);
+  if (!conn || conn.status === "disconnected") throw new Error("Zalo OA chưa kết nối.");
+  const students = await listHocVienWithContact(locationId);
+  const hv = students.find((s) => s.hocVienId === hocVienId);
+  if (!hv) throw new Error("Không tìm thấy học viên này (có thể vừa bị xoá hoặc chưa nối phụ huynh).");
+  let phone;
+  try {
+    const c = await ghlFetch(locationId, "GET", `/contacts/${hv.contactId}`);
+    phone = toZaloPhone(c.contact?.phone);
+  } catch (e) { throw new Error(`Không đọc được SĐT phụ huynh của ${hv.name}: ${e.message}`); }
+  if (!phone) throw new Error(`Phụ huynh của ${hv.name} chưa có số điện thoại.`);
+  const data = { [cfg.paramName]: hv.name };
+  try {
+    const token = await getOaAccessToken(locationId);
+    await postZalo("https://business.openapi.zalo.me/message/template", token, { phone, template_id: cfg.templateId, template_data: data });
+  } catch (e) {
+    await logSync(locationId, { direction: "out", kind: "zns_birthday_test", status: "failed", detail: `Test sinh nhật ${hv.name} (mẫu ${cfg.templateId}) → ${maskPhone(phone)}: ${znsErrText(e)}`, contactId: hv.contactId });
+    throw new Error(znsErrText(e));
+  }
+  await logSync(locationId, { direction: "out", kind: "zns_birthday_test", status: "ok", detail: `Test sinh nhật ${hv.name} (mẫu ${cfg.templateId}) → ${maskPhone(phone)}`, contactId: hv.contactId });
+  return { ok: true, name: hv.name, phone: maskPhone(phone) };
 }
 
 // --- Dashboard -------------------------------------------------------------------------------------------
