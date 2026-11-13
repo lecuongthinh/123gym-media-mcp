@@ -497,6 +497,21 @@ export async function getHocVienBirthdaysToday(locationId) {
   return out;
 }
 
+// Mọi Học Viên có nối Contact phụ huynh (bất kể ngày sinh) — dùng cho dropdown "chọn học viên để test" trên
+// trang quản trị, để test gửi ZNS sinh nhật bằng dữ liệu thật mà không phải sửa ngày sinh của ai cả.
+export async function listHocVienWithContact(locationId) {
+  const t = await getTenantState(locationId);
+  const records = await listAllRecords(t, HOC_VIEN_KEY);
+  const out = [];
+  for (const hv of records) {
+    const contactRel = (hv.relations || []).find((r) => r.objectKey === "contact");
+    if (!contactRel) continue;
+    out.push({ hocVienId: hv.id, name: hv.properties?.name || "", contactId: contactRel.recordId });
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name, "vi"));
+  return out;
+}
+
 // Dựng base_snapshot ban đầu cho 1 tenant MỚI từ chính dữ liệu Lớp/Học viên/Ghi danh ĐÃ CÓ SẴN trên GHL của
 // họ (ví dụ khách đã dùng GHL quản lý lớp bằng tay trước khi cài app, hoặc GHL Snapshot kèm theo dữ liệu mẫu)
 // — thay vì bắt mọi tenant mới bắt đầu từ con số 0. Ghi danh không nối đủ cả 2 đầu (Học viên + Lớp) bị bỏ
