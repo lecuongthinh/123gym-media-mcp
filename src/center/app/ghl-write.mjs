@@ -476,6 +476,27 @@ async function listAllRecords(t, key) {
   return all;
 }
 
+// Học Viên có ngay_sinh trùng đúng hôm nay (tháng-ngày, giờ VN) — dùng cho ZNS chúc mừng sinh nhật tự động
+// (xem zalo-oa.mjs:sendBirthdayZnsNow). Đọc trực tiếp GHL (không qua base_snapshot) vì cần quan hệ Contact
+// phụ huynh để biết gửi tới số nào — base_snapshot không lưu field đó.
+export async function getHocVienBirthdaysToday(locationId) {
+  const t = await getTenantState(locationId);
+  const today = new Date(Date.now() + 7 * 3600_000); // dịch +7h rồi đọc field UTC = ngày giờ VN
+  const mmdd = `${String(today.getUTCMonth() + 1).padStart(2, "0")}-${String(today.getUTCDate()).padStart(2, "0")}`;
+  const records = await listAllRecords(t, HOC_VIEN_KEY);
+  const out = [];
+  for (const hv of records) {
+    const ngaySinh = hv.properties?.ngay_sinh;
+    if (typeof ngaySinh !== "string") continue;
+    const parts = ngaySinh.split("-"); // "YYYY-MM-DD"
+    if (parts.length !== 3 || `${parts[1]}-${parts[2]}` !== mmdd) continue;
+    const contactRel = (hv.relations || []).find((r) => r.objectKey === "contact");
+    if (!contactRel) continue; // chưa nối phụ huynh — không biết gửi tới đâu, bỏ qua
+    out.push({ hocVienId: hv.id, name: hv.properties?.name || "", contactId: contactRel.recordId });
+  }
+  return out;
+}
+
 // Dựng base_snapshot ban đầu cho 1 tenant MỚI từ chính dữ liệu Lớp/Học viên/Ghi danh ĐÃ CÓ SẴN trên GHL của
 // họ (ví dụ khách đã dùng GHL quản lý lớp bằng tay trước khi cài app, hoặc GHL Snapshot kèm theo dữ liệu mẫu)
 // — thay vì bắt mọi tenant mới bắt đầu từ con số 0. Ghi danh không nối đủ cả 2 đầu (Học viên + Lớp) bị bỏ

@@ -10,7 +10,16 @@ import CryptoJS from "crypto-js";
 import { getApp, appConfigured } from "../../marketplace-apps.mjs";
 import { buildAuthorizeUrl, handleInstall, isInstalled } from "../../ghl-apps.mjs";
 import { createModuleSession, getModuleSession } from "../../module-sessions.mjs";
-import { buildConnectUrl, handleConnectCallback, disconnect, handleZaloWebhook, handleGhlOutbound, validGhlSignature, getStats, getLogs, retryLog, handleZnsWebhook, znsKeyValid, znsWebhookUrl, getZnsTemplates, saveZnsTemplateNote } from "../../zalo-oa.mjs";
+import { buildConnectUrl, handleConnectCallback, disconnect, handleZaloWebhook, handleGhlOutbound, validGhlSignature, getStats, getLogs, retryLog, handleZnsWebhook, znsKeyValid, znsWebhookUrl, getZnsTemplates, saveZnsTemplateNote, getBirthdayConfig, saveBirthdayConfig, sendBirthdayZnsNow, maybeRunBirthdayZnsToday } from "../../zalo-oa.mjs";
+
+// Quét ZNS sinh nhật học viên 1 lần/ngày cho MỌI trung tâm — không có dịch vụ cron riêng, nên tự kiểm tra
+// (idempotent theo ngày, xem maybeRunBirthdayZnsToday) mỗi giờ qua setInterval. Đặt ở ĐÂY (module load, chạy
+// đúng 1 lần lúc tiến trình khởi động) chứ không trong handle() — modules/index.mjs import module này tĩnh
+// nên đoạn này tự chạy dù server.mjs được require trực tiếp hay bị app khác import gắn requestHandler vào
+// (bản vendor/host thật) — cả 2 trường hợp đều cần hẹn giờ này chạy, không phụ thuộc có request nào tới hay
+// không. Chạy thử ngay sau 30s (không đợi tới giờ chẵn nếu server vừa redeploy đúng ngày có sinh nhật).
+setTimeout(() => { maybeRunBirthdayZnsToday().catch((e) => console.error("[zalo-oa] Lỗi quét sinh nhật:", e.message)); }, 30_000);
+setInterval(() => { maybeRunBirthdayZnsToday().catch((e) => console.error("[zalo-oa] Lỗi quét sinh nhật:", e.message)); }, 3600_000);
 
 const APP = "zalo";
 const PAGE = new URL("./page.html", import.meta.url);
@@ -114,7 +123,7 @@ ${err ? `<p style="background:#fde8e8;color:#c22;padding:10px 14px;border-radius
       const auth = req.headers["authorization"] || "";
       const sess = await getModuleSession(APP, auth.startsWith("Bearer ") ? auth.slice(7) : null);
       if (!sess) return json(res, { error: "Chưa đăng nhập" }, 401), true;
-      const adminOnly = ["/api/connect-url", "/api/disconnect", "/api/retry", "/api/zns-setup", "/api/zns-template-note"].includes(sub);
+      const adminOnly = ["/api/connect-url", "/api/disconnect", "/api/retry", "/api/zns-setup", "/api/zns-template-note", "/api/birthday-config", "/api/birthday-send-now"].includes(sub);
       if (adminOnly && sess.role !== "admin") return json(res, { error: "Chỉ quản trị mới được thực hiện thao tác này" }, 403), true;
       try {
         if (sub === "/api/status") return json(res, await getStats(sess.locationId)), true;
@@ -125,6 +134,12 @@ ${err ? `<p style="background:#fde8e8;color:#c22;padding:10px 14px;border-radius
           let input; try { input = JSON.parse(await readBody(req)); } catch { return json(res, { error: "invalid json" }, 400), true; }
           return json(res, await saveZnsTemplateNote(sess.locationId, input.templateId, input.note)), true;
         }
+        if (sub === "/api/birthday-config" && req.method === "GET") return json(res, await getBirthdayConfig(sess.locationId)), true;
+        if (sub === "/api/birthday-config" && req.method === "POST") {
+          let input; try { input = JSON.parse(await readBody(req)); } catch { return json(res, { error: "invalid json" }, 400), true; }
+          return json(res, await saveBirthdayConfig(sess.locationId, input)), true;
+        }
+        if (sub === "/api/birthday-send-now" && req.method === "POST") return json(res, await sendBirthdayZnsNow(sess.locationId)), true;
         if (req.method === "POST" && sub === "/api/connect-url") return json(res, { url: await buildConnectUrl(sess.locationId) }), true;
         if (req.method === "POST" && sub === "/api/disconnect") { await disconnect(sess.locationId); return json(res, { ok: true }), true; }
         if (req.method === "POST" && sub === "/api/retry") {
