@@ -731,3 +731,22 @@ export async function getKinhDoanh(locationId) {
   }
   return { funnel, chuaXepLop };
 }
+
+// Số lead (Opportunity) MỚI tạo mỗi tháng, N tháng gần nhất + tháng hiện tại — dùng cho biểu đồ "tiến độ" của
+// Dashboard kế hoạch kinh doanh. Đếm theo ngày tạo deal, KHÔNG lọc theo status=open như getKinhDoanh ở trên
+// (1 lead đã thua/rớt vẫn là 1 lead trung tâm đã NHẬN được tháng đó, vẫn phải tính vào "đã tạo bao nhiêu
+// lead", khác với "đang mở bao nhiêu deal"). /opportunities/search hỗ trợ lọc ngày tạo trực tiếp (date/
+// endDate, mm-dd-yyyy) — lọc phía GHL, không phải tải hết rồi lọc tay.
+export async function getLeadsPerMonth(locationId, months = 6) {
+  const t = await getTenantState(locationId);
+  const now = new Date(); // server chạy giờ Asia/Saigon, xem ghi chú đầu server.mjs — Date() local là đủ
+  const mmddyyyy = (d) => `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}-${d.getFullYear()}`;
+  const out = [];
+  for (let i = months - 1; i >= 0; i--) {
+    const start = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    const end = new Date(now.getFullYear(), now.getMonth() - i + 1, 0); // ngày cuối tháng
+    const j = await ghl(t, "GET", `/opportunities/search?location_id=${t.LOC}&status=all&date=${mmddyyyy(start)}&endDate=${mmddyyyy(end)}&limit=100`);
+    out.push({ month: `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, "0")}`, count: (j.opportunities || []).length });
+  }
+  return out;
+}

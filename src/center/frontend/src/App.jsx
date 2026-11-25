@@ -1650,6 +1650,132 @@ function KinhDoanh() {
   );
 }
 
+// Tab "Kế hoạch kinh doanh" (xem server.mjs:/api/candy/ke-hoach) — 4 phần theo đúng yêu cầu: (1) mục tiêu
+// nhập tay có mốc thời gian, (2) học sinh hiện tại, (3) dự báo tương lai theo công thức Hiện tại + Mới −
+// Hết hạn×(1−%renew) (trừ đúng số KHÔNG renew — xác nhận với user, công thức viết tay ban đầu bị ngược dấu),
+// leads cần = Mới / %chuyển đổi, (4) lead + renew thực tế so với mục tiêu theo từng tháng (6 tháng gần nhất).
+// "Hết hạn" tính theo NGÀY ngay_het_han của Ghi Danh (không theo trạng thái) — xem ghiDanhExpiringIn ở server.
+function KeHoachKinhDoanh() {
+  const [d, setD] = useState(null);
+  const [form, setForm] = useState(null);
+  const [toDate, setToDate] = useState("");
+  const [moi, setMoi] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState("");
+  const [err, setErr] = useState("");
+
+  const load = (q) => get("/api/candy/ke-hoach" + (q ? `?${q}` : "")).then((j) => {
+    setD(j);
+    setForm((prev) => prev || j.targets);
+    setToDate((prev) => prev || j.targets.targetDate || "");
+  });
+  useEffect(() => { load(); }, []);
+  // Gõ "mới" hay đổi ngày thì tính lại dự báo ngay (debounce nhẹ) — không ảnh hưởng mục tiêu đã lưu.
+  useEffect(() => {
+    if (!toDate) return;
+    const h = setTimeout(() => load(new URLSearchParams({ toDate, moi: String(moi || 0) }).toString()), 300);
+    return () => clearTimeout(h);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toDate, moi]);
+
+  if (!d || !form) return <p className="muted">Đang tải…</p>;
+
+  const saveTargets = () => {
+    setSaving(true); setSaved(""); setErr("");
+    fetch("/api/candy/ke-hoach-targets", { method: "POST", body: JSON.stringify(form) })
+      .then((r) => r.json().then((j) => ({ ok: r.ok, j })))
+      .then(({ ok, j }) => { if (!ok) { setErr(j.error || "Lỗi không rõ"); return; } setD((p) => ({ ...p, targets: j })); setSaved("Đã lưu."); })
+      .finally(() => setSaving(false));
+  };
+
+  const gap = d.forecast && form.targetStudents != null ? d.forecast.projected - form.targetStudents : null;
+  const maxLead = Math.max(1, ...d.leadsPerMonth.map((x) => x.count));
+  const maxRenew = Math.max(1, ...d.renewPerMonth.map((x) => Math.max(x.actualRenewed, x.targetRenewed)));
+
+  return (
+    <section>
+      <div className="card wide" style={{ marginBottom: 20 }}>
+        <h3>Mục tiêu</h3>
+        <p className="muted" style={{ fontSize: 13, marginTop: -6, marginBottom: 14 }}>Số doanh thu/lợi nhuận sẽ bổ sung sau.</p>
+        <div className="row" style={{ flexWrap: "wrap" }}>
+          <label className="muted" style={{ display: "flex", flexDirection: "column", gap: 4 }}>Mốc thời gian
+            <input type="date" value={form.targetDate || ""} onChange={(e) => setForm({ ...form, targetDate: e.target.value })} />
+          </label>
+          <label className="muted" style={{ display: "flex", flexDirection: "column", gap: 4 }}>Số học sinh mục tiêu
+            <input type="number" min="0" value={form.targetStudents ?? ""} onChange={(e) => setForm({ ...form, targetStudents: e.target.value })} style={{ width: 120 }} />
+          </label>
+          <label className="muted" style={{ display: "flex", flexDirection: "column", gap: 4 }}>% Renew mục tiêu
+            <input type="number" min="0" max="100" value={form.renewalRatePct ?? ""} onChange={(e) => setForm({ ...form, renewalRatePct: e.target.value })} style={{ width: 100 }} />
+          </label>
+          <label className="muted" style={{ display: "flex", flexDirection: "column", gap: 4 }}>% Chuyển đổi Lead → học sinh
+            <input type="number" min="0" max="100" value={form.conversionRatePct ?? ""} onChange={(e) => setForm({ ...form, conversionRatePct: e.target.value })} style={{ width: 100 }} />
+          </label>
+        </div>
+        <div className="row" style={{ marginTop: 12 }}>
+          <button className="primary" onClick={saveTargets} disabled={saving}>{saving ? "Đang lưu…" : "Lưu mục tiêu"}</button>
+          {saved && <span className="muted">{saved}</span>}
+          {err && <span className="err">{err}</span>}
+        </div>
+      </div>
+
+      <div className="stat-grid" style={{ marginBottom: 20 }}>
+        <StatCard label="Học sinh hiện tại" value={d.currentCount} />
+        {form.targetStudents !== "" && form.targetStudents != null && (
+          <StatCard label="Mục tiêu" value={form.targetStudents} sub={form.targetDate ? `tới ${form.targetDate}` : ""} />
+        )}
+        <StatCard
+          label="% Renew thực tế (6 tháng)"
+          value={d.actualRenewalRatePct != null ? `${d.actualRenewalRatePct}%` : "—"}
+          sub={d.actualRenewalRatePct == null ? "chưa có Ghi Danh nào có ngày hết hạn trong 6 tháng qua" : (form.renewalRatePct ? `mục tiêu đang đặt: ${form.renewalRatePct}%` : "")}
+        />
+      </div>
+
+      <div className="card wide" style={{ marginBottom: 20 }}>
+        <h3>Dự báo số học sinh trong tương lai</h3>
+        <div className="row" style={{ flexWrap: "wrap", marginBottom: 14 }}>
+          <label className="muted" style={{ display: "flex", flexDirection: "column", gap: 4 }}>Tới ngày
+            <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
+          </label>
+          <label className="muted" style={{ display: "flex", flexDirection: "column", gap: 4 }}>Số học sinh mới dự kiến
+            <input type="number" min="0" value={moi} onChange={(e) => setMoi(e.target.value)} style={{ width: 120 }} />
+          </label>
+        </div>
+        {!d.forecast ? (
+          <p className="muted">Chọn 1 ngày trong tương lai để xem dự báo.</p>
+        ) : (
+          <div className="stat-grid">
+            <StatCard label="Dự báo số học sinh" value={d.forecast.projected} sub={gap != null ? (gap >= 0 ? `vượt mục tiêu ${gap}` : `thiếu ${-gap} so với mục tiêu`) : ""} />
+            <StatCard label="Gói ghi danh hết hạn trong giai đoạn" value={d.forecast.expiringCount} />
+            <StatCard label="Số lead cần (cho số mới)" value={d.forecast.leadsNeeded ?? "—"} sub={!form.conversionRatePct ? "cần đặt % chuyển đổi mục tiêu" : ""} />
+          </div>
+        )}
+      </div>
+
+      <div className="card wide" style={{ marginBottom: 20 }}>
+        <h3>Lead nhận được theo tháng</h3>
+        {d.leadsPerMonth.length === 0 ? <p className="muted">Chưa kết nối GHL hoặc chưa có lead nào.</p> : d.leadsPerMonth.map((x) => (
+          <BarRow key={x.month} label={x.month} value={x.count} max={maxLead} />
+        ))}
+      </div>
+
+      <div className="card wide">
+        <h3>Renew theo tháng — thực tế so với mục tiêu</h3>
+        <p className="muted" style={{ fontSize: 13, marginTop: -6, marginBottom: 14 }}>Mục tiêu renew mỗi tháng = số gói hết hạn tháng đó × % renew mục tiêu đang đặt ở trên.</p>
+        {d.renewPerMonth.every((x) => x.expiringCount === 0) && (
+          <p className="muted" style={{ marginBottom: 14 }}>Chưa Ghi Danh nào ghi ngày hết hạn trong 6 tháng qua — chưa có dữ liệu để so sánh.</p>
+        )}
+        {d.renewPerMonth.map((x) => (
+          <div key={x.month} style={{ marginBottom: 14 }}>
+            <div className="muted" style={{ fontSize: 13, marginBottom: 4 }}>{x.month} ({x.expiringCount} gói hết hạn)</div>
+            <BarRow label="Thực tế" value={x.actualRenewed} max={maxRenew} />
+            <BarRow label="Mục tiêu" value={x.targetRenewed} max={maxRenew} color="var(--line)" />
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function Dashboard() {
   const [d, setD] = useState(null);
   useEffect(() => { get("/api/candy/dashboard").then(setD); }, []);
@@ -1778,6 +1904,7 @@ const NAV_ICON = {
   "diem-danh": <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="6.3" /><path d="M5.2 8.2 7.1 10l3.5-4.3" /></svg>,
   "bao-cao": <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 13V8M8 13V4M13 13v-3" /></svg>,
   "kinh-doanh": <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M2 2.5h12L9.5 8.3v4.4L6.5 14V8.3L2 2.5Z" /></svg>,
+  "ke-hoach": <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="8" cy="8" r="6.3" /><circle cx="8" cy="8" r="3.4" /><circle cx="8" cy="8" r=".6" fill="currentColor" /></svg>,
   "cau-hinh": <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M2 4h12M2 8h12M2 12h12" /><circle cx="10" cy="4" r="1.6" fill="var(--card)" /><circle cx="5" cy="8" r="1.6" fill="var(--card)" /><circle cx="11" cy="12" r="1.6" fill="var(--card)" /></svg>,
 };
 
@@ -1886,6 +2013,7 @@ export default function App() {
       else if (location.hash.startsWith("#/lop")) { setPage("lop"); setId(null); }
       else if (location.hash.startsWith("#/bao-cao")) { setPage("bao-cao"); setId(null); }
       else if (location.hash.startsWith("#/kinh-doanh")) { setPage("kinh-doanh"); setId(null); }
+      else if (location.hash.startsWith("#/ke-hoach")) { setPage("ke-hoach"); setId(null); }
       else if (location.hash.startsWith("#/cau-hinh")) { setPage("cau-hinh"); setId(null); }
       else if (location.hash.startsWith("#/thoi-khoa-bieu")) { setPage("thoi-khoa-bieu"); setId(null); }
       else if (location.hash.startsWith("#/giao-vien")) { setPage("giao-vien"); setId(null); }
@@ -1896,12 +2024,13 @@ export default function App() {
     window.addEventListener("hashchange", h); return () => window.removeEventListener("hashchange", h);
   }, []);
   const open = (i) => { location.hash = `#/khach/${i}`; };
-  const TITLES = { "diem-danh": "Điểm danh", lop: "Quản lý lớp", "bao-cao": "Báo cáo tổng quan", "kinh-doanh": "Kinh doanh", khach: "Khách hàng", "hoc-vien": "Hồ sơ học viên", "hoc-vien-ds": "Học viên", "cau-hinh": "Cấu hình", "thoi-khoa-bieu": "Thời khoá biểu", "giao-vien": "Giáo viên" };
+  const TITLES = { "diem-danh": "Điểm danh", lop: "Quản lý lớp", "bao-cao": "Báo cáo tổng quan", "kinh-doanh": "Kinh doanh", "ke-hoach": "Kế hoạch kinh doanh", khach: "Khách hàng", "hoc-vien": "Hồ sơ học viên", "hoc-vien-ds": "Học viên", "cau-hinh": "Cấu hình", "thoi-khoa-bieu": "Thời khoá biểu", "giao-vien": "Giáo viên" };
   const SUBS = {
     "diem-danh": `${brand.orgLabel} · điểm danh theo lớp`,
     lop: `${brand.orgLabel} · danh sách lớp và học viên`,
     "bao-cao": `${brand.orgLabel} · tổng quan hoạt động`,
     "kinh-doanh": `${brand.orgLabel} · phễu bán hàng và học viên chờ xếp lớp`,
+    "ke-hoach": `${brand.orgLabel} · mục tiêu, dự báo và tiến độ so với thực tế`,
     khach: "123 GYM Bạch Đằng · bản demo, dữ liệu chỉ nằm trên máy này", // module riêng, không thuộc thương hiệu trên — không đổi theo tenant
     "hoc-vien": `${brand.orgLabel} · xuyên suốt mọi lớp học viên từng/đang học`,
     "hoc-vien-ds": `${brand.orgLabel} · toàn bộ học viên, kể cả chưa ghi danh lớp`,
@@ -1919,6 +2048,7 @@ export default function App() {
     { key: "thoi-khoa-bieu", href: "#/thoi-khoa-bieu", label: "Thời khoá biểu" },
     { key: "diem-danh", href: "#/diem-danh", label: "Điểm danh" },
     { key: "kinh-doanh", href: "#/kinh-doanh", label: "Kinh doanh" },
+    { key: "ke-hoach", href: "#/ke-hoach", label: "Kế hoạch" },
     { key: "bao-cao", href: "#/bao-cao", label: "Báo cáo" },
     // Cấu hình chứa quy tắc nghiệp vụ + quản lý nhân sự — chỉ admin mới cần thấy trong menu (server vẫn
     // là lớp chặn thật sự cho các thao tác ghi; ẩn ở đây chỉ để đỡ rối cho nhân viên không dùng tới).
@@ -1953,6 +2083,7 @@ export default function App() {
           : page === "lop" ? <ClassManagement />
           : page === "bao-cao" ? <Dashboard />
           : page === "kinh-doanh" ? <KinhDoanh />
+          : page === "ke-hoach" ? <KeHoachKinhDoanh />
           : page === "hoc-vien" ? <StudentProfile hocVienId={hvId} back={() => { location.hash = "#/bao-cao"; }} />
           : page === "hoc-vien-ds" ? <StudentListPage />
           : page === "cau-hinh" ? (me.role === "admin" ? <ConfigPage me={me} brand={brand} /> : <p className="muted">Chỉ quản lý mới xem được trang này.</p>)
