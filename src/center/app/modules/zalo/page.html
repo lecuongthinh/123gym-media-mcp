@@ -283,7 +283,7 @@
 
   function saveBday() {
     busy = "bday"; err = ""; bdayResult = ""; render();
-    post("/api/birthday-config", bdayDraft).then(load).catch(function (e) { err = e.message; }).then(function () { busy = ""; render(); });
+    post("/api/birthday-config", bdayDraft).then(load).then(function () { bdayResult = "Đã lưu."; }).catch(function (e) { err = e.message; }).then(function () { busy = ""; render(); });
   }
   function sendBdayNow() {
     busy = "bdaysend"; err = ""; bdayResult = ""; render();

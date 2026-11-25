@@ -15,7 +15,11 @@ const env = {
 // CENTER_-prefixed ưu tiên trước — xem ghi chú tương tự trong oauth-onboarding.mjs.
 if (env.CENTER_HIGHLEVEL_CLIENT_ID) env.HIGHLEVEL_CLIENT_ID = env.CENTER_HIGHLEVEL_CLIENT_ID;
 if (env.CENTER_HIGHLEVEL_CLIENT_SECRET) env.HIGHLEVEL_CLIENT_SECRET = env.CENTER_HIGHLEVEL_CLIENT_SECRET;
-const BASE_URL = env.PUBLIC_BASE_URL || "https://center-management-rvii.onrender.com";
+// Dự phòng khi thiếu biến môi trường PUBLIC_BASE_URL: TUYỆT ĐỐI không được trỏ về host cũ đã ngừng hoạt động
+// (center-management-rvii.onrender.com) — bắt thật 2026-11-26: PUBLIC_BASE_URL thiếu/sai trên Render khiến
+// redirect_uri lúc cài app rơi vào fallback cũ, OAuth callback đi tới host "đã suspended", cài app coi như
+// thành công (GHL không biết callback có tới đích hay không) nhưng token KHÔNG bao giờ được lưu thật.
+const BASE_URL = env.PUBLIC_BASE_URL || "https://uplifting-social-ai-staging.onrender.com/center";
 
 const APPS = {
   // App gốc (quản lý trung tâm). Giữ nguyên tên biến môi trường cũ để không phải đổi cấu hình đang chạy.
