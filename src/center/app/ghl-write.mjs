@@ -615,7 +615,25 @@ export async function createPipeline(locationId, { name, stages, showInFunnel = 
   return r.pipeline || r;
 }
 
-const GHI_DANH_STAGE_NAME = "Đã ghi danh";
+// Đổi tên các giai đoạn (stage) của 1 pipeline đã có, giữ nguyên id/vị trí — dùng cùng endpoint PUT không công
+// khai với createPipeline (POST), đã xác nhận cùng 1 route /opportunities/pipelines/:id chấp nhận PUT khi test
+// trực tiếp. `names` là mảng tên mới theo ĐÚNG thứ tự vị trí hiện có của pipeline (không đổi số lượng/thứ tự
+// giai đoạn, chỉ đổi tên hiển thị).
+export async function renamePipelineStages(locationId, { pipelineId, names }) {
+  const t = await getTenantState(locationId);
+  assertWriterEnabled(t);
+  const j = await ghl(t, "GET", `/opportunities/pipelines?locationId=${t.LOC}`);
+  const pipeline = (j.pipelines || []).find((p) => p.id === pipelineId);
+  if (!pipeline) throw new Error(`Không tìm thấy pipeline ${pipelineId}`);
+  const stages = [...(pipeline.stages || [])].sort((a, b) => a.position - b.position);
+  if (stages.length !== names.length) throw new Error(`Pipeline có ${stages.length} giai đoạn, nhưng truyền ${names.length} tên mới`);
+  const body = { name: pipeline.name, stages: stages.map((s, i) => ({ id: s.id, name: names[i], position: s.position ?? i })) };
+  const r = await ghl(t, "PUT", `/opportunities/pipelines/${pipelineId}`, body);
+  t.pipelineStageCache = null; // xoá cache tên giai đoạn (getPipelineStageNames) để đọc lại tên mới ngay
+  return r.pipeline || r;
+}
+
+const FINAL_STAGE_NAME = "Đã đăng ký"; // tên giai đoạn cuối pipeline — đổi theo pipeline mới 2026-11-25 (trước là "Đã ghi danh")
 
 // Tên giai đoạn (stage) không nằm trong payload webhook OpportunityStageUpdate (chỉ có pipelineStageId) — tra
 // lại qua GET /opportunities/pipelines, gộp tất cả pipeline của tenant vào 1 map id->tên. Khớp theo TÊN (không
@@ -640,7 +658,7 @@ export async function handleOpportunityStageWebhook(locationId, { opportunityId,
   const t = await getTenantState(locationId);
   if (!writerConfigured(t.tenant)) return { skipped: "writer_disabled" };
   const stageNames = await getPipelineStageNames(t);
-  if (stageNames.get(pipelineStageId) !== GHI_DANH_STAGE_NAME) return { skipped: "not_ghi_danh_stage" };
+  if (stageNames.get(pipelineStageId) !== FINAL_STAGE_NAME) return { skipped: "not_ghi_danh_stage" };
 
   const relAssocId = await assocId(t, "opportunity_hoc_vien").catch(() => null);
   if (relAssocId) {
@@ -680,7 +698,7 @@ export async function getKinhDoanh(locationId) {
   }));
   const stageById = new Map();
   let ghiDanhStageId = null;
-  for (const p of funnel) for (const s of p.stages) { stageById.set(s.id, s); if (s.name === GHI_DANH_STAGE_NAME) ghiDanhStageId = s.id; }
+  for (const p of funnel) for (const s of p.stages) { stageById.set(s.id, s); if (s.name === FINAL_STAGE_NAME) ghiDanhStageId = s.id; }
 
   // Giới hạn 100 deal đang mở — đủ cho quy mô 1 trung tâm, không phân trang thêm (dashboard tham khảo,
   // không phải sổ sách chính xác tuyệt đối).
