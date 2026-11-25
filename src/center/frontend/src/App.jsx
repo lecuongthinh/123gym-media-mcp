@@ -1710,7 +1710,13 @@ function KeHoachKinhDoanh() {
           <label className="muted" style={{ display: "flex", flexDirection: "column", gap: 4 }}>% Chuyển đổi Lead → học sinh
             <input type="number" min="0" max="100" value={form.conversionRatePct ?? ""} onChange={(e) => setForm({ ...form, conversionRatePct: e.target.value })} style={{ width: 100 }} />
           </label>
+          <label className="muted" style={{ display: "flex", flexDirection: "column", gap: 4 }}>Nhịp học giả định (buổi/tuần)
+            <input type="number" min="0.5" step="0.5" value={form.buoiPerWeek ?? 2} onChange={(e) => setForm({ ...form, buoiPerWeek: e.target.value })} style={{ width: 100 }} />
+          </label>
         </div>
+        <p className="muted" style={{ fontSize: 13, marginTop: 10, marginBottom: 0 }}>
+          "Nhịp học" dùng để ước tính ngày hết hạn cho Ghi Danh CHƯA có ngày hết hạn trên GHL: còn lại (tổng buổi − đã học) ÷ nhịp học × 7 ngày, tính từ hôm nay.
+        </p>
         <div className="row" style={{ marginTop: 12 }}>
           <button className="primary" onClick={saveTargets} disabled={saving}>{saving ? "Đang lưu…" : "Lưu mục tiêu"}</button>
           {saved && <span className="muted">{saved}</span>}
@@ -1745,7 +1751,7 @@ function KeHoachKinhDoanh() {
         ) : (
           <div className="stat-grid">
             <StatCard label="Dự báo số học sinh" value={d.forecast.projected} sub={gap != null ? (gap >= 0 ? `vượt mục tiêu ${gap}` : `thiếu ${-gap} so với mục tiêu`) : ""} />
-            <StatCard label="Gói ghi danh hết hạn trong giai đoạn" value={d.forecast.expiringCount} />
+            <StatCard label="Gói ghi danh hết hạn trong giai đoạn" value={d.forecast.expiringCount} sub={d.forecast.estimatedCount > 0 ? `trong đó ${d.forecast.estimatedCount} gói ước tính theo số buổi còn lại (chưa có ngày hết hạn)` : ""} />
             <StatCard label="Số lead cần (cho số mới)" value={d.forecast.leadsNeeded ?? "—"} sub={!form.conversionRatePct ? "cần đặt % chuyển đổi mục tiêu" : ""} />
           </div>
         )}

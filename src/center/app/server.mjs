@@ -61,7 +61,7 @@ function datesForThu(cacThuHocStr, fromDate, toDate) {
 const DEFAULT_CONFIG = { hoc_bu: { so_buoi_toi_da: 4, loai_vang_duoc_bu: ["vang_co_phep"], cung_cap_do: true, han_dung: "ngay_het_han" } };
 // Mục tiêu kinh doanh do admin tự nhập (tab "Kế hoạch kinh doanh") — doanh thu/lợi nhuận để sau, xem
 // getBusinessPlan() bên dưới.
-const DEFAULT_TARGETS = { targetDate: "", targetStudents: null, renewalRatePct: null, conversionRatePct: null };
+const DEFAULT_TARGETS = { targetDate: "", targetStudents: null, renewalRatePct: null, conversionRatePct: null, buoiPerWeek: 2 };
 // Ghi danh coi là "không còn active" (giống /api/candy/dashboard) — dùng chung cho đếm học sinh hiện tại
 // VÀ cho tính "hết hạn"/"renew" của kế hoạch kinh doanh, để 2 nơi không lệch định nghĩa nhau.
 const TERMINAL_GD = new Set(["da_chuyen_lop", "hoan_thanh", "da_nghi"]);
@@ -82,6 +82,38 @@ function ghiDanhExpiringIn(allStudents, fromISO, toISO) {
     .map((s) => ({
       ...s,
       renewed: (byHocVien.get(s.hoc_vien_id) || []).some((o) => o.ghi_danh_id !== s.ghi_danh_id && o.ngay_bat_dau && o.ngay_bat_dau > s.ngay_het_han),
+    }));
+}
+
+// EIM (và có thể trung tâm khác) chưa ghi ngày hết hạn cho hầu hết Ghi Danh — không thể bỏ trống thẳng phần
+// dự báo. Với ghi danh THIẾU ngay_het_han, ước tính: còn lại = tổng buổi − đã học, chia cho nhịp học/tuần
+// (user tự nhập, mặc định 2) ra số ngày còn lại, CỘNG TỪ HÔM NAY (không phải ngày bắt đầu — quan tâm còn bao
+// lâu nữa hết dựa trên tiến độ THỰC TẾ đã học, không phải lịch dự kiến ban đầu). Chỉ dùng cho dự báo tương
+// lai — KHÔNG lùi về quá khứ cho renewPerMonth vì không có snapshot số buổi đã học tại các mốc trong quá khứ
+// để ước tính ngược được.
+function estimatedHetHan(s, todayISO, buoiPerWeek) {
+  if (s.ngay_het_han) return s.ngay_het_han;
+  const total = Number(s.sessions_total) || 0;
+  if (!total || !buoiPerWeek) return null;
+  const remaining = Math.max(0, total - (Number(s.so_buoi_da_hoc) || 0));
+  const days = Math.round((remaining / buoiPerWeek) * 7);
+  const d = new Date(todayISO + "T00:00:00"); d.setDate(d.getDate() + days);
+  return toLocalISODate(d);
+}
+function expiringWithEstimate(allStudents, fromISO, toISO, todayISO, buoiPerWeek) {
+  const byHocVien = new Map();
+  for (const s of allStudents) {
+    if (!byHocVien.has(s.hoc_vien_id)) byHocVien.set(s.hoc_vien_id, []);
+    byHocVien.get(s.hoc_vien_id).push(s);
+  }
+  return allStudents
+    .map((s) => ({ s, eff: estimatedHetHan(s, todayISO, buoiPerWeek) }))
+    .filter(({ eff }) => eff && eff >= fromISO && eff <= toISO)
+    .map(({ s, eff }) => ({
+      ...s,
+      hetHanHieuDung: eff,
+      uocTinh: !s.ngay_het_han,
+      renewed: (byHocVien.get(s.hoc_vien_id) || []).some((o) => o.ghi_danh_id !== s.ghi_danh_id && o.ngay_bat_dau && o.ngay_bat_dau > eff),
     }));
 }
 const ATT_STATUS = { co_mat: "Có mặt", vang_co_phep: "Vắng có phép", vang_khong_phep: "Vắng không phép", den_muon: "Đến muộn" };
@@ -916,12 +948,14 @@ ${err ? `<p style="background:#fde8e8;color:#c22;padding:10px 14px;border-radius
 
       let forecast = null;
       if (toDate && toDate > todayISO) {
-        const expiring = ghiDanhExpiringIn(allStudents, todayISO, toDate);
+        const buoiPerWeek = Number(t.businessTargets.buoiPerWeek) || 0;
+        const expiring = expiringWithEstimate(allStudents, todayISO, toDate, todayISO, buoiPerWeek);
         const renewalRate = (Number(t.businessTargets.renewalRatePct) || 0) / 100;
         const projected = Math.round(currentCount + moi - expiring.length * (1 - renewalRate));
         const conversionRatePct = Number(t.businessTargets.conversionRatePct) || 0;
         const leadsNeeded = conversionRatePct > 0 ? Math.ceil(moi / (conversionRatePct / 100)) : null;
-        forecast = { toDate, moi, expiringCount: expiring.length, projected, leadsNeeded };
+        const estimatedCount = expiring.filter((x) => x.uocTinh).length;
+        forecast = { toDate, moi, expiringCount: expiring.length, estimatedCount, projected, leadsNeeded };
       }
 
       // Tỷ lệ renew THỰC TẾ 6 tháng gần nhất — để đối chiếu với % mục tiêu đang đặt, KHÔNG dùng số này để
@@ -954,6 +988,7 @@ ${err ? `<p style="background:#fde8e8;color:#c22;padding:10px 14px;border-radius
         targetStudents: input?.targetStudents == null || input.targetStudents === "" ? null : Math.max(0, Number(input.targetStudents) || 0),
         renewalRatePct: clampPct(input?.renewalRatePct),
         conversionRatePct: clampPct(input?.conversionRatePct),
+        buoiPerWeek: input?.buoiPerWeek == null || input.buoiPerWeek === "" ? 2 : Math.max(0.5, Number(input.buoiPerWeek) || 2),
       };
       t.saveBusinessTargets();
       return json(res, t.businessTargets);
