@@ -5,7 +5,7 @@
 // nạp riêng theo từng locationId (hàm getAppState() bên dưới), tra theo tenant của phiên đăng nhập đang gọi.
 import http from "http"; import fs from "fs"; import path from "path"; import { fileURLToPath } from "url";
 import { ghlGet } from "./ghl-readonly.mjs";
-import { getCoSoOptions, writeAttendance, writerEnabled, getBuoiHoc, setBuoiHocTrangThai, getPhuHuynh, enrollStudent, createHocVien, createLop, renewEnrollment, setLichHoc, setGhiDanhTrangThai, generateSessions, listBuoiHoc, updateBuoiHoc, createGiaoVien, updateGiaoVien, ganGiaoVienChoLop, seedTenantFromGhl, handleOpportunityStageWebhook, getKinhDoanh } from "./ghl-write.mjs";
+import { getCoSoOptions, writeAttendance, writerEnabled, getBuoiHoc, setBuoiHocTrangThai, getPhuHuynh, enrollStudent, createHocVien, createLop, renewEnrollment, setLichHoc, setGhiDanhTrangThai, generateSessions, listBuoiHoc, updateBuoiHoc, createGiaoVien, updateGiaoVien, ganGiaoVienChoLop, seedTenantFromGhl, handleOpportunityStageWebhook, getKinhDoanh, getLeadsPerMonth } from "./ghl-write.mjs";
 import { findStaff, listStaff, addStaff, setStaffRole, removeStaff, createSession, getSession, destroySession, getCmlKey, decryptGhlUserData } from "./auth.mjs";
 import { kvGet, kvSet, getTenantByLocation, listTenants } from "./db.mjs";
 import { handleOAuthInstall, buildAuthorizeUrl } from "./oauth-onboarding.mjs";
@@ -59,6 +59,63 @@ function datesForThu(cacThuHocStr, fromDate, toDate) {
 // Quy tắc học bù mặc định cho 1 tenant MỚI (chưa từng lưu "config" riêng) — số buổi tối đa + loại vắng được
 // bù do admin của TỪNG trung tâm tự chỉnh trong UI (Cấu hình), giá trị dưới đây chỉ là khởi điểm.
 const DEFAULT_CONFIG = { hoc_bu: { so_buoi_toi_da: 4, loai_vang_duoc_bu: ["vang_co_phep"], cung_cap_do: true, han_dung: "ngay_het_han" } };
+// Mục tiêu kinh doanh do admin tự nhập (tab "Kế hoạch kinh doanh") — doanh thu/lợi nhuận để sau, xem
+// getBusinessPlan() bên dưới.
+const DEFAULT_TARGETS = { targetDate: "", targetStudents: null, renewalRatePct: null, conversionRatePct: null, buoiPerWeek: 2 };
+// Ghi danh coi là "không còn active" (giống /api/candy/dashboard) — dùng chung cho đếm học sinh hiện tại
+// VÀ cho tính "hết hạn"/"renew" của kế hoạch kinh doanh, để 2 nơi không lệch định nghĩa nhau.
+const TERMINAL_GD = new Set(["da_chuyen_lop", "hoan_thanh", "da_nghi"]);
+const isActiveGd = (s) => !TERMINAL_GD.has(s.gd_trang_thai);
+
+// Ghi danh có ngay_het_han rơi vào [fromISO, toISO] (tính theo NGÀY, kể cả khi gd_trang_thai nhân viên chưa
+// kịp cập nhật — quyết định của user khi xác nhận công thức dự báo, xem project_eim_... trong memory). Kèm
+// luôn "đã renew chưa": CÙNG 1 học viên có ghi danh KHÁC (lớp nào cũng được) bắt đầu SAU ngày hết hạn này —
+// tính ở mức GHI DANH (gói học), không dedupe theo học viên, vì "tỷ lệ renew" vốn là tỷ lệ GÓI được gia hạn.
+function ghiDanhExpiringIn(allStudents, fromISO, toISO) {
+  const byHocVien = new Map();
+  for (const s of allStudents) {
+    if (!byHocVien.has(s.hoc_vien_id)) byHocVien.set(s.hoc_vien_id, []);
+    byHocVien.get(s.hoc_vien_id).push(s);
+  }
+  return allStudents
+    .filter((s) => s.ngay_het_han && s.ngay_het_han >= fromISO && s.ngay_het_han <= toISO)
+    .map((s) => ({
+      ...s,
+      renewed: (byHocVien.get(s.hoc_vien_id) || []).some((o) => o.ghi_danh_id !== s.ghi_danh_id && o.ngay_bat_dau && o.ngay_bat_dau > s.ngay_het_han),
+    }));
+}
+
+// EIM (và có thể trung tâm khác) chưa ghi ngày hết hạn cho hầu hết Ghi Danh — không thể bỏ trống thẳng phần
+// dự báo. Với ghi danh THIẾU ngay_het_han, ước tính: còn lại = tổng buổi − đã học, chia cho nhịp học/tuần
+// (user tự nhập, mặc định 2) ra số ngày còn lại, CỘNG TỪ HÔM NAY (không phải ngày bắt đầu — quan tâm còn bao
+// lâu nữa hết dựa trên tiến độ THỰC TẾ đã học, không phải lịch dự kiến ban đầu). Chỉ dùng cho dự báo tương
+// lai — KHÔNG lùi về quá khứ cho renewPerMonth vì không có snapshot số buổi đã học tại các mốc trong quá khứ
+// để ước tính ngược được.
+function estimatedHetHan(s, todayISO, buoiPerWeek) {
+  if (s.ngay_het_han) return s.ngay_het_han;
+  const total = Number(s.sessions_total) || 0;
+  if (!total || !buoiPerWeek) return null;
+  const remaining = Math.max(0, total - (Number(s.so_buoi_da_hoc) || 0));
+  const days = Math.round((remaining / buoiPerWeek) * 7);
+  const d = new Date(todayISO + "T00:00:00"); d.setDate(d.getDate() + days);
+  return toLocalISODate(d);
+}
+function expiringWithEstimate(allStudents, fromISO, toISO, todayISO, buoiPerWeek) {
+  const byHocVien = new Map();
+  for (const s of allStudents) {
+    if (!byHocVien.has(s.hoc_vien_id)) byHocVien.set(s.hoc_vien_id, []);
+    byHocVien.get(s.hoc_vien_id).push(s);
+  }
+  return allStudents
+    .map((s) => ({ s, eff: estimatedHetHan(s, todayISO, buoiPerWeek) }))
+    .filter(({ eff }) => eff && eff >= fromISO && eff <= toISO)
+    .map(({ s, eff }) => ({
+      ...s,
+      hetHanHieuDung: eff,
+      uocTinh: !s.ngay_het_han,
+      renewed: (byHocVien.get(s.hoc_vien_id) || []).some((o) => o.ghi_danh_id !== s.ghi_danh_id && o.ngay_bat_dau && o.ngay_bat_dau > eff),
+    }));
+}
 const ATT_STATUS = { co_mat: "Có mặt", vang_co_phep: "Vắng có phép", vang_khong_phep: "Vắng không phép", den_muon: "Đến muộn" };
 
 // --- Trạng thái theo từng khách hàng (tenant), cache trong tiến trình theo locationId ------------------------
@@ -122,7 +179,9 @@ async function getAppState(tenant) {
     giaoVienList: await kvGet(schema, "giao_vien_list", []),
     candyConfig: await kvGet(schema, "config", DEFAULT_CONFIG),
     hocBuOverlay: await kvGet(schema, "hocbu_overlay", []),
+    businessTargets: await kvGet(schema, "business_targets", DEFAULT_TARGETS),
   };
+  t.saveBusinessTargets = () => kvSet(schema, "business_targets", t.businessTargets).catch(onSaveErr("business_targets"));
   t.saveAttOverlay = () => kvSet(schema, "attendance_overlay", t.attOverlay).catch(onSaveErr("attendance_overlay"));
   t.saveEnrollOverlay = () => kvSet(schema, "enrollment_overlay", t.enrollOverlay).catch(onSaveErr("enrollment_overlay"));
   t.nextEnrollN = () => 1000 + t.enrollOverlay.length;
@@ -812,9 +871,7 @@ ${err ? `<p style="background:#fde8e8;color:#c22;padding:10px 14px;border-radius
       const students = t.allStudents();
       const classes = t.allClasses();
       // Ghi danh đã đóng (chuyển lớp/hoàn thành/nghỉ hẳn) không còn "active" — loại khỏi số liệu tổng hợp.
-      const TERMINAL = new Set(["da_chuyen_lop", "hoan_thanh", "da_nghi"]);
-      const isActive = (s) => !TERMINAL.has(s.gd_trang_thai);
-      const activeStudents = students.filter(isActive);
+      const activeStudents = students.filter(isActiveGd);
       const totalStudents = new Set(activeStudents.map((s) => s.hoc_vien_id)).size; // đếm NGƯỜI, không đếm dòng ghi danh
       const byCoSo = {};
       for (const s of activeStudents) byCoSo[s.co_so] = (byCoSo[s.co_so] || 0) + 1;
@@ -877,6 +934,64 @@ ${err ? `<p style="background:#fde8e8;color:#c22;padding:10px 14px;border-radius
       if (!(await writerEnabled(user.locationId))) return json(res, { funnel: [], chuaXepLop: [], writerEnabled: false });
       try { return json(res, { ...(await getKinhDoanh(user.locationId)), writerEnabled: true }); }
       catch (e) { return json(res, { error: String(e.message) }, 400); }
+    }
+    // Tab "Kế hoạch kinh doanh": mục tiêu (nhập tay, lưu như candyConfig) + học sinh hiện tại (từ Ghi Danh,
+    // CÙNG định nghĩa "active" với /api/candy/dashboard) + dự báo tương lai (toDate/moi truyền qua query, tính
+    // lại mỗi lần gọi, không lưu) + lead/renew theo tháng (6 tháng gần nhất) để đo tiến độ thực tế so mục tiêu.
+    if (u.pathname === "/api/candy/ke-hoach" && req.method === "GET") {
+      await sleep(DELAY);
+      const allStudents = t.allStudents();
+      const currentCount = new Set(allStudents.filter(isActiveGd).map((s) => s.hoc_vien_id)).size;
+      const todayISO = toLocalISODate(new Date());
+      const toDate = u.searchParams.get("toDate") || t.businessTargets.targetDate || "";
+      const moi = Number(u.searchParams.get("moi")) || 0;
+
+      let forecast = null;
+      if (toDate && toDate > todayISO) {
+        const buoiPerWeek = Number(t.businessTargets.buoiPerWeek) || 0;
+        const expiring = expiringWithEstimate(allStudents, todayISO, toDate, todayISO, buoiPerWeek);
+        const renewalRate = (Number(t.businessTargets.renewalRatePct) || 0) / 100;
+        const projected = Math.round(currentCount + moi - expiring.length * (1 - renewalRate));
+        const conversionRatePct = Number(t.businessTargets.conversionRatePct) || 0;
+        const leadsNeeded = conversionRatePct > 0 ? Math.ceil(moi / (conversionRatePct / 100)) : null;
+        const estimatedCount = expiring.filter((x) => x.uocTinh).length;
+        forecast = { toDate, moi, expiringCount: expiring.length, estimatedCount, projected, leadsNeeded };
+      }
+
+      // Tỷ lệ renew THỰC TẾ 6 tháng gần nhất — để đối chiếu với % mục tiêu đang đặt, KHÔNG dùng số này để
+      // tính dự báo (dự báo luôn dùng đúng % mục tiêu user nhập, theo quyết định đã chốt).
+      const sixMonthsAgoISO = toLocalISODate(new Date(Date.now() - 180 * 86400000));
+      const pastExpiring = ghiDanhExpiringIn(allStudents, sixMonthsAgoISO, todayISO);
+      const actualRenewalRatePct = pastExpiring.length ? Math.round((pastExpiring.filter((x) => x.renewed).length / pastExpiring.length) * 100) : null;
+
+      let leadsPerMonth = [];
+      if (await writerEnabled(user.locationId)) { try { leadsPerMonth = await getLeadsPerMonth(user.locationId, 6); } catch (e) { console.error(`[${t.schema}] Lỗi lấy lead theo tháng:`, e.message); } }
+
+      const renewPerMonth = [];
+      for (let i = 5; i >= 0; i--) {
+        const start = new Date(); start.setDate(1); start.setMonth(start.getMonth() - i);
+        const from = toLocalISODate(start);
+        const to = toLocalISODate(new Date(start.getFullYear(), start.getMonth() + 1, 0));
+        const monthExpiring = ghiDanhExpiringIn(allStudents, from, to);
+        const targetRenewed = Math.round(monthExpiring.length * ((Number(t.businessTargets.renewalRatePct) || 0) / 100));
+        renewPerMonth.push({ month: from.slice(0, 7), expiringCount: monthExpiring.length, actualRenewed: monthExpiring.filter((x) => x.renewed).length, targetRenewed });
+      }
+
+      return json(res, { targets: t.businessTargets, currentCount, forecast, actualRenewalRatePct, leadsPerMonth, renewPerMonth });
+    }
+    if (u.pathname === "/api/candy/ke-hoach-targets" && req.method === "POST") {
+      let body = ""; for await (const ch of req) body += ch;
+      let input; try { input = JSON.parse(body); } catch { return json(res, { error: "invalid json" }, 400); }
+      const clampPct = (v) => (v == null || v === "" ? null : Math.max(0, Math.min(100, Number(v))));
+      t.businessTargets = {
+        targetDate: typeof input?.targetDate === "string" ? input.targetDate : "",
+        targetStudents: input?.targetStudents == null || input.targetStudents === "" ? null : Math.max(0, Number(input.targetStudents) || 0),
+        renewalRatePct: clampPct(input?.renewalRatePct),
+        conversionRatePct: clampPct(input?.conversionRatePct),
+        buoiPerWeek: input?.buoiPerWeek == null || input.buoiPerWeek === "" ? 2 : Math.max(0.5, Number(input.buoiPerWeek) || 2),
+      };
+      t.saveBusinessTargets();
+      return json(res, t.businessTargets);
     }
     if ((m = u.pathname.match(/^\/api\/candy\/phu-huynh\/([^/]+)$/))) {
       await sleep(DELAY);
