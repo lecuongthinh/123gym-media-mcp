@@ -98,12 +98,32 @@ export function ensureZaloTables() {
     )`);
     await platformQuery(`create table if not exists platform.zns_birthday_config (
       location_id text primary key, enabled boolean not null default false, template_id text,
-      param_name text not null default 'customer_name', updated_at timestamptz not null default now()
+      param_name text not null default 'customer_name', send_hour smallint not null default 9,
+      updated_at timestamptz not null default now()
     )`);
-    // Đánh dấu đã quét sinh nhật ngày nào rồi — không có dịch vụ cron riêng, server tự hỏi "hôm nay chạy chưa"
-    // mỗi giờ (xem maybeRunBirthdayZnsToday); insert ... on conflict do nothing làm việc "nhận phiên chạy hôm
-    // nay" atomic, tránh chạy đúp nếu 2 lượt kiểm tra trùng thời điểm (vd server vừa khởi động lại).
-    await platformQuery(`create table if not exists platform.zns_birthday_runs (run_date date primary key, ran_at timestamptz not null default now())`);
+    await platformQuery(`alter table platform.zns_birthday_config add column if not exists send_hour smallint not null default 9`);
+    // Đánh dấu đã quét sinh nhật ngày nào rồi cho TỪNG trung tâm (không có dịch vụ cron riêng, server tự hỏi
+    // "hôm nay trung tâm này chạy chưa" mỗi giờ — xem maybeRunBirthdayZnsToday); insert ... on conflict do
+    // nothing làm việc "nhận phiên chạy hôm nay" atomic, tránh chạy đúp nếu 2 lượt kiểm tra trùng thời điểm
+    // (vd server vừa khởi động lại). Khoá theo (location_id, run_date) để mỗi trung tâm có "giờ gửi" riêng
+    // không bị khoá chung 1 lượt chạy duy nhất của cả hệ thống như trước 2026-11-28.
+    await platformQuery(`create table if not exists platform.zns_birthday_runs (
+      location_id text not null, run_date date not null, ran_at timestamptz not null default now(),
+      primary key (location_id, run_date)
+    )`);
+    await platformQuery(`do $$
+      begin
+        if not exists (
+          select 1 from information_schema.columns
+          where table_schema='platform' and table_name='zns_birthday_runs' and column_name='location_id'
+        ) then
+          alter table platform.zns_birthday_runs add column location_id text;
+          update platform.zns_birthday_runs set location_id='' where location_id is null;
+          alter table platform.zns_birthday_runs alter column location_id set not null;
+          alter table platform.zns_birthday_runs drop constraint zns_birthday_runs_pkey;
+          alter table platform.zns_birthday_runs add primary key (location_id, run_date);
+        end if;
+      end $$;`);
   })();
   return ready;
 }
@@ -701,15 +721,18 @@ function todayVnDateStr() {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`; // toISOString (lệch ngày ở UTC+7, xem bài học generateSessions)
 }
 export async function getBirthdayConfig(locationId) {
-  const r = (await q("select enabled, template_id, param_name from platform.zns_birthday_config where location_id=$1", [locationId])).rows[0];
-  return r ? { enabled: r.enabled, templateId: r.template_id || "", paramName: r.param_name } : { enabled: false, templateId: "", paramName: "customer_name" };
+  const r = (await q("select enabled, template_id, param_name, send_hour from platform.zns_birthday_config where location_id=$1", [locationId])).rows[0];
+  return r ? { enabled: r.enabled, templateId: r.template_id || "", paramName: r.param_name, sendHour: r.send_hour } : { enabled: false, templateId: "", paramName: "customer_name", sendHour: 9 };
 }
-export async function saveBirthdayConfig(locationId, { enabled, templateId, paramName }) {
+// Giờ gửi giới hạn 7h-21h (giờ VN) — Zalo chặn cứng tin quảng cáo/ZNS từ 22h-7h (lỗi -133), kẹp lại ở đây để
+// không ai lỡ cấu hình ra ngoài khung giờ Zalo cho phép.
+export async function saveBirthdayConfig(locationId, { enabled, templateId, paramName, sendHour }) {
   const pn = String(paramName || "customer_name").trim() || "customer_name";
+  const sh = Math.min(21, Math.max(7, Number(sendHour) || 9));
   await q(
-    `insert into platform.zns_birthday_config (location_id, enabled, template_id, param_name) values ($1,$2,$3,$4)
-     on conflict (location_id) do update set enabled=excluded.enabled, template_id=excluded.template_id, param_name=excluded.param_name, updated_at=now()`,
-    [locationId, Boolean(enabled), String(templateId || "").trim(), pn]);
+    `insert into platform.zns_birthday_config (location_id, enabled, template_id, param_name, send_hour) values ($1,$2,$3,$4,$5)
+     on conflict (location_id) do update set enabled=excluded.enabled, template_id=excluded.template_id, param_name=excluded.param_name, send_hour=excluded.send_hour, updated_at=now()`,
+    [locationId, Boolean(enabled), String(templateId || "").trim(), pn, sh]);
   return getBirthdayConfig(locationId);
 }
 
@@ -757,18 +780,28 @@ export async function sendBirthdayZnsNow(locationId) {
   return { sent, skipped, total: list.length };
 }
 
-// Quét MỌI trung tâm đã bật tính năng — gọi 1 lần/ngày từ server.mjs (setInterval mỗi giờ, tự kiểm tra qua
-// zns_birthday_runs nên gọi nhiều lần trong ngày vẫn an toàn, chỉ lần đầu trong ngày thực sự chạy).
+function nowVnHour() {
+  const d = new Date(Date.now() + 7 * 3600_000);
+  return d.getUTCHours();
+}
+// Gọi mỗi giờ từ server.mjs (setInterval) cho MỌI trung tâm cùng lúc — bắt đầu từ 2026-11-28, mỗi trung tâm tự
+// có "giờ gửi" riêng (send_hour) và tự có lượt-đã-chạy-hôm-nay riêng (zns_birthday_runs khoá theo location_id
+// + run_date), nên 1 tiếng gửi muộn/sớm của trung tâm A không còn khoá luôn cả B. Trước đó cả hệ thống dùng
+// chung 1 lượt chạy/ngày, nên lần quét ĐẦU TIÊN sau nửa đêm (thường ngay sau khi Render khởi động lại server
+// giữa đêm) coi như chạy cho tất cả — rơi vào khung Zalo cấm gửi ZNS (22h-7h, lỗi -133) là mất trắng ngày đó.
 export async function maybeRunBirthdayZnsToday() {
   const today = todayVnDateStr();
-  const claim = await q("insert into platform.zns_birthday_runs (run_date) values ($1) on conflict do nothing", [today]);
-  if (claim.rowCount === 0) return { ran: false }; // đã có lượt chạy khác nhận hôm nay rồi (hoặc đã chạy xong)
-  const rows = (await q("select location_id from platform.zns_birthday_config where enabled=true")).rows;
+  const hour = nowVnHour();
+  const rows = (await q("select location_id, send_hour from platform.zns_birthday_config where enabled=true")).rows;
+  let ran = 0;
   for (const r of rows) {
-    try { await sendBirthdayZnsNow(r.location_id); }
+    if (hour < (r.send_hour ?? 9)) continue; // chưa tới giờ gửi đã cấu hình cho trung tâm này, đợi lượt quét sau
+    const claim = await q("insert into platform.zns_birthday_runs (location_id, run_date) values ($1,$2) on conflict do nothing", [r.location_id, today]);
+    if (claim.rowCount === 0) continue; // trung tâm này hôm nay đã chạy rồi
+    try { await sendBirthdayZnsNow(r.location_id); ran++; }
     catch (e) { await logSync(r.location_id, { direction: "system", kind: "zns_birthday", status: "failed", detail: `Lỗi chạy quét sinh nhật hàng ngày: ${e.message}` }); }
   }
-  return { ran: true, tenants: rows.length };
+  return { ran: ran > 0, tenants: ran };
 }
 
 // Danh sách Học Viên cho dropdown "chọn học viên để test" trên trang quản trị.

@@ -106,7 +106,7 @@
     ]).then(function (r) {
       st = r[0]; logs = r[1]; znsTemplates = r[2]; bday = r[3];
       tplDraft = {}; znsTemplates.forEach(function (t) { tplDraft[t.templateId] = t.note; });
-      bdayDraft = { enabled: bday.enabled, templateId: bday.templateId, paramName: bday.paramName };
+      bdayDraft = { enabled: bday.enabled, templateId: bday.templateId, paramName: bday.paramName, sendHour: bday.sendHour };
       render();
     }).catch(function (e) { err = e.message; render(); });
   }
@@ -192,6 +192,12 @@
             h("input", { value: bdayDraft.templateId, placeholder: "VD: 661192", style: "width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--ink)", oninput: function (e) { bdayDraft.templateId = e.target.value; } })]),
           h("div", {}, [h("div", { class: "muted", style: "font-size:12px;margin-bottom:4px" }, "Tên tham số (tên học viên trong mẫu)"),
             h("input", { value: bdayDraft.paramName, placeholder: "customer_name", style: "width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--ink)", oninput: function (e) { bdayDraft.paramName = e.target.value; } })]),
+          h("div", {}, [h("div", { class: "muted", style: "font-size:12px;margin-bottom:4px" }, "Giờ gửi (mỗi ngày, từ giờ này trở đi)"),
+            h("select", { style: "width:100%;padding:6px 8px;border-radius:6px;border:1px solid var(--line);background:var(--bg);color:var(--ink)", onchange: function (e) { bdayDraft.sendHour = Number(e.target.value); } },
+              Array.from({ length: 15 }, function (_, i) { return i + 7; }).map(function (hh) {
+                var op = h("option", { value: hh }, hh + "h00"); if (hh === bdayDraft.sendHour) op.selected = true; return op;
+              })),
+            h("div", { class: "muted", style: "font-size:11px;margin-top:3px" }, "Zalo cấm gửi ZNS 22h-7h sáng, chỉ chọn được trong khung 7h-21h")]),
           h("div", { class: "row", style: "gap:8px" }, [
             h("button", { class: "primary", disabled: busy === "bday", onclick: saveBday }, "Lưu"),
             h("button", { disabled: busy === "bdaysend" || !bdayDraft.templateId, onclick: sendBdayNow }, "Gửi thử ngay (quét hôm nay)"),
